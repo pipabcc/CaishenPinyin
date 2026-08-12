@@ -193,6 +193,9 @@ HRESULT TextService::InitEngine() {
     if (!engine_->IsReady()) {
         SHURU_LOG_INFO("shared engine loading in background");
     } else {
+        if (!engine_->ReloadCustomPhrases()) {
+            SHURU_LOG_WARN("custom phrase reload failed; retaining previous snapshot");
+        }
         shuangpin_mode_ = (engine_->GetInputSchema() == InputSchema::ShuangpinXiaohe);
         const RuntimeConfig config = GetRuntimeConfig();
         QueryOptions options = engine_->GetQueryOptions();
@@ -452,11 +455,10 @@ STDMETHODIMP TextService::OnPopContext(ITfContext* /*pic*/) { return S_OK; }
 
 STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     if (fForeground) {
-        // 仍绑定回调（F9 软键盘等），但不弹出右下角状态条
         EnsureUiWindows();
         SharedStatusUi::Bind(this);
         SyncStatusUi();
-        SharedStatusUi::Hide();
+        SharedStatusUi::Show();
     } else {
         shift_tap_.Reset();
         SharedStatusUi::Unbind(this);

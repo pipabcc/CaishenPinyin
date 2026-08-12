@@ -21,6 +21,7 @@ if(MSVC)
 endif()
 
 set(SHURU_ENGINE_FEATURE_SOURCES
+  src/engine/custom_phrase.cpp
   src/engine/pinyin_correction.cpp
   src/engine/special_input.cpp
 )

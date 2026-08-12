@@ -1,0 +1,45 @@
+<Window x:Class="ShuruSettings.PhraseEditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="自定义短语" Width="520" Height="390" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <Grid Margin="28,24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <TextBlock x:Name="DialogTitle" Text="添加自定义短语" FontSize="22" FontWeight="SemiBold"/>
+    <TextBlock Grid.Row="1" Text="输入码完全匹配时，短语会出现在您指定的候选位置。"
+               Style="{StaticResource PageDescriptionStyle}" Margin="0,6,0,20"/>
+
+    <Grid Grid.Row="2">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <TextBlock Text="输入码" VerticalAlignment="Center"/>
+      <TextBox x:Name="CodeBox" Grid.Column="1" MaxLength="32"/>
+    </Grid>
+    <Grid Grid.Row="3" Margin="0,14,0,0">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <TextBlock Text="候选位置" VerticalAlignment="Center"/>
+      <ComboBox x:Name="PositionBox" Grid.Column="1" Width="100" HorizontalAlignment="Left" SelectedIndex="0">
+        <ComboBoxItem Content="1"/><ComboBoxItem Content="2"/><ComboBoxItem Content="3"/>
+        <ComboBoxItem Content="4"/><ComboBoxItem Content="5"/><ComboBoxItem Content="6"/>
+        <ComboBoxItem Content="7"/><ComboBoxItem Content="8"/><ComboBoxItem Content="9"/>
+      </ComboBox>
+    </Grid>
+    <Grid Grid.Row="4" Margin="0,14,0,0">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <TextBlock Text="短语内容" VerticalAlignment="Top" Margin="0,8,0,0"/>
+      <TextBox x:Name="PhraseBox" Grid.Column="1" Height="82" MaxLength="128"
+               AcceptsReturn="False" TextWrapping="Wrap" VerticalContentAlignment="Top"/>
+    </Grid>
+    <Grid Grid.Row="5" Margin="0,22,0,0">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="ErrorText" Foreground="{StaticResource DangerBrush}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal">
+        <Button Content="取消" Width="86" IsCancel="True"/>
+        <Button Content="保存" Width="86" Margin="8,0,0,0" IsDefault="True"
+                Style="{StaticResource PrimaryButtonStyle}" Click="Save_Click"/>
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

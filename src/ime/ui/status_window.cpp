@@ -113,11 +113,10 @@ void StatusWindow::PlaceBottomRight() {
 }
 
 void StatusWindow::Show() {
-    // 产品要求：永不显示「中/全/键」悬浮条
-    if (hwnd_) {
-        ShowWindow(hwnd_, SW_HIDE);
-    }
-    visible_ = false;
+    if (!hwnd_) return;
+    PlaceBottomRight();
+    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    visible_ = true;
 }
 
 void StatusWindow::Hide() {
@@ -197,8 +196,8 @@ LRESULT StatusWindow::OnPaint() {
 
     const int edge = Scale(4);
     const int gap = Scale(3);
-    const int inner = rc.right - edge * 2 - gap * 2;
-    const int w = inner / 3;
+    const int inner = rc.right - edge * 2 - gap * 3;
+    const int w = inner / 4;
     SetTextColor(mem, RGB(255, 255, 255));
 
     // 中/英
@@ -216,11 +215,18 @@ LRESULT StatusWindow::OnPaint() {
     DrawTextW(mem, shuangpin_mode_ ? L"双" : L"全", -1, &mid, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     // 软键盘
-    RECT right {mid.right + gap, edge, rc.right - edge, rc.bottom - edge};
+    RECT right {mid.right + gap, edge, mid.right + gap + w, rc.bottom - edge};
     HBRUSH kb_br = CreateSolidBrush(keyboard_open_ ? RGB(46, 160, 120) : RGB(60, 66, 78));
     FillRect(mem, &right, kb_br);
     DeleteObject(kb_br);
     DrawTextW(mem, L"键", -1, &right, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    // 设置
+    RECT settings {right.right + gap, edge, rc.right - edge, rc.bottom - edge};
+    HBRUSH settings_br = CreateSolidBrush(RGB(60, 66, 78));
+    FillRect(mem, &settings, settings_br);
+    DeleteObject(settings_br);
+    DrawTextW(mem, L"设", -1, &settings, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     if (old_font) {
         SelectObject(mem, old_font);
@@ -238,16 +244,20 @@ LRESULT StatusWindow::OnLButtonUp(int x, int /*y*/) {
     GetClientRect(hwnd_, &rc);
     const int edge = Scale(4);
     const int gap = Scale(3);
-    const int inner = rc.right - edge * 2 - gap * 2;
-    const int w = inner / 3;
+    const int inner = rc.right - edge * 2 - gap * 3;
+    const int w = inner / 4;
     const int x1 = edge + w;
     const int x2 = x1 + gap + w;
+    const int x3 = x2 + gap + w;
     if (x < x1) {
         if (on_toggle_mode_) on_toggle_mode_();
     } else if (x < x2) {
         if (on_toggle_schema_) on_toggle_schema_();
-    } else {
+    } else if (x < x3) {
         if (on_toggle_keyboard_) on_toggle_keyboard_();
+    } else if (!LaunchSettings()) {
+        MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
+                    L"发财拼音", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
     return 0;
 }
@@ -269,8 +279,11 @@ LRESULT StatusWindow::OnRButtonUp(int x, int y) {
     AppendMenuW(menu, MF_STRING, 1, L"输入法设置");
     POINT point {x, y};
     ClientToScreen(hwnd_, &point);
+    // 无激活窗口上的菜单需要以前台窗口作为所有者，否则可能立即消失。
+    SetForegroundWindow(hwnd_);
     const UINT command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
                                         point.x, point.y, 0, hwnd_, nullptr);
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
     DestroyMenu(menu);
     if (command == 1 && !LaunchSettings()) {
         MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请检查安装目录或开发构建目录。",
@@ -307,6 +320,16 @@ LRESULT CALLBACK StatusWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         return self->OnLButtonUp(static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam)));
     case WM_RBUTTONUP:
         return self->OnRButtonUp(static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam)));
+    case WM_CONTEXTMENU: {
+        POINT point {static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam))};
+        if (point.x == -1 && point.y == -1) {
+            RECT rect {};
+            GetWindowRect(hwnd, &rect);
+            point = POINT {rect.left + self->Scale(8), rect.bottom};
+        }
+        ScreenToClient(hwnd, &point);
+        return self->OnRButtonUp(point.x, point.y);
+    }
     case WM_DPICHANGED: {
         self->RecreateFont();
         const auto* rect = reinterpret_cast<const RECT*>(lparam);

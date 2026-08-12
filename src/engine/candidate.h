@@ -18,6 +18,7 @@ enum class CandidateSource : std::uint8_t {
     Correction = 8,
     Dynamic = 9,
     LiteralMixed = 10,
+    CustomPhrase = 11,
 };
 
 struct Candidate {

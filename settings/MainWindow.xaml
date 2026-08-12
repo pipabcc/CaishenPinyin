@@ -1,62 +1,245 @@
 <Window x:Class="ShuruSettings.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="发财拼音设置" Height="760" Width="820" MinHeight="620" MinWidth="700"
-        Background="{StaticResource BgBrush}" WindowStartupLocation="CenterScreen">
-  <Grid Margin="22">
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <StackPanel Margin="0,0,0,14">
-      <TextBlock Text="发财拼音" FontSize="28" FontWeight="SemiBold"/>
-      <TextBlock Text="隐私、模糊音、标点和用户词管理" Foreground="#666" Margin="0,4,0,0"/>
-    </StackPanel>
-    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-      <StackPanel>
-        <Border Style="{StaticResource CardStyle}"><StackPanel>
-          <TextBlock Text="隐私与学习" Style="{StaticResource SectionTitle}"/>
-          <CheckBox x:Name="LearningBox" Content="启用用户词学习（仅写入当前用户目录）"/>
-          <CheckBox x:Name="ContentLoggingBox" Margin="0,10,0,0" Content="启用内容日志（可能记录输入内容）" Foreground="#C62828" FontWeight="SemiBold"/>
-          <TextBlock Text="隐私提示：内容日志默认关闭。仅排障时短暂开启，日志可能包含敏感输入。密码/敏感上下文不会学习。" Foreground="#C62828" TextWrapping="Wrap" Margin="22,5,0,0"/>
-          <CheckBox x:Name="EnglishDefaultBox" Content="启动后默认英文模式" Margin="0,12,0,0"/>
-        </StackPanel></Border>
-        <Border Style="{StaticResource CardStyle}"><StackPanel>
-          <TextBlock Text="模糊拼音" Style="{StaticResource SectionTitle}"/>
-          <CheckBox x:Name="FuzzyEnabledBox" Content="启用模糊拼音" Checked="FuzzyEnabled_Changed" Unchecked="FuzzyEnabled_Changed"/>
-          <WrapPanel x:Name="FuzzyChildren" Margin="22,8,0,0">
-            <CheckBox x:Name="FuzzyInitialsBox" Content="声母（zh/z、n/l 等）" Margin="0,0,22,0"/>
-            <CheckBox x:Name="FuzzyFinalsBox" Content="韵母（ang/an 等）" Margin="0,0,22,0"/>
-            <CheckBox x:Name="FuzzyMissingVowelBox" Content="漏元音恢复"/>
-          </WrapPanel>
-        </StackPanel></Border>
-        <Border Style="{StaticResource CardStyle}"><StackPanel>
-          <TextBlock Text="候选与标点" Style="{StaticResource SectionTitle}"/>
-          <StackPanel Orientation="Horizontal" Margin="0,0,0,12"><TextBlock Text="拼音方案" Width="130" VerticalAlignment="Center"/><RadioButton x:Name="QuanpinBox" Content="全拼" GroupName="InputSchema" Margin="0,0,24,0"/><RadioButton x:Name="XiaoheBox" Content="小鹤双拼" GroupName="InputSchema"/></StackPanel>
-          <StackPanel Orientation="Horizontal"><TextBlock Text="中文标点策略" Width="130" VerticalAlignment="Center"/><RadioButton x:Name="FullWidthBox" Content="全角中文标点" GroupName="Punctuation" Margin="0,0,24,0"/><RadioButton x:Name="HalfWidthBox" Content="半角（交给应用）" GroupName="Punctuation"/></StackPanel>
-          <StackPanel Orientation="Horizontal" Margin="0,12,0,0"><TextBlock Text="候选数量（3–9）" Width="130" VerticalAlignment="Center"/><TextBox x:Name="CandidateCountBox" Width="70"/></StackPanel>
-          <StackPanel Orientation="Horizontal" Margin="0,8,0,0"><TextBlock Text="候选字体（14–32）" Width="130" VerticalAlignment="Center"/><TextBox x:Name="CandidateFontSizeBox" Width="70"/></StackPanel>
-        </StackPanel></Border>
-        <Border Style="{StaticResource CardStyle}"><StackPanel>
-          <TextBlock Text="系统词库包" Style="{StaticResource SectionTitle}"/>
-          <TextBlock x:Name="PackageText" TextWrapping="Wrap"/>
-          <TextBox x:Name="LexiconPathBox" IsReadOnly="True" Margin="0,8,0,0"/>
-        </StackPanel></Border>
-        <Border Style="{StaticResource CardStyle}"><StackPanel>
-          <TextBlock Text="用户词" Style="{StaticResource SectionTitle}"/>
-          <TextBlock x:Name="UserDictionaryText" TextWrapping="Wrap" Margin="0,0,0,10"/>
-          <WrapPanel>
-            <Button Content="导出…" Width="90" Margin="0,0,8,0" Click="ExportUserDictionary_Click"/>
-            <Button Content="导入…" Width="90" Margin="0,0,8,0" Click="ImportUserDictionary_Click"/>
-            <Button Content="清空…" Width="90" Margin="0,0,8,0" Click="ClearUserDictionary_Click" Foreground="#B71C1C"/>
-            <Button Content="打开目录" Width="100" Click="OpenUserDictionary_Click"/>
-          </WrapPanel>
-        </StackPanel></Border>
-        <TextBlock x:Name="StatusText" TextWrapping="Wrap" Foreground="#455A64" Margin="4,2,4,8"/>
-      </StackPanel>
-    </ScrollViewer>
-    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-      <Button Content="打开系统词库" Width="120" Margin="0,0,8,0" Click="OpenLexicon_Click"/>
-      <Button Content="保存设置" Width="100" Margin="0,0,8,0" Click="Save_Click"/>
-      <Button Content="刷新状态" Width="100" Margin="0,0,8,0" Click="Refresh_Click"/>
-      <Button Content="关闭" Width="90" Click="Close_Click"/>
-    </StackPanel>
+        Title="发财拼音设置" Width="1080" Height="760" MinWidth="920" MinHeight="660"
+        WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
+        Loaded="Window_Loaded">
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="236"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+
+    <Border Background="{StaticResource NavigationBrush}">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel Margin="24,28,20,24">
+          <StackPanel Orientation="Horizontal">
+            <Border Width="42" Height="42" Background="{StaticResource PrimaryBrush}" CornerRadius="8">
+              <TextBlock Text="发" Foreground="White" FontSize="21" FontWeight="SemiBold"
+                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <StackPanel Margin="12,1,0,0">
+              <TextBlock Text="发财拼音" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
+              <TextBlock Text="输入法设置" Foreground="#9DACA4" FontSize="12" Margin="0,3,0,0"/>
+            </StackPanel>
+          </StackPanel>
+        </StackPanel>
+        <ListBox x:Name="NavigationList" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                 SelectedIndex="0" SelectionChanged="NavigationList_SelectionChanged">
+          <ListBoxItem Style="{StaticResource NavigationItemStyle}" Content="常规设置"/>
+          <ListBoxItem Style="{StaticResource NavigationItemStyle}" Content="输入方案"/>
+          <ListBoxItem Style="{StaticResource NavigationItemStyle}" Content="自定义短语"/>
+          <ListBoxItem Style="{StaticResource NavigationItemStyle}" Content="词库与隐私"/>
+        </ListBox>
+        <StackPanel Grid.Row="2" Margin="28,16,24,24">
+          <Border Height="1" Background="#34443B" Margin="0,0,0,16"/>
+          <TextBlock Text="0.4.1" Foreground="#91A198" FontSize="12"/>
+          <TextBlock Text="本地运行 · 数据归您所有" Foreground="#91A198" FontSize="12" Margin="0,5,0,0"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Column="1">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+
+      <Grid Margin="32,26,32,18">
+        <ScrollViewer x:Name="GeneralPage" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock Text="常规设置" Style="{StaticResource PageTitleStyle}"/>
+            <TextBlock Text="调整启动状态、候选数量和中文标点。" Style="{StaticResource PageDescriptionStyle}"/>
+
+            <Border Style="{StaticResource SectionStyle}" Margin="0,24,0,16">
+              <StackPanel>
+                <TextBlock Text="启动与输入" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="控制输入法每次激活后的默认状态。" Style="{StaticResource SectionDescriptionStyle}"/>
+                <CheckBox x:Name="EnglishDefaultBox" Content="启动后默认使用英文模式" Margin="0,18,0,0"/>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionStyle}">
+              <StackPanel>
+                <TextBlock Text="候选窗口" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="设置每页显示数量与候选文字大小。" Style="{StaticResource SectionDescriptionStyle}"/>
+                <Grid Margin="0,18,0,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="170"/><ColumnDefinition Width="100"/><ColumnDefinition Width="24"/>
+                    <ColumnDefinition Width="170"/><ColumnDefinition Width="100"/>
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Text="每页候选数量" VerticalAlignment="Center"/>
+                  <ComboBox x:Name="CandidateCountBox" Grid.Column="1" SelectedValuePath="Content">
+                    <ComboBoxItem Content="3"/><ComboBoxItem Content="4"/><ComboBoxItem Content="5"/>
+                    <ComboBoxItem Content="6"/><ComboBoxItem Content="7"/><ComboBoxItem Content="8"/>
+                    <ComboBoxItem Content="9"/>
+                  </ComboBox>
+                  <TextBlock Grid.Column="3" Text="候选字体大小" VerticalAlignment="Center"/>
+                  <ComboBox x:Name="CandidateFontSizeBox" Grid.Column="4" SelectedValuePath="Content">
+                    <ComboBoxItem Content="14"/><ComboBoxItem Content="16"/><ComboBoxItem Content="18"/>
+                    <ComboBoxItem Content="19"/><ComboBoxItem Content="20"/><ComboBoxItem Content="22"/>
+                    <ComboBoxItem Content="24"/><ComboBoxItem Content="26"/><ComboBoxItem Content="28"/>
+                    <ComboBoxItem Content="30"/><ComboBoxItem Content="32"/>
+                  </ComboBox>
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionStyle}">
+              <StackPanel>
+                <TextBlock Text="中文标点" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="选择中文模式下标点符号的输出方式。" Style="{StaticResource SectionDescriptionStyle}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                  <RadioButton x:Name="FullWidthBox" Content="全角中文标点" GroupName="Punctuation"
+                               Style="{StaticResource SegmentRadioStyle}" Margin="0,0,8,0"/>
+                  <RadioButton x:Name="HalfWidthBox" Content="半角标点" GroupName="Punctuation"
+                               Style="{StaticResource SegmentRadioStyle}"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+
+        <ScrollViewer x:Name="InputPage" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+          <StackPanel>
+            <TextBlock Text="输入方案" Style="{StaticResource PageTitleStyle}"/>
+            <TextBlock Text="选择拼音输入方式，并配置容错规则。" Style="{StaticResource PageDescriptionStyle}"/>
+
+            <Border Style="{StaticResource SectionStyle}" Margin="0,24,0,16">
+              <StackPanel>
+                <TextBlock Text="拼音模式" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="更改后保存，重新切换到本输入法即可生效。" Style="{StaticResource SectionDescriptionStyle}"/>
+                <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                  <RadioButton x:Name="QuanpinBox" Content="全拼" GroupName="InputSchema"
+                               Style="{StaticResource SegmentRadioStyle}" Margin="0,0,8,0"/>
+                  <RadioButton x:Name="ShuangpinBox" Content="双拼" GroupName="InputSchema"
+                               Style="{StaticResource SegmentRadioStyle}"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionStyle}">
+              <StackPanel>
+                <TextBlock Text="模糊拼音" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="输入不准确时仍尝试恢复合理候选。" Style="{StaticResource SectionDescriptionStyle}"/>
+                <CheckBox x:Name="FuzzyEnabledBox" Content="启用模糊拼音" Margin="0,18,0,4"
+                          Checked="FuzzyEnabled_Changed" Unchecked="FuzzyEnabled_Changed"/>
+                <StackPanel x:Name="FuzzyChildren" Margin="24,6,0,0">
+                  <CheckBox x:Name="FuzzyInitialsBox" Content="声母容错，例如 zh / z、n / l"/>
+                  <CheckBox x:Name="FuzzyFinalsBox" Content="韵母容错，例如 ang / an" Margin="0,5,0,0"/>
+                  <CheckBox x:Name="FuzzyMissingVowelBox" Content="漏元音恢复" Margin="0,5,0,0"/>
+                </StackPanel>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+
+        <Grid x:Name="PhrasePage" Visibility="Collapsed">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+          <StackPanel>
+            <TextBlock Text="自定义短语" Style="{StaticResource PageTitleStyle}"/>
+            <TextBlock Text="让常用地址、签名或固定文本按输入码出现在指定候选位置。" Style="{StaticResource PageDescriptionStyle}"/>
+          </StackPanel>
+          <Grid Grid.Row="1" Margin="0,24,0,14">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <TextBox x:Name="PhraseSearchBox" MaxWidth="360" HorizontalAlignment="Left" Width="340"
+                     ToolTip="搜索输入码或短语" TextChanged="PhraseSearchBox_TextChanged"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+              <Button Content="添加短语" Style="{StaticResource PrimaryButtonStyle}" Click="AddPhrase_Click"/>
+              <Button Content="编辑" Margin="8,0,0,0" Click="EditPhrase_Click"/>
+              <Button Content="删除" Margin="8,0,0,0" Style="{StaticResource DangerButtonStyle}" Click="DeletePhrase_Click"/>
+            </StackPanel>
+          </Grid>
+          <Border Grid.Row="2" Background="White" BorderBrush="{StaticResource BorderBrush}"
+                  BorderThickness="1" CornerRadius="8">
+            <Grid>
+              <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+              <DataGrid x:Name="PhraseGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                        SelectionMode="Single" SelectionUnit="FullRow" BorderThickness="0"
+                        MouseDoubleClick="PhraseGrid_MouseDoubleClick">
+                <DataGrid.Columns>
+                  <DataGridTextColumn Header="输入码" Binding="{Binding Code}" Width="150"/>
+                  <DataGridTextColumn Header="候选位置" Binding="{Binding Position}" Width="110"/>
+                  <DataGridTextColumn Header="短语内容" Binding="{Binding Phrase}" Width="*"/>
+                </DataGrid.Columns>
+              </DataGrid>
+              <Grid Grid.Row="1" Margin="16,12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="PhraseCountText" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                  <Button Content="导入" Click="ImportPhrases_Click"/>
+                  <Button Content="导出" Margin="8,0,0,0" Click="ExportPhrases_Click"/>
+                  <Button Content="清空" Margin="8,0,0,0" Style="{StaticResource DangerButtonStyle}" Click="ClearPhrases_Click"/>
+                </StackPanel>
+              </Grid>
+            </Grid>
+          </Border>
+        </Grid>
+
+        <ScrollViewer x:Name="DictionaryPage" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+          <StackPanel>
+            <TextBlock Text="词库与隐私" Style="{StaticResource PageTitleStyle}"/>
+            <TextBlock Text="管理自动学习词、系统词库和诊断选项。" Style="{StaticResource PageDescriptionStyle}"/>
+
+            <Border Style="{StaticResource SectionStyle}" Margin="0,24,0,16">
+              <StackPanel>
+                <TextBlock Text="用户学习词" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock x:Name="UserDictionaryText" Style="{StaticResource SectionDescriptionStyle}"/>
+                <CheckBox x:Name="LearningBox" Content="启用用户词学习" Margin="0,16,0,12"/>
+                <WrapPanel>
+                  <Button Content="导入" Click="ImportUserDictionary_Click"/>
+                  <Button Content="导出" Margin="8,0,0,0" Click="ExportUserDictionary_Click"/>
+                  <Button Content="打开目录" Margin="8,0,0,0" Click="OpenUserDictionary_Click"/>
+                  <Button Content="清空" Margin="8,0,0,0" Style="{StaticResource DangerButtonStyle}" Click="ClearUserDictionary_Click"/>
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionStyle}">
+              <StackPanel>
+                <TextBlock Text="系统词库" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock x:Name="PackageText" Style="{StaticResource SectionDescriptionStyle}"/>
+                <TextBox x:Name="LexiconPathBox" IsReadOnly="True" Margin="0,14,0,12"/>
+                <WrapPanel>
+                  <Button Content="打开系统词库" Click="OpenLexicon_Click"/>
+                  <Button Content="刷新状态" Margin="8,0,0,0" Click="Refresh_Click"/>
+                </WrapPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionStyle}">
+              <StackPanel>
+                <TextBlock Text="诊断日志" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="日志可能包含输入内容，仅在排查问题时短暂开启。密码等敏感上下文不会学习。"
+                           Foreground="{StaticResource DangerBrush}" FontSize="13" TextWrapping="Wrap"/>
+                <CheckBox x:Name="ContentLoggingBox" Content="启用内容日志" Foreground="{StaticResource DangerBrush}"
+                          Margin="0,14,0,0"/>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
+
+      <Border Grid.Row="1" Background="White" BorderBrush="{StaticResource BorderBrush}"
+              BorderThickness="0,1,0,0" Padding="24,14">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock x:Name="StatusText" Foreground="{StaticResource TextSecondaryBrush}"
+                     TextWrapping="Wrap" VerticalAlignment="Center"/>
+          <StackPanel Grid.Column="1" Orientation="Horizontal">
+            <Button Content="关闭" Width="88" Click="Close_Click"/>
+            <Button Content="保存设置" Width="110" Margin="8,0,0,0"
+                    Style="{StaticResource PrimaryButtonStyle}" Click="Save_Click"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
   </Grid>
 </Window>

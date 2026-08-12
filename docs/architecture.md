@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-交付可在 Windows 11 安装启用的本地拼音输入法骨架，支持全拼输入、候选选择、基础学习接口，默认离线。
+交付可在 Windows 11 安装启用的本地拼音输入法，支持全拼/双拼、候选选择、自定义短语、用户学习和本地设置，默认离线。
 
 ## 2. 模块划分
 
@@ -36,12 +36,13 @@
 ### 2.3 数据层
 
 - `base_dict.txt`：系统词库
-- `user_dict.txt`：用户词库
-- 运行时从 `ShuruIme.dll` 旁 `data/lexicon` 加载
+- `user_dict.txt`：自动学习词，位于当前用户目录
+- `custom_phrases.txt`：自定义短语，位于当前用户目录
+- 系统词库从版本化的 `%ProgramData%\FacaiPinyin\data\lexicon` 加载
 
 ### 2.4 设置层（`settings`）
 
-WPF 程序，读取注册表 CLSID 检查安装状态，打开词库目录。高级开关先占位。
+WPF 程序分为常规设置、输入方案、自定义短语、词库与隐私四页。用户界面只显示“全拼 / 双拼”。设置与短语均使用临时文件写通后原子替换；自定义短语还使用跨进程互斥，避免输入法与设置程序并发读写产生半文件。
 
 ## 3. 按键状态机（简化）
 
@@ -67,12 +68,12 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 
 - `ShuruIme.dll`：TSF 文本服务
 - `engine_playground.exe`：C++ 引擎演练
-- `ShuruSettings.exe`：设置
+- `ShuruSettings.exe`、`ShuruSettings.dll`、`.deps.json`、`.runtimeconfig.json`：设置程序
 - `EnginePlayground`（C#）：无 MSVC 时的词库验证
 
 ## 5. 风险与后续
 
-- 光标跟随目前用 `GetCaretPos` 近似，复杂控件需 `ITfContextView::GetTextExt`
+- 光标跟随优先使用合法只读 edit session + `ITfContextView::GetTextExt`，复杂宿主仍需兼容性矩阵验证
 - 未做代码签名，部分环境可能拦截
 - 词库规模与语言模型直接决定“好用”程度
 - 需真机矩阵：Notepad、Word、Chrome、WinUI、终端、全屏游戏
@@ -106,11 +107,6 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 - 加载时建立 `jianpin -> [full_pinyin...]` 索引
 - 例：`srf`→输入法，`zm`→怎么，`nh`→你好等
 
-### 当前注册产物
-
-- 优先 `dist\ShuruImeN.dll` 最高版本（本轮为 ShuruIme7.dll）
-
-
 ## 8. Phase 1 增强
 
 ### Display Attribute
@@ -119,7 +115,8 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 - 组合 range 写 `GUID_PROP_ATTRIBUTE`（蓝色下划线，`TF_ATTR_INPUT`）
 
 ### 状态栏 / 软键盘
-- 右下角状态条：中/英切换、软键盘开关
+- 右下角状态条：中/英、全/双、软键盘和设置四个区域
+- 左键“设”直接打开同版本设置程序；右键任意区域显示“输入法设置”菜单
 - 软键盘：26 键 + 空格/退格/Esc；`SendInput` 注入；快捷键 F9
 
 ### 光标跟随
@@ -148,3 +145,11 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 - SharedEngine：词库/引擎只加载一次
 - SharedStatusUi：每个 TSF UI 线程只创建一套状态栏和软键盘；同一线程内由
   Bind/Unbind 绑定当前前台 TextService，不同 UI 线程互不抢占 F9 软键盘回调
+
+## 10. 自定义短语
+
+- 文件：`%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`
+- 格式：`输入码<TAB>短语<TAB>候选位置`
+- 输入码精确匹配后按 1–9 的指定位置插入；位置冲突按文件顺序向后顺延
+- 自定义短语不参与自动学习，不写入 `user_dict.txt`
+- 输入法重新激活时发布新的只读短语快照，正在查询的线程继续使用旧快照

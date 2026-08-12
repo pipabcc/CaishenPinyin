@@ -27,7 +27,7 @@ powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
 
 ## 编译与测试 IME
 
-唯一正式入口为 `scripts\build.ps1`；脚本会激活 `tools\env.ps1`，完成 CMake 配置、编译和完整 CTest。开发者无需单独调用 CMake 或 CTest。
+唯一正式入口为 `scripts\build.ps1`；脚本会激活 `tools\env.ps1`，先构建 WPF 设置程序，再完成 CMake 配置、编译和完整 CTest。开发者无需单独调用 CMake 或 CTest。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
@@ -38,7 +38,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Re
 - `build-release\ShuruIme.dll`
 - `build-release\engine_playground.exe`
 - `build-release\data\lexicon\*.txt`
-- `artifacts\release\ShuruIme.dll`、词库及 `release-manifest.json`
+- `artifacts\release\ShuruIme.dll`
+- `artifacts\release\ShuruSettings.exe`、`ShuruSettings.dll`、`.deps.json`、`.runtimeconfig.json`
+- `artifacts\release\data\lexicon\*` 与 `release-manifest.json`
 
 可选参数：`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required`、`-NoPackage`。正式发布必须使用 `-SigningPolicy Required`；只需本地编译测试时可使用 `-NoPackage`。
 
@@ -51,13 +53,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Re
 dotnet build settings\ShuruSettings.csproj -c Release
 ```
 
-## 注册
+## 安装与注册
 
 管理员：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\register_ime.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
+  -Action Install `
+  -DllPath artifacts\release\ShuruIme.dll `
+  -SettingsPath artifacts\release `
+  -PackagePath artifacts\release\data\lexicon `
+  -Version 0.4.1 `
+  -HealthCheckExe build-release\release_health_check.exe
 ```
+
+该入口会校验发布清单、注册 DLL、部署设置程序并创建公共开始菜单快捷方式。开发阶段只需重新注册单个 DLL 时，才使用 `scripts\register_ime.ps1`。
 
 ## 日志
 
@@ -67,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File scripts\register_ime.ps1
 
 `p1_engine` 报告文本/缓存加载耗时、缓存大小以及查询 P50/P95/P99。阈值采用相对加载时间和宽松 P99 上限：
 
-该测试已包含在正式入口执行的完整 CTest 中。需要排查单项时，可在一次正式构建后运行：
+性能、设置、自定义短语、部署、状态栏及 TSF 编辑会话测试均包含在正式入口执行的完整 CTest 中。`tsf_e2e_core` 使用 `TF_TMAE_NOACTIVATETIP` 隔离机器上已安装的输入法版本。需要排查单项时，可在一次正式构建后运行：
 
 ```powershell
 ctest --test-dir build-release -C Release -R p1_engine -V

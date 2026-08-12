@@ -1,6 +1,6 @@
 # 发财拼音（Facai Pinyin）
 
-Windows 11 本地拼音输入法。Phase 0 目标：可安装的 TSF 文本服务 + 全拼候选 + 基础词库 + 设置占位。
+Windows 11 本地拼音输入法，包含 TSF 文本服务、拼音引擎、候选窗口、系统词库和独立设置程序。
 
 ## 当前状态
 
@@ -9,10 +9,10 @@ Windows 11 本地拼音输入法。Phase 0 目标：可安装的 TSF 文本服�
 | TSF 输入法 DLL 源码 | 已就绪（需 MSVC 编译） |
 | 拼音引擎 / 词库 | 已就绪（约 20 万基础中文词 + 完整单字库） |
 | 候选窗 | 已就绪（Win32 无焦点窗） |
-| 设置程序 (WPF) | P0/P1 设置、词库状态及用户词管理已连接运行时 |
+| 设置程序 (WPF) | 常规、全拼/双拼、自定义短语、词库与隐私设置已连接运行时 |
 | C# 引擎演练 | 可运行 |
 | 本机 C++ 工具链 | **已安装到 E:\\shurufa\\tools，可编译** |
-| 发布版本 | **0.3.0**（中英混输 + 有界纠错 + 时间快捷输入 + 安全计算器） |
+| 发布版本 | **0.4.1**（现代化设置、自定义短语、开始菜单与状态栏设置入口） |
 
 ## 架构
 
@@ -40,6 +40,8 @@ Windows 11 本地拼音输入法。Phase 0 目标：可安装的 TSF 文本服�
 - 组合输入时单独按 `Shift`：上屏原始拼音；无组合时单独按 `Shift`：切换中英文
 - `Ctrl+Space`：中英切换
 - `←/→`：切换候选
+- `F9`：开关软键盘
+- 组合输入时按 `F10`：切换全拼/双拼
 
 ## 开发环境要求
 
@@ -64,15 +66,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Re
 
 默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。可用 `-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage` 显式调整；正式发布应使用 `-SigningPolicy Required`。
 
-## 注册输入法
+## 安装与注册
 
-管理员 PowerShell：
+先完成正式构建，再在管理员 PowerShell 中安装发布包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\register_ime.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
+  -Action Install `
+  -DllPath artifacts\release\ShuruIme.dll `
+  -SettingsPath artifacts\release `
+  -PackagePath artifacts\release\data\lexicon `
+  -Version 0.4.1 `
+  -HealthCheckExe build-release\release_health_check.exe
 ```
 
-然后：`设置 → 时间和语言 → 语言和区域 → 中文(简体) → 语言选项 → 添加键盘`，选择 **发财拼音**。
+安装后可从开始菜单打开“发财拼音设置”，也可左键状态栏的“设”，或右键状态栏选择“输入法设置”。
 
 卸载：
 
@@ -106,11 +114,11 @@ nihao	你好	9000
 - `docs/deployment.md`
 - `docs/privacy-input-policy.md`
 
-`user_dict.txt` 始终保存在 `%LOCALAPPDATA%`，升级流程不会覆盖。
+`user_dict.txt` 和 `custom_phrases.txt` 始终保存在 `%LOCALAPPDATA%`，升级流程不会覆盖。
 
 ## 设置与生效
 
-设置保存在 `%LOCALAPPDATA%\FacaiPinyin\settings.ini`，采用同目录临时文件 + 原子替换，无需管理员权限。设置程序可控制学习、内容日志（默认关闭）、模糊音子项、全/半角标点、候选数量和字体，并可校验系统词库包、导入/导出/清空用户词。保存后切换到其他输入法再切回；下一 TSF 实例会重新读取设置。宿主中的候选窗字体对象可能需新建候选窗后才体现。
+设置保存在 `%LOCALAPPDATA%\FacaiPinyin\settings.ini`，采用同目录临时文件 + 原子替换，无需管理员权限。设置程序可控制全拼/双拼、学习、内容日志（默认关闭）、模糊拼音、全/半角标点、候选数量和字体，并可管理系统词库、自动学习词及自定义短语。自定义短语保存在 `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`，格式为 `输入码<TAB>短语<TAB>候选位置`。保存后切换到其他输入法再切回即可生效。
 
 ## 下一步（Phase 1）
 

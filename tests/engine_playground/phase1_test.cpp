@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -113,6 +114,20 @@ int wmain(int argc, wchar_t** argv) {
     if (cleanup_error ||
         !SetEnvironmentVariableW(L"LOCALAPPDATA", test_local_app_data.c_str())) return 12;
 
+    const fs::path custom_phrase_path = test_local_app_data / L"FacaiPinyin" /
+        L"data" / L"lexicon" / L"custom_phrases.txt";
+    fs::create_directories(custom_phrase_path.parent_path(), cleanup_error);
+    if (cleanup_error) return 20;
+    {
+        std::ofstream custom_phrase_file(
+            custom_phrase_path, std::ios::binary | std::ios::trunc);
+        custom_phrase_file << "\xEF\xBB\xBF# custom phrase test\n"
+                           << "sds\t" << WideToUtf8(L"深度思考") << "\t1\n"
+                           << "sds\t" << WideToUtf8(L"认真思考") << "\t1\n"
+                           << "sds\t" << WideToUtf8(L"延长思考") << "\t3\n";
+        if (!custom_phrase_file) return 20;
+    }
+
     {
         PinyinEngine engine;
         if (!engine.Initialize(lexicon)) {
@@ -126,6 +141,31 @@ int wmain(int argc, wchar_t** argv) {
             !VerifyCandidate(engine, "sunguo", L"孙国") ||
             !VerifyCandidate(engine, "shurufa", L"输入法")) {
             return 2;
+        }
+
+        const auto custom_phrases = engine.Query("sds", 9);
+        if (custom_phrases.candidates.size() < 3 ||
+            custom_phrases.candidates[0].text != L"深度思考" ||
+            custom_phrases.candidates[1].text != L"认真思考" ||
+            custom_phrases.candidates[2].text != L"延长思考" ||
+            custom_phrases.candidates[0].learnable ||
+            custom_phrases.candidates[0].from_user ||
+            custom_phrases.candidates[0].source != CandidateSource::CustomPhrase) {
+            std::cerr << "custom phrase position or metadata failed\n";
+            return 20;
+        }
+
+        {
+            std::ofstream custom_phrase_file(
+                custom_phrase_path, std::ios::binary | std::ios::trunc);
+            custom_phrase_file << "sds\t" << WideToUtf8(L"重新加载短语") << "\t2\n";
+        }
+        if (!engine.ReloadCustomPhrases()) return 21;
+        const auto reloaded_phrases = engine.Query("sds", 9);
+        if (reloaded_phrases.candidates.size() < 2 ||
+            reloaded_phrases.candidates[1].text != L"重新加载短语") {
+            std::cerr << "custom phrase reload failed\n";
+            return 21;
         }
 
 

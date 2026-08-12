@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace {
@@ -141,6 +142,26 @@ int wmain(int argc, wchar_t** argv) {
         L"lexicon" / L"user_dict.txt";
     if (!SamePath(engine.user_dict_path(), expected_user_dict.wstring())) {
         std::fwprintf(stderr, L"health-check user dictionary is not isolated\n");
+        return 1;
+    }
+    const std::filesystem::path custom_phrase_path =
+        isolated_user_data.directory() / L"FacaiPinyin" / L"data" /
+        L"lexicon" / L"custom_phrases.txt";
+    std::filesystem::create_directories(custom_phrase_path.parent_path());
+    {
+        std::ofstream phrases(custom_phrase_path, std::ios::binary | std::ios::trunc);
+        phrases << "sds\t\xE6\xB7\xB1\xE5\xBA\xA6\xE6\x80\x9D\xE8\x80\x83\t1\n";
+    }
+    if (!engine.ReloadCustomPhrases()) {
+        std::fwprintf(stderr, L"custom phrase reload failed\n");
+        return 1;
+    }
+    const auto custom_phrase_result = engine.Query("sds", 9);
+    if (custom_phrase_result.candidates.empty() ||
+        custom_phrase_result.candidates.front().text != L"深度思考" ||
+        custom_phrase_result.candidates.front().learnable ||
+        custom_phrase_result.candidates.front().from_user) {
+        std::fwprintf(stderr, L"custom phrase query failed\n");
         return 1;
     }
 

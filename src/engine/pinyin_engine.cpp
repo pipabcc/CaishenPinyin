@@ -108,6 +108,7 @@ int SourcePriority(const Candidate& candidate) {
     case CandidateSource::Fuzzy: return 7;
     case CandidateSource::English: return 8;
     case CandidateSource::LiteralMixed: return 9;
+    case CandidateSource::CustomPhrase: return 0;
     case CandidateSource::Raw: return 10;
     }
     return 10;
@@ -195,6 +196,11 @@ std::wstring PinyinEngine::user_dict_path() const {
     return user_dict_path_;
 }
 
+std::wstring PinyinEngine::custom_phrase_path() const {
+    CsGuard guard(&lock_);
+    return custom_phrase_path_;
+}
+
 DWORD WINAPI PinyinEngine::SaveThreadProc(LPVOID param) {
     auto* self = static_cast<PinyinEngine*>(param);
     if (self == nullptr || self->save_event_ == nullptr) {
@@ -232,9 +238,11 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     // 加载成功后仅用一次短临界区发布完整快照，查询线程要么看到旧状态，要么看到新状态。
     std::shared_ptr<LexiconSnapshot> loaded_lexicon;
     std::shared_ptr<UserLexiconSnapshot> loaded_user_lexicon;
+    std::shared_ptr<CustomPhraseDictionary> loaded_custom_phrases;
     try {
         loaded_lexicon = std::make_shared<LexiconSnapshot>();
         loaded_user_lexicon = std::make_shared<UserLexiconSnapshot>();
+        loaded_custom_phrases = std::make_shared<CustomPhraseDictionary>();
     } catch (...) {
         SHURU_LOG_ERROR("PinyinEngine init allocation failed; previous snapshot retained");
         return false;
@@ -245,6 +253,7 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     const std::wstring base = lexicon_dir + L"\\base_dict.txt";
     const std::wstring legacy_user_dict_path = lexicon_dir + L"\\user_dict.txt";
     const std::wstring loaded_user_dict_path = GetWritableUserDictPath(lexicon_dir);
+    const std::wstring loaded_custom_phrase_path = GetCustomPhrasePath(lexicon_dir);
     const bool user_path_private = EnsureCurrentUserOnlyPath(loaded_user_dict_path, false);
     if (!user_path_private) {
         SHURU_LOG_WARN("user dictionary ACL hardening unavailable; learning writes disabled");
@@ -281,6 +290,11 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         SHURU_LOG_INFO("user dict not found, will create on learn");
     }
 
+    if (!loaded_custom_phrases->LoadFromFile(loaded_custom_phrase_path)) {
+        SHURU_LOG_WARN("custom phrase file could not be read; using empty snapshot");
+        loaded_custom_phrases = std::make_shared<CustomPhraseDictionary>();
+    }
+
     if (!base_ok) {
         // 失败不清空已发布快照：宿主可继续使用旧词库，后台稍后重试加载。
         SHURU_LOG_ERROR("PinyinEngine init failed; previous snapshot retained");
@@ -297,15 +311,38 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         // 均在锁外执行，因此多个 TextService 查询不会彼此串行等待。
         lexicon_ = std::move(loaded_lexicon);
         user_lexicon_ = std::move(loaded_user_lexicon);
+        custom_phrases_ = std::move(loaded_custom_phrases);
         user_dict_revision_ = 0;
         lexicon_dir_ = lexicon_dir;
         user_dict_path_ = loaded_user_dict_path;
+        custom_phrase_path_ = loaded_custom_phrase_path;
         user_dict_writable_ = user_path_private;
         ready_ = true;
         fuzzy_enabled = fuzzy_enabled_;
     }
     SHURU_LOG_INFO("PinyinEngine ready, dict_size=%zu jianpin=%zu fuzzy=%d",
                    dictionary_size, jianpin_size, fuzzy_enabled ? 1 : 0);
+    return true;
+}
+
+bool PinyinEngine::ReloadCustomPhrases() {
+    std::wstring path;
+    {
+        CsGuard guard(&lock_);
+        path = custom_phrase_path_.empty() ? GetCustomPhrasePath(lexicon_dir_) : custom_phrase_path_;
+    }
+    std::shared_ptr<CustomPhraseDictionary> loaded;
+    try {
+        loaded = std::make_shared<CustomPhraseDictionary>();
+    } catch (...) {
+        return false;
+    }
+    if (!loaded->LoadFromFile(path)) return false;
+    {
+        CsGuard guard(&lock_);
+        custom_phrases_ = std::move(loaded);
+        custom_phrase_path_ = path;
+    }
     return true;
 }
 
@@ -404,13 +441,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     if (limit == 0) return result;
     std::shared_ptr<LexiconSnapshot> lexicon;
     std::shared_ptr<UserLexiconSnapshot> user_lexicon;
+    std::shared_ptr<CustomPhraseDictionary> custom_phrases;
     const bool fuzzy_enabled = options.fuzzy_enabled;
     FuzzyConfig fuzzy_config = options.fuzzy_config;
     const InputSchema schema = options.schema;
     {
         CsGuard guard(&lock_);
         if (!ready_ || !lexicon_ || !user_lexicon_) return result;
-        lexicon = lexicon_; user_lexicon = user_lexicon_;
+        lexicon = lexicon_; user_lexicon = user_lexicon_; custom_phrases = custom_phrases_;
     }
 
     if (schema == InputSchema::Quanpin && IsCalculatorInput(raw_input) &&
@@ -797,6 +835,11 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
         if (combined.size() > limit) combined.resize(limit);
         pool = std::move(combined);
+    }
+    if (custom_phrases) {
+        InsertCustomPhraseCandidates(
+            custom_phrases->LookupExact(normalized), normalized,
+            raw_input.size(), limit, &pool);
     }
     for(const auto& c:pool) result.matched_pinyin_len=(std::max)(result.matched_pinyin_len,c.covered_input_len);
     result.candidates=std::move(pool); return result;

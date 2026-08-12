@@ -7,7 +7,7 @@
 
 namespace shuru {
 
-// 右下角状态条：中/英 + 软键盘开关
+// 右下角状态条：中/英、全/双、软键盘和设置入口。
 class StatusWindow {
 public:
     using ToggleKeyboardFn = std::function<void()>;
@@ -29,6 +29,7 @@ public:
     void SetShuangpinMode(bool shuangpin);
     void SetKeyboardOpen(bool open);
     bool IsKeyboardOpen() const { return keyboard_open_; }
+    bool IsVisible() const { return visible_; }
 
     void SetToggleKeyboardHandler(ToggleKeyboardFn fn) { on_toggle_keyboard_ = std::move(fn); }
     void SetToggleModeHandler(ToggleModeFn fn) { on_toggle_mode_ = std::move(fn); }
@@ -37,7 +38,7 @@ public:
     bool PostOwnerThreadTask(UINT task) const noexcept;
 
 private:
-    static constexpr int kBaseWidth = 168;
+    static constexpr int kBaseWidth = 216;
     static constexpr int kBaseHeight = 36;
 
     HWND hwnd_ = nullptr;

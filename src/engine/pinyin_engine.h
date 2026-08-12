@@ -1,6 +1,7 @@
 #pragma once
 
 #include "candidate.h"
+#include "custom_phrase.h"
 #include "dictionary.h"
 #include "english_dict.h"
 #include "fuzzy_pinyin.h"
@@ -57,11 +58,13 @@ public:
     bool ExportUserDictionary(const std::wstring& path) const;
     bool ImportUserDictionary(const std::wstring& path);
     bool ClearUserDictionary();
+    bool ReloadCustomPhrases();
 
     static bool IsPinyinLetter(wchar_t ch);
     static std::string NormalizeInput(const std::string& input);
 
     std::wstring user_dict_path() const;
+    std::wstring custom_phrase_path() const;
 
 private:
     struct LexiconSnapshot {
@@ -81,6 +84,7 @@ private:
 
     std::shared_ptr<LexiconSnapshot> lexicon_;
     std::shared_ptr<UserLexiconSnapshot> user_lexicon_;
+    std::shared_ptr<CustomPhraseDictionary> custom_phrases_;
     bool ready_ = false;
     bool fuzzy_enabled_ = true;
     FuzzyConfig fuzzy_config_ {};
@@ -90,6 +94,7 @@ private:
     mutable CRITICAL_SECTION lock_ {};
     bool lock_ready_ = false;
     std::wstring user_dict_path_;
+    std::wstring custom_phrase_path_;
     std::wstring lexicon_dir_;
     HANDLE save_event_ = nullptr;
     HANDLE save_thread_ = nullptr;

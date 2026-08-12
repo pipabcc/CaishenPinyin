@@ -36,9 +36,24 @@ void RunUiThread(UiThreadContext* context) {
     DWORD owner_thread_id = 0;
     const bool acquired = shuru::SharedStatusUi::Acquire(context->instance, &owner_thread_id);
     const bool owner_matches = acquired && owner_thread_id == GetCurrentThreadId();
+    if (owner_matches) {
+        shuru::SharedStatusUi::Show();
+    }
+
+    HWND status_window = nullptr;
+    EnumThreadWindows(GetCurrentThreadId(), [](HWND window, LPARAM output) {
+        wchar_t class_name[64] {};
+        if (GetClassNameW(window, class_name, ARRAYSIZE(class_name)) > 0 &&
+            wcscmp(class_name, L"ShuruStatusWindowClass") == 0) {
+            *reinterpret_cast<HWND*>(output) = window;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&status_window));
+    const bool status_visible = status_window != nullptr && IsWindowVisible(status_window) != FALSE;
 
     context->owner_thread_id.store(owner_thread_id, std::memory_order_release);
-    context->ok.store(owner_matches, std::memory_order_release);
+    context->ok.store(owner_matches && status_visible, std::memory_order_release);
     SetEvent(context->ready);
 
     if (owner_matches) {
