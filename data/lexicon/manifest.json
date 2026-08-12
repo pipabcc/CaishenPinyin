@@ -1,0 +1,59 @@
+{
+  "packageId": "facai-pinyin-system-lexicon",
+  "schemaVersion": "1",
+  "version": "1.1.0",
+  "frequencyPolicy": {
+    "min": 0,
+    "max": 50000000
+  },
+  "files": [
+    {
+      "path": "base_dict.txt",
+      "kind": "chinese",
+      "source": "rime-ice cn_dicts/base.dict.yaml commit 569ff3bc65dd4aec0a26b33c49c8bbdfa8b5fd57 plus project custom_dict.txt",
+      "license": "GPL-3.0-only",
+      "entries": 200016,
+      "sha256": "9f229b8fe2cdf16871c23c4bab17b2b4e21c95225ce77f8652a61d10bc24873c"
+    },
+    {
+      "path": "char_dict.txt",
+      "kind": "chinese",
+      "source": "project-generated from base_dict.txt with scripts/build_char_dict.py",
+      "license": "GPL-3.0-only",
+      "entries": 27291,
+      "sha256": "5a54e71ccf5076d8c4e32602d5d96fe619a79f8f6a59d1201f632bdb67c45825"
+    },
+    {
+      "path": "en_dict.txt",
+      "kind": "english",
+      "source": "project-generated with scripts/build_en_dict.py; see docs/lexicon-governance.md",
+      "license": "NOASSERTION",
+      "entries": 34868,
+      "sha256": "c084eef93a9592e5572faed54a348c349f2b5bca8f70db795b0bf96e3c63b23f"
+    },
+    {
+      "path": "base_dict.txt.bin",
+      "kind": "binary-cache",
+      "source": "validated derived cache of base_dict.txt",
+      "license": "GPL-3.0-only",
+      "entries": 0,
+      "sha256": "f5e87121330b51e3bfce1053b3e0ab0b097439ee98dc37cda70e18926de56536"
+    },
+    {
+      "path": "char_dict.txt.bin",
+      "kind": "binary-cache",
+      "source": "validated derived cache of char_dict.txt",
+      "license": "GPL-3.0-only",
+      "entries": 0,
+      "sha256": "a7e06720d2c487136cb0d79e5f9788e1f52ed752f9fc469de31acb7c9100568a"
+    },
+    {
+      "path": "GPL-3.0.txt",
+      "kind": "license",
+      "source": "rime-ice LICENSE at pinned commit",
+      "license": "GPL-3.0-only",
+      "entries": 0,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    }
+  ]
+}

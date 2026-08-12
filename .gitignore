@@ -1,0 +1,42 @@
+build*/
+out/
+artifacts/
+dist/
+.vs/
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.obj
+*.pdb
+*.ilk
+*.dll
+*.exe
+*.exp
+*.lib
+*.log
+settings/bin/
+settings/obj/
+**/bin/
+**/obj/
+.DS_Store
+
+.dotnet_home/
+.nuget_packages/
+
+# 本机开发工具链体积很大，只保留环境入口脚本。
+tools/*
+!tools/env.ps1
+
+# 本地运行、测试和外部工具状态。
+.postman/
+postman/
+userdata/
+*.exit
+*-exit.txt
+*-result.txt
+/1
+
+# 用户学习数据不属于系统词库或源码。
+data/lexicon/user_dict.txt

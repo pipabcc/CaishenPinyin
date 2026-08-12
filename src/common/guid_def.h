@@ -1,0 +1,26 @@
+#pragma once
+
+#include <guiddef.h>
+
+// 文本服务 CLSID：{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}
+static const GUID CLSID_ShuruTextService = {
+    0x7c4e9f2a, 0x1b3d, 0x4a8e,
+    {0x9f, 0x6c, 0x2d, 0x5e, 0x8b, 0x1a, 0x4c, 0x7f}};
+
+// 语言配置文件 GUID：{3A8B5C2E-9D1F-4E6A-B7C8-5D2E9F1A3B6C}
+static const GUID GUID_ShuruProfile = {
+    0x3a8b5c2e, 0x9d1f, 0x4e6a,
+    {0xb7, 0xc8, 0x5d, 0x2e, 0x9f, 0x1a, 0x3b, 0x6c}};
+
+// 组合显示属性 GUID：{91D2E4F8-6A5B-4C3D-8E7F-1A2B3C4D5E6F}
+static const GUID GUID_ShuruDisplayAttribute = {
+    0x91d2e4f8, 0x6a5b, 0x4c3d,
+    {0x8e, 0x7f, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f}};
+
+// InputScope.h 只声明该属性 GUID；本地保留值，避免依赖特定 SDK 对象库导出。
+static const GUID GUID_ShuruInputScopeProperty = {
+    0x1713dd5a, 0x68e7, 0x4a5b,
+    {0x9a, 0xf6, 0x59, 0x2a, 0x59, 0x5c, 0x77, 0x8d}};
+
+// zh-CN；用字面量避免依赖 Windows.h 的 LANGID  typedef 顺序
+static const unsigned short SHURU_LANGID = 0x0804;
