@@ -110,7 +110,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("generate", "validate")); parser.add_argument("--dir", default="data/lexicon")
     parser.add_argument("--manifest", default="data/lexicon/manifest.json"); parser.add_argument("--package-id", default="facai-pinyin-system-lexicon")
-    parser.add_argument("--version", default="1.1.0"); parser.add_argument("--schema", default="1")
+    parser.add_argument("--version", default="1.2.0"); parser.add_argument("--schema", default="1")
     parser.add_argument("--min-frequency", type=int); parser.add_argument("--max-frequency", type=int)
     args = parser.parse_args(); directory, manifest_path = Path(args.dir), Path(args.manifest)
     try:

@@ -12,7 +12,7 @@
 生成并校验：
 
 ```powershell
-python scripts/lexicon_manifest.py generate --version 1.1.0 --max-frequency 50000000
+python scripts/lexicon_manifest.py generate --version 1.2.0 --max-frequency 50000000
 python scripts/lexicon_manifest.py validate
 ```
 

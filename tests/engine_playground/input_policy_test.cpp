@@ -40,6 +40,18 @@ int main() {
 
     CHECK(!DecideNumpadKey(VK_INSERT, false, "ni").handled);
     CHECK(!DecideNumpadKey('1', true, "ni").handled);
+    CHECK(DecideCalculatorKey('1', false, true).character == '1');
+    CHECK(DecideCalculatorKey('8', true, true).character == '*');
+    CHECK(DecideCalculatorKey('9', true, true).character == '(');
+    CHECK(DecideCalculatorKey('0', true, true).character == ')');
+    CHECK(DecideCalculatorKey(VK_OEM_PLUS, true, true).character == '+');
+    CHECK(DecideCalculatorKey(VK_OEM_MINUS, false, true).character == '-');
+    CHECK(DecideCalculatorKey(VK_OEM_2, false, true).character == '/');
+    CHECK(!DecideCalculatorKey(VK_OEM_2, true, true).handled);
+    CHECK(!DecideCalculatorKey(VK_OEM_PERIOD, true, true).handled);
+    CHECK(!DecideCalculatorKey(VK_OEM_MINUS, true, true).handled);
+    CHECK(DecideCalculatorKey(VK_NUMPAD7, false, true).character == '7');
+    CHECK(!DecideCalculatorKey(VK_NUMPAD7, false, false).handled);
     CHECK(DecideShiftTapAction(true, true, false) == ShiftTapAction::CommitRawComposition);
     CHECK(DecideShiftTapAction(true, false, false) == ShiftTapAction::ToggleEnglishMode);
     CHECK(DecideShiftTapAction(false, true, false) == ShiftTapAction::None);
@@ -60,6 +72,17 @@ int main() {
     CHECK(!shift_tap.Begin(true, true, false));
     shift_release = shift_tap.Release(true, false);
     CHECK(!shift_release.eaten && shift_release.action == ShiftTapAction::None);
+
+    // 对应 TextService 的完整 TSF 回调顺序，提交动作只能在最终 KeyUp 产生。
+    ShiftTapState shift_callbacks;
+    const bool test_key_down = shift_callbacks.Begin(true, false, false);
+    const bool key_down = shift_callbacks.ShouldEatKeyUp();
+    const ShiftTapRelease test_key_up = shift_callbacks.TestKeyUp(false);
+    const ShiftTapRelease key_up = shift_callbacks.KeyUp(true, false);
+    CHECK(test_key_down && key_down);
+    CHECK(test_key_up.eaten && test_key_up.action == ShiftTapAction::None);
+    CHECK(key_up.eaten && key_up.action == ShiftTapAction::CommitRawComposition);
+    CHECK(!shift_callbacks.HasPendingKey());
 
     InputScope sensitive[] = {IS_DEFAULT, IS_PASSWORD};
     InputScope normal[] = {IS_EMAIL_SMTPEMAILADDRESS};

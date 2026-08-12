@@ -1,9 +1,11 @@
 #include "pinyin_engine.h"
 
 #include "fuzzy_pinyin.h"
+#include "pinyin_correction.h"
 #include "pinyin_syllables.h"
 #include "pinyin_lattice.h"
 #include "shuangpin.h"
+#include "special_input.h"
 
 #include <Windows.h>
 #include <cstring>
@@ -96,16 +98,19 @@ bool IsSyllableAligned(const Candidate& candidate) {
 
 int SourcePriority(const Candidate& candidate) {
     switch (candidate.source) {
+    case CandidateSource::Dynamic: return 0;
     case CandidateSource::Exact: return 1;
-    case CandidateSource::Prefix: return 2;
-    case CandidateSource::WordGraph: return 3;
-    case CandidateSource::Jianpin: return 4;
-    case CandidateSource::Mixed: return 5;
-    case CandidateSource::Fuzzy: return 6;
-    case CandidateSource::English: return 7;
-    case CandidateSource::Raw: return 8;
+    case CandidateSource::WordGraph: return 2;
+    case CandidateSource::Correction: return 3;
+    case CandidateSource::Prefix: return 4;
+    case CandidateSource::Jianpin: return 5;
+    case CandidateSource::Mixed: return 6;
+    case CandidateSource::Fuzzy: return 7;
+    case CandidateSource::English: return 8;
+    case CandidateSource::LiteralMixed: return 9;
+    case CandidateSource::Raw: return 10;
     }
-    return 8;
+    return 10;
 }
 
 }  // namespace
@@ -358,6 +363,10 @@ std::string PinyinEngine::ResolveQueryPinyin(const std::string& raw_input, std::
 }
 
 std::wstring PinyinEngine::FormatComposingDisplay(const std::string& raw_input) const {
+    std::vector<MixedInputSegment> mixed_segments;
+    if (IsCalculatorInput(raw_input) || ParseMixedInput(raw_input, &mixed_segments)) {
+        return std::wstring(raw_input.begin(), raw_input.end());
+    }
     CsGuard guard(&lock_);
     std::string preview;
     ResolveQueryPinyin(raw_input, &preview);
@@ -403,6 +412,74 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         if (!ready_ || !lexicon_ || !user_lexicon_) return result;
         lexicon = lexicon_; user_lexicon = user_lexicon_;
     }
+
+    if (schema == InputSchema::Quanpin && IsCalculatorInput(raw_input) &&
+        raw_input.size() > 1) {
+        result.candidates = BuildCalculatorCandidates(raw_input);
+        if (!result.candidates.empty()) result.matched_pinyin_len = raw_input.size();
+        return result;
+    }
+
+    std::vector<MixedInputSegment> mixed_segments;
+    if (schema == InputSchema::Quanpin && ParseMixedInput(raw_input, &mixed_segments)) {
+        struct MixedPath {
+            std::wstring text;
+            double score = 0.0;
+        };
+        std::vector<MixedPath> paths(1);
+        for (const auto& segment : mixed_segments) {
+            if (segment.literal) {
+                for (auto& path : paths)
+                    path.text.append(segment.text.begin(), segment.text.end());
+                continue;
+            }
+            const auto segment_result = Query(segment.text, (std::min)(size_t{4}, limit), options);
+            std::vector<const Candidate*> choices;
+            for (const auto& candidate : segment_result.candidates) {
+                if (candidate.covered_input_len == segment.text.size() &&
+                    candidate.source != CandidateSource::Raw &&
+                    candidate.source != CandidateSource::Dynamic) {
+                    choices.push_back(&candidate);
+                    if (choices.size() >= 4) break;
+                }
+            }
+            if (choices.empty()) return result;
+            std::vector<MixedPath> expanded;
+            expanded.reserve((std::min)(size_t{64}, paths.size() * choices.size()));
+            for (const auto& path : paths) {
+                for (std::size_t choice = 0; choice < choices.size(); ++choice) {
+                    MixedPath next = path;
+                    next.text += choices[choice]->text;
+                    next.score += choices[choice]->ranking_score - static_cast<double>(choice) * 10.0;
+                    expanded.push_back(std::move(next));
+                    if (expanded.size() >= 64) break;
+                }
+                if (expanded.size() >= 64) break;
+            }
+            std::sort(expanded.begin(), expanded.end(), [](const MixedPath& left, const MixedPath& right) {
+                if (left.score != right.score) return left.score > right.score;
+                return left.text < right.text;
+            });
+            paths = std::move(expanded);
+        }
+        std::unordered_set<std::wstring> seen;
+        for (const auto& path : paths) {
+            if (!seen.insert(path.text).second) continue;
+            Candidate candidate;
+            candidate.text = path.text;
+            candidate.pinyin = raw_input;
+            candidate.covered_input_len = raw_input.size();
+            candidate.source = CandidateSource::LiteralMixed;
+            candidate.learnable = false;
+            candidate.ranking_score = path.score;
+            result.candidates.push_back(std::move(candidate));
+            if (result.candidates.size() >= limit) break;
+        }
+        if (!result.candidates.empty()) result.matched_pinyin_len = raw_input.size();
+        return result;
+    }
+
+    std::vector<Candidate> dynamic_candidates = BuildCurrentTimeCandidates(raw_input);
     const std::string normalized = NormalizeInput(raw_input);
     std::string preview;
     const std::string query = schema == InputSchema::ShuangpinXiaohe
@@ -427,6 +504,10 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         const int source_a = SourcePriority(a);
         const int source_b = SourcePriority(b);
         if (source_a != source_b) return source_a < source_b;
+        if (a.source == CandidateSource::Correction &&
+            a.segment_count != b.segment_count) {
+            return a.segment_count < b.segment_count;
+        }
         if (a.ranking_score != b.ranking_score) return a.ranking_score > b.ranking_score;
         if (a.covered_input_len != b.covered_input_len) return a.covered_input_len > b.covered_input_len;
         if (a.match_cost != b.match_cost) return a.match_cost < b.match_cost;
@@ -491,34 +572,113 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
     }
 
-    // Word graph only follows explicit lattice boundaries, so apostrophes are hard.
+    // 词图只沿合法音节边界移动。纠错变体复用同一个有界实现，避免为每个
+    // 变体扫描整张词典。
     struct Path { std::wstring text; int frequency=0; int learning=0; size_t segments=0; bool from_user=false; };
-    std::vector<std::vector<Path>> paths(query.size()+1); paths[0].push_back({});
-    std::vector<size_t> legal_ends;
-    std::vector<bool> is_legal_end(query.size() + 1, false);
-    for (const auto& lp : lattice) for (const auto& edge : lp.edges) {
-        if (edge.end <= query.size() && !is_legal_end[edge.end]) {
-            is_legal_end[edge.end] = true;
-            legal_ends.push_back(edge.end);
+    auto add_word_graph = [&](const std::string& graph_query,
+                              CandidateSource source,
+                              int full_cost,
+                              bool enforce_boundaries) {
+        const auto graph_lattice = pinyin_data::BuildSyllableLattice(graph_query);
+        std::vector<std::vector<Path>> paths(graph_query.size() + 1);
+        paths[0].push_back({});
+        std::vector<size_t> legal_ends;
+        std::vector<bool> is_legal_end(graph_query.size() + 1, false);
+        for (const auto& lattice_path : graph_lattice) {
+            for (const auto& edge : lattice_path.edges) {
+                if (edge.end <= graph_query.size() && !is_legal_end[edge.end]) {
+                    is_legal_end[edge.end] = true;
+                    legal_ends.push_back(edge.end);
+                }
+            }
+        }
+        std::sort(legal_ends.begin(), legal_ends.end());
+        for (size_t begin = 0; begin < graph_query.size(); ++begin) {
+            if (graph_query[begin] == '\'' && !paths[begin].empty()) {
+                paths[begin + 1] = paths[begin];
+                continue;
+            }
+            if (paths[begin].empty()) continue;
+            for (const size_t endpos : legal_ends) {
+                if (endpos <= begin) continue;
+                const size_t quote = graph_query.find('\'', begin);
+                if (quote != std::string::npos && quote < endpos) continue;
+                const std::string edge_pinyin = pinyin_data::RemoveSyllableSeparators(
+                    graph_query.substr(begin, endpos - begin));
+                auto edges = user_lexicon->dictionary.LookupExact(edge_pinyin);
+                auto base = lexicon->dictionary.LookupExact(edge_pinyin);
+                edges.insert(edges.end(), base.begin(), base.end());
+                std::sort(edges.begin(), edges.end(), [](const Candidate& left, const Candidate& right) {
+                    return left.frequency > right.frequency;
+                });
+                if (edges.size() > 4) edges.resize(4);
+                for (const auto& prefix : paths[begin]) {
+                    for (const auto& edge : edges) {
+                        paths[endpos].push_back({
+                            prefix.text + edge.text,
+                            prefix.frequency + edge.frequency,
+                            prefix.learning + edge.learning_score,
+                            prefix.segments + 1,
+                            prefix.from_user || edge.from_user,
+                        });
+                    }
+                }
+                auto& bucket = paths[endpos];
+                std::sort(bucket.begin(), bucket.end(), [](const Path& left, const Path& right) {
+                    if (left.segments != right.segments) return left.segments < right.segments;
+                    if (left.learning != right.learning) return left.learning > right.learning;
+                    if (left.frequency != right.frequency) return left.frequency > right.frequency;
+                    return left.text < right.text;
+                });
+                if (bucket.size() > 128) bucket.resize(128);
+            }
+        }
+        size_t covered = graph_query.size();
+        while (covered > 0 && paths[covered].empty()) --covered;
+        if (source == CandidateSource::Correction && covered != graph_query.size()) {
+            return false;
+        }
+        for (const auto& path : paths[covered]) {
+            if (path.text.empty()) continue;
+            Candidate candidate;
+            candidate.text = path.text;
+            candidate.pinyin = pinyin_data::RemoveSyllableSeparators(
+                graph_query.substr(0, covered));
+            candidate.frequency = path.segments == 0
+                ? 0
+                : path.frequency / static_cast<int>(path.segments);
+            candidate.learning_score = (std::min)(90, path.learning);
+            candidate.from_user = path.from_user;
+            const bool complete = covered == graph_query.size();
+            add({candidate}, source == CandidateSource::Correction ? query.size() : covered,
+                complete ? full_cost : full_cost + 25, path.segments,
+                enforce_boundaries, source);
+        }
+        return covered == graph_query.size() && !paths[covered].empty();
+    };
+
+    add_word_graph(query, CandidateSource::WordGraph, 10, true);
+
+    const bool has_complete_exact_path = std::any_of(pool.begin(), pool.end(), [&](const Candidate& candidate) {
+        return candidate.covered_input_len == query.size() &&
+            (candidate.source == CandidateSource::Exact ||
+             candidate.source == CandidateSource::WordGraph);
+    });
+    if (schema == InputSchema::Quanpin && !has_complete_exact_path &&
+        query.find('\'') == std::string::npos && compact.size() >= 5) {
+        for (const auto& correction : GeneratePinyinCorrections(compact)) {
+            const int correction_cost = 80 + correction.cost * 20;
+            add(user_lexicon->dictionary.LookupExact(correction.pinyin),
+                query.size(), correction_cost, correction.syllable_count,
+                false, CandidateSource::Correction);
+            add(lexicon->dictionary.LookupExact(correction.pinyin),
+                query.size(), correction_cost, correction.syllable_count,
+                false, CandidateSource::Correction);
+            add_word_graph(correction.pinyin, CandidateSource::Correction,
+                           correction_cost, false);
+            if (pool.size() > limit * 8) break;
         }
     }
-    std::sort(legal_ends.begin(), legal_ends.end());
-    for (size_t begin=0; begin<query.size(); ++begin) {
-        if (query[begin]=='\'' && !paths[begin].empty()) { paths[begin+1]=paths[begin]; continue; }
-        if (paths[begin].empty()) continue;
-        // Dictionary edges may span several syllables; every reachable lattice boundary is legal.
-        for (const size_t endpos : legal_ends) {
-            if (endpos <= begin) continue;
-            if (query.find('\'', begin) < endpos) continue;
-            std::string edge_py=pinyin_data::RemoveSyllableSeparators(query.substr(begin,endpos-begin));
-            auto edges=user_lexicon->dictionary.LookupExact(edge_py); auto base=lexicon->dictionary.LookupExact(edge_py); edges.insert(edges.end(),base.begin(),base.end());
-            std::sort(edges.begin(),edges.end(),[](const Candidate&a,const Candidate&b){return a.frequency>b.frequency;}); if(edges.size()>4)edges.resize(4);
-            for(const auto& prefix:paths[begin]) for(const auto& edge:edges) paths[endpos].push_back({prefix.text+edge.text,prefix.frequency+edge.frequency,prefix.learning+edge.learning_score,prefix.segments+1,prefix.from_user||edge.from_user});
-            auto& bucket=paths[endpos]; std::sort(bucket.begin(),bucket.end(),[](const Path&a,const Path&b){if(a.segments!=b.segments)return a.segments<b.segments;if(a.learning!=b.learning)return a.learning>b.learning;if(a.frequency!=b.frequency)return a.frequency>b.frequency;return a.text<b.text;}); if(bucket.size()>128)bucket.resize(128);
-        }
-    }
-    size_t covered=query.size(); while(covered>0 && paths[covered].empty()) --covered;
-    for(const auto& path:paths[covered]) if(!path.text.empty()) { Candidate c; c.text=path.text; c.pinyin=pinyin_data::RemoveSyllableSeparators(query.substr(0,covered)); c.frequency=path.segments == 0 ? 0 : path.frequency / static_cast<int>(path.segments); c.learning_score=(std::min)(90,path.learning); c.from_user=path.from_user; add({c},covered,covered==query.size()?10:35,path.segments,true,CandidateSource::WordGraph); }
 
     // Fuzzy variants are generated from each retained segmentation, with bounded cost/work.
     if (fuzzy_enabled && query.find('\'')==std::string::npos) {
@@ -566,6 +726,16 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     }
     if(pool.empty()){Candidate raw;raw.text=std::wstring(preview.begin(),preview.end());raw.pinyin=compact;add({raw},0,1000,1,true,CandidateSource::Raw);}
     std::sort(pool.begin(),pool.end(),better);
+    // 纠错结果优先于部分匹配，但不能占满候选集合。输入尾部暂时无效时
+    // 仍需保留最长合法前缀，供用户先提交已有中文再继续输入。
+    {
+        const size_t correction_quota = (std::min)(size_t{4}, limit);
+        size_t retained_corrections = 0;
+        pool.erase(std::remove_if(pool.begin(), pool.end(), [&](const Candidate& candidate) {
+            if (candidate.source != CandidateSource::Correction) return false;
+            return retained_corrections++ >= correction_quota;
+        }), pool.end());
+    }
     if (single_complete_syllable) {
         auto is_exact_single = [](const Candidate& candidate) {
             return candidate.source == CandidateSource::Exact && IsBmpChineseWord(candidate.text) &&
@@ -613,6 +783,21 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         pool = std::move(ordered);
     }
     if(pool.size()>limit)pool.resize(limit);
+    if (!dynamic_candidates.empty()) {
+        std::unordered_set<std::wstring> dynamic_text;
+        std::vector<Candidate> combined;
+        combined.reserve(dynamic_candidates.size() + pool.size());
+        for (auto& candidate : dynamic_candidates) {
+            dynamic_text.insert(candidate.text);
+            combined.push_back(std::move(candidate));
+        }
+        for (auto& candidate : pool) {
+            if (dynamic_text.insert(candidate.text).second)
+                combined.push_back(std::move(candidate));
+        }
+        if (combined.size() > limit) combined.resize(limit);
+        pool = std::move(combined);
+    }
     for(const auto& c:pool) result.matched_pinyin_len=(std::max)(result.matched_pinyin_len,c.covered_input_len);
     result.candidates=std::move(pool); return result;
 }

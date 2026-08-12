@@ -8,7 +8,7 @@ try {
   & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck -InstallRoot $install -DataRoot $data -SigningPolicy Off -NoRegister
   if($LASTEXITCODE -ne 0){throw 'health check failed'}
   $user=Join-Path $tmp 'user_dict.txt'; Set-Content $user 'keep-me';
-  $installedLexicon=Join-Path $data 'versions\1.1.0'; $sentinel=Join-Path $installedLexicon 'reuse-sentinel.txt'; Set-Content $sentinel 'keep-version-directory'
+  $installedLexicon=Join-Path $data 'versions\1.2.0'; $sentinel=Join-Path $installedLexicon 'reuse-sentinel.txt'; Set-Content $sentinel 'keep-version-directory'
   $lock=[IO.File]::Open((Join-Path $installedLexicon 'base_dict.txt'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
   try {
     & (Join-Path $root 'scripts\install_ime.ps1') -Action Install -DllPath $dummy -PackagePath (Join-Path $root 'data\lexicon') -Version test-2 -InstallRoot $install -DataRoot $data -SigningPolicy Off -NoRegister

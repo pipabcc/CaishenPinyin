@@ -2,6 +2,7 @@
 # 格式: pinyin<TAB>词<TAB>词频
 # 编码: UTF-8
 
+meng	梦	600000
 jiangzemin	江泽民	19260817
 jiangzemintongzhi	江泽民同志	19260817
 banquan	版权	13204281
@@ -78417,6 +78418,7 @@ duoduole	多多了	9999
 duohuier	多会儿	9999
 duojieliban	咄嗟立办	9999
 duokou	多口	9999
+duola	哆啦	260000
 duola	多啦	9999
 duole	剁了	9999
 duomang	多忙	9999

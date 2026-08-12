@@ -49,6 +49,42 @@ NumpadDecision DecideNumpadKey(WPARAM key, bool num_lock, const std::string& com
     return result;
 }
 
+CalculatorKeyDecision DecideCalculatorKey(
+    WPARAM key,
+    bool shift_down,
+    bool num_lock) noexcept {
+    CalculatorKeyDecision decision;
+    if (key >= '0' && key <= '9') {
+        decision.handled = true;
+        if (shift_down && key == '8') decision.character = '*';
+        else if (shift_down && key == '9') decision.character = '(';
+        else if (shift_down && key == '0') decision.character = ')';
+        else if (!shift_down) decision.character = static_cast<char>(key);
+        else decision.handled = false;
+        return decision;
+    }
+    if (key >= VK_NUMPAD0 && key <= VK_NUMPAD9) {
+        if (!num_lock) return decision;
+        decision.handled = true;
+        decision.character = static_cast<char>('0' + key - VK_NUMPAD0);
+        return decision;
+    }
+    switch (key) {
+    case VK_DECIMAL: decision.character = '.'; break;
+    case VK_OEM_PERIOD: decision.character = shift_down ? 0 : '.'; break;
+    case VK_DIVIDE: decision.character = '/'; break;
+    case VK_OEM_2: decision.character = shift_down ? 0 : '/'; break;
+    case VK_MULTIPLY: decision.character = '*'; break;
+    case VK_ADD: decision.character = '+'; break;
+    case VK_SUBTRACT: decision.character = '-'; break;
+    case VK_OEM_MINUS: decision.character = shift_down ? 0 : '-'; break;
+    case VK_OEM_PLUS: decision.character = shift_down ? '+' : 0; break;
+    default: return decision;
+    }
+    decision.handled = decision.character != 0;
+    return decision;
+}
+
 ShiftTapAction DecideShiftTapAction(
     bool armed,
     bool has_composition,
@@ -68,6 +104,18 @@ bool ShiftTapState::Begin(
         keydown_eaten = armed && has_composition;
     }
     return keydown_eaten;
+}
+
+ShiftTapRelease ShiftTapState::TestKeyUp(bool sensitive_context) noexcept {
+    if (ShouldEatKeyUp()) return {ShiftTapAction::None, true};
+    return Release(false, sensitive_context);
+}
+
+ShiftTapRelease ShiftTapState::KeyUp(
+    bool has_composition,
+    bool sensitive_context) noexcept {
+    if (!HasPendingKey()) return {};
+    return Release(has_composition, sensitive_context);
 }
 
 ShiftTapRelease ShiftTapState::Release(

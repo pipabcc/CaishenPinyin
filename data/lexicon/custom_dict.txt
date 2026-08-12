@@ -18,3 +18,5 @@ ren	人	14000
 ta	他	14000
 sunguo	孙国	12000
 duanju	短剧	250000
+duola	哆啦	260000
+meng	梦	600000

@@ -180,6 +180,48 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (!weighted_recovery) return 11;
 
+        const auto mixed_language = engine.Query("duolaAmeng", 9);
+        if (mixed_language.candidates.empty() ||
+            mixed_language.candidates.front().text != L"哆啦A梦" ||
+            mixed_language.candidates.front().learnable) {
+            std::cerr << "mixed Chinese/English candidate failed: ";
+            for (const auto& candidate : mixed_language.candidates)
+                std::cerr << WideToUtf8(candidate.text) << ',';
+            std::cerr << '\n';
+            return 16;
+        }
+
+        const auto correction_started = std::chrono::steady_clock::now();
+        const auto corrected = engine.Query("zehhsigejuicuo", 9);
+        const auto correction_latency = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - correction_started);
+        if (corrected.candidates.empty() ||
+            corrected.candidates.front().text != L"这是个纠错" ||
+            corrected.candidates.front().source != CandidateSource::Correction ||
+            correction_latency > std::chrono::milliseconds(100)) {
+            std::cerr << "bounded correction failed: ";
+            for (const auto& candidate : corrected.candidates)
+                std::cerr << WideToUtf8(candidate.text) << ',';
+            std::cerr << " latency=" << correction_latency.count() << "ms\n";
+            return 17;
+        }
+
+        const auto time_shortcut = engine.Query("sj", 9);
+        if (time_shortcut.candidates.size() < 4 ||
+            time_shortcut.candidates.front().source != CandidateSource::Dynamic ||
+            time_shortcut.candidates.front().learnable) {
+            std::cerr << "time shortcut did not rank first\n";
+            return 18;
+        }
+
+        const auto calculator = engine.Query("v1+2*3", 9);
+        if (calculator.candidates.size() != 1 ||
+            calculator.candidates.front().text != L"7" ||
+            calculator.candidates.front().learnable) {
+            std::cerr << "calculator candidate failed\n";
+            return 19;
+        }
+
         user_dict_path = engine.user_dict_path();
         if (user_dict_path.empty() || user_dict_path == lexicon + L"\\user_dict.txt") {
             std::wcerr << L"用户词典没有使用独立可写目录\n";

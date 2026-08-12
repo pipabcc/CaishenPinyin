@@ -18,6 +18,16 @@ struct NumpadDecision {
 
 NumpadDecision DecideNumpadKey(WPARAM key, bool num_lock, const std::string& composition);
 
+struct CalculatorKeyDecision {
+    bool handled = false;
+    char character = 0;
+};
+
+CalculatorKeyDecision DecideCalculatorKey(
+    WPARAM key,
+    bool shift_down,
+    bool num_lock) noexcept;
+
 enum class ShiftTapAction {
     None,
     CommitRawComposition,
@@ -42,6 +52,8 @@ struct ShiftTapState {
     void CancelAction() noexcept { armed = false; }
     bool ShouldEatKeyUp() const noexcept { return keydown_eaten; }
     bool HasPendingKey() const noexcept { return armed || keydown_eaten; }
+    ShiftTapRelease TestKeyUp(bool sensitive_context) noexcept;
+    ShiftTapRelease KeyUp(bool has_composition, bool sensitive_context) noexcept;
     ShiftTapRelease Release(bool has_composition, bool sensitive_context) noexcept;
     void Reset() noexcept { armed = false; keydown_eaten = false; }
 };

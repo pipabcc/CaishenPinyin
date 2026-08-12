@@ -20,6 +20,11 @@ if(MSVC)
   endif()
 endif()
 
+set(SHURU_ENGINE_FEATURE_SOURCES
+  src/engine/pinyin_correction.cpp
+  src/engine/special_input.cpp
+)
+
 add_library(ShuruIme SHARED
   src/common/logger.cpp
   src/common/runtime_config.cpp
@@ -28,6 +33,7 @@ add_library(ShuruIme SHARED
   src/engine/lexicon_cache.cpp
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
+  ${SHURU_ENGINE_FEATURE_SOURCES}
   src/engine/shared_engine.cpp
   src/ime/globals.cpp
   src/ime/class_factory.cpp
@@ -84,6 +90,7 @@ add_executable(engine_playground
   src/engine/lexicon_cache.cpp
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
+  ${SHURU_ENGINE_FEATURE_SOURCES}
   src/engine/shared_engine.cpp
 )
 
@@ -102,6 +109,14 @@ if(BUILD_TESTING)
   target_include_directories(input_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(input_policy_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   add_test(NAME input_policy COMMAND input_policy_test)
+
+  add_executable(special_input_test
+    tests/engine_playground/special_input_test.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
+  )
+  target_include_directories(special_input_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(special_input_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  add_test(NAME special_input COMMAND special_input_test)
 
   add_executable(runtime_config_test
     tests/engine_playground/runtime_config_test.cpp
@@ -123,6 +138,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(engine_phase1_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(engine_phase1_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -145,6 +161,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(p1_engine_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(p1_engine_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -164,6 +181,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
     src/engine/shared_engine.cpp
   )
   target_include_directories(shared_engine_lifecycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -185,6 +203,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(dictionary_stress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(dictionary_stress_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -226,6 +245,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
     src/engine/shared_engine.cpp
     src/ime/globals.cpp
     src/ime/edit_sessions.cpp
@@ -291,6 +311,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(release_health_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(release_health_check PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

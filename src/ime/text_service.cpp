@@ -1,4 +1,6 @@
 #include "text_service.h"
+
+#include "engine/special_input.h"
 #include "ui/shared_status_ui.h"
 #include "ui/ime_ui_logic.h"
 #include "../engine/shared_engine.h"
@@ -504,7 +506,8 @@ bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidat
     if (!plan.has_coverage) return false;
     const HRESULT hr = CommitText(context, plan.committed);
     if (FAILED(hr)) return false;
-    if (engine_ != nullptr && engine_->IsReady() && !IsPasswordContext(context))
+    if (candidate.learnable && engine_ != nullptr && engine_->IsReady() &&
+        !IsPasswordContext(context))
         engine_->Learn(
             plan.learned_pinyin.empty()
                 ? engine_->ToFullPinyinForLearn(plan.learned_input)
@@ -541,6 +544,12 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const {
         return false;
     }
     if (!composing_pinyin_.empty()) {
+        const bool calculator = IsCalculatorInput(composing_pinyin_);
+        const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (calculator && DecideCalculatorKey(
+                wparam, shift, (GetKeyState(VK_NUMLOCK) & 1) != 0).handled) {
+            return true;
+        }
         if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam)) ||
             wparam == VK_BACK || wparam == VK_SPACE || wparam == VK_ESCAPE ||
             wparam == VK_RETURN || wparam == VK_LEFT || wparam == VK_RIGHT ||
@@ -603,15 +612,9 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*l
         return E_INVALIDARG;
     }
     if (IsShiftKey(wParam)) {
-        if (shift_tap_.ShouldEatKeyUp()) {
-            // OnKeyUp 执行真正提交；即使期间按过其他键并取消 armed，
-            // 抬起仍需吞掉，保证宿主看到完整的“无 Shift 事件”。
-            *pfEaten = TRUE;
-            return S_OK;
-        }
-        const ShiftTapRelease release = shift_tap_.Release(false, IsPasswordContext(pic));
+        const ShiftTapRelease release = shift_tap_.TestKeyUp(IsPasswordContext(pic));
         if (release.action == ShiftTapAction::ToggleEnglishMode) ToggleEnglishMode();
-        *pfEaten = FALSE;
+        *pfEaten = release.eaten ? TRUE : FALSE;
         return S_OK;
     }
     *pfEaten = FALSE;
@@ -622,8 +625,8 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*lPara
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
-    if (IsShiftKey(wParam) && shift_tap_.HasPendingKey()) {
-        const ShiftTapRelease release = shift_tap_.Release(
+    if (IsShiftKey(wParam)) {
+        const ShiftTapRelease release = shift_tap_.KeyUp(
             !composing_pinyin_.empty(), IsPasswordContext(pic));
         if (release.action == ShiftTapAction::CommitRawComposition) {
             const bool committed = CommitRawComposition(pic);
@@ -712,6 +715,30 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, bool* eaten)
 
     // Apostrophe is a hard pinyin boundary while composing (xi'an != xian).
     const bool shift_down = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (IsCalculatorInput(composing_pinyin_)) {
+        const bool num_lock = (GetKeyState(VK_NUMLOCK) & 1) != 0;
+        const CalculatorKeyDecision calculator_key = DecideCalculatorKey(
+            wparam, shift_down, num_lock);
+        if (calculator_key.handled) {
+            if (composing_pinyin_.size() >= 65) {
+                *eaten = true;
+                return true;
+            }
+            composing_pinyin_.push_back(calculator_key.character);
+            candidate_state_ = {};
+            const HRESULT hr = SetCompositionString(
+                context, PinyinToWide(composing_pinyin_));
+            if (FAILED(hr)) {
+                composing_pinyin_.pop_back();
+                RefreshCandidates();
+                return true;
+            }
+            RefreshCandidates();
+            UpdateCandidateWindow(context);
+            *eaten = true;
+            return true;
+        }
+    }
     if (wparam == VK_OEM_7 && !shift_down && !composing_pinyin_.empty()) {
         composing_pinyin_.push_back('\'');
         candidate_state_.selected = 0;
@@ -754,9 +781,11 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, bool* eaten)
                     ? candidate_state_.selected : 0;
                 const Candidate& candidate = current_result_.candidates[index];
                 text = candidate.text;
-                engine_->Learn(
-                    candidate.pinyin.empty() ? engine_->ToFullPinyinForLearn(composing_pinyin_) : candidate.pinyin,
-                    candidate.text);
+                if (candidate.learnable) {
+                    engine_->Learn(
+                        candidate.pinyin.empty() ? engine_->ToFullPinyinForLearn(composing_pinyin_) : candidate.pinyin,
+                        candidate.text);
+                }
             } else {
                 text = PinyinToWide(composing_pinyin_);
             }
@@ -877,9 +906,15 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, bool* eaten)
         return true;
     }
 
-    // Enter：上屏拼音原文。与组合期间单独 Shift 共用同一条提交路径。
+    // 计算器 Enter 上屏结果；其它组合仍上屏原文。单独 Shift 始终走原文路径。
     if (wparam == VK_RETURN && !composing_pinyin_.empty()) {
-        *eaten = CommitRawComposition(context);
+        if (IsCalculatorInput(composing_pinyin_) && !current_result_.candidates.empty()) {
+            const size_t index = candidate_state_.selected < current_result_.candidates.size()
+                ? candidate_state_.selected : 0;
+            *eaten = CommitCandidate(context, current_result_.candidates[index]);
+        } else {
+            *eaten = CommitRawComposition(context);
+        }
         return true;
     }
 
@@ -916,7 +951,9 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, bool* eaten)
     // 字母输入
     if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam))) {
         char ch = static_cast<char>(wparam);
-        if (ch >= 'A' && ch <= 'Z') {
+        // TSF 传入的是虚拟键码（始终为大写 A-Z）；Shift 按下时保留
+        // 大写，作为中英混输的原样片段。
+        if (ch >= 'A' && ch <= 'Z' && !shift_down) {
             ch = static_cast<char>(ch - 'A' + 'a');
         }
         const bool was_empty = composing_pinyin_.empty();

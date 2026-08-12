@@ -1,7 +1,7 @@
 {
   "packageId": "facai-pinyin-system-lexicon",
   "schemaVersion": "1",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "frequencyPolicy": {
     "min": 0,
     "max": 50000000
@@ -12,8 +12,8 @@
       "kind": "chinese",
       "source": "rime-ice cn_dicts/base.dict.yaml commit 569ff3bc65dd4aec0a26b33c49c8bbdfa8b5fd57 plus project custom_dict.txt",
       "license": "GPL-3.0-only",
-      "entries": 200016,
-      "sha256": "9f229b8fe2cdf16871c23c4bab17b2b4e21c95225ce77f8652a61d10bc24873c"
+      "entries": 200018,
+      "sha256": "27246a0d458fab85bece9b1118d7788df7066d851dea17c9a055166e4147ed26"
     },
     {
       "path": "char_dict.txt",
@@ -37,7 +37,7 @@
       "source": "validated derived cache of base_dict.txt",
       "license": "GPL-3.0-only",
       "entries": 0,
-      "sha256": "f5e87121330b51e3bfce1053b3e0ab0b097439ee98dc37cda70e18926de56536"
+      "sha256": "90764ad6b9b625914e83549d4b9feab0bafb0410ea867b0cf8d2de0c981a2c6c"
     },
     {
       "path": "char_dict.txt.bin",

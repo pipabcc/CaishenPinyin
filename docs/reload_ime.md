@@ -11,10 +11,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File E:\shurufa\scripts\hide_stat
 ## 真正重载（推荐）
 1. **关掉**所有用过发财拼音的窗口（记事本、Edge、Chrome、资源管理器里的搜索框等）
 2. 或直接：**注销 / 重启 Windows**（最干净）
-3. 再打开记事本，确认注册路径指向 `%ProgramFiles%\FacaiPinyin\versions\0.2.6\ShuruIme.dll`
+3. 再打开记事本，确认注册路径指向 `%ProgramFiles%\FacaiPinyin\versions\0.3.0\ShuruIme.dll`
 4. 不应再出现「中 | 全 | 键」悬浮条
 5. 有组合串时单击 **Shift** 或按 **Enter** 上屏原始字母；无组合串时单击 **Shift** 切换中/英；**F10** 切换全拼/双拼（无界面）
 
 ## 当前版本
-- DLL：0.2.6（版本化旁路安装，旧版本目录保留）
-- 词库：1.1.0（系统词库独立版本化，升级不覆盖用户词库）
+- DLL：0.3.0（版本化旁路安装，旧版本目录保留）
+- 词库：1.2.0（系统词库独立版本化，升级不覆盖用户词库）
