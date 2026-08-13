@@ -458,7 +458,7 @@ STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
         EnsureUiWindows();
         SharedStatusUi::Bind(this);
         SyncStatusUi();
-        SharedStatusUi::Show();
+        SharedStatusUi::Hide();
     } else {
         shift_tap_.Reset();
         SharedStatusUi::Unbind(this);
@@ -518,7 +518,7 @@ bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidat
     composing_pinyin_ = plan.remaining;
     candidate_state_ = {}; current_result_ = {};
     if (composing_pinyin_.empty()) { candidate_window_.Hide(); return true; }
-    if (FAILED(StartComposition(context)) || FAILED(SetCompositionString(context, PinyinToWide(composing_pinyin_)))) {
+    if (FAILED(SetCompositionString(context, PinyinToWide(composing_pinyin_)))) {
         ClearCompositionState(); candidate_window_.Hide(); return true;
     }
     RefreshCandidates(); UpdateCandidateWindow(context); return true;
@@ -958,29 +958,13 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, bool* eaten)
         if (ch >= 'A' && ch <= 'Z' && !shift_down) {
             ch = static_cast<char>(ch - 'A' + 'a');
         }
-        const bool was_empty = composing_pinyin_.empty();
-        if (was_empty) {
-            const HRESULT hr = StartComposition(context);
-            if (FAILED(hr)) {
-                SHURU_LOG_WARN("StartComposition rejected key: 0x%08X", hr);
-                return true;
-            }
-        }
+        *eaten = true;
         composing_pinyin_.push_back(ch);
         const HRESULT hr = SetCompositionString(context, PinyinToWide(composing_pinyin_));
         if (FAILED(hr)) {
-            composing_pinyin_.pop_back();
-            if (was_empty) {
-                const HRESULT cancel_hr = EndComposition();
-                if (SUCCEEDED(cancel_hr)) {
-                    ClearCompositionState();
-                    candidate_window_.Hide();
-                } else {
-                    SHURU_LOG_ERROR("rollback new composition failed: 0x%08X", cancel_hr);
-                }
-            } else {
-                RefreshCandidates();
-            }
+            // 缓冲已经由输入法接管。保留完整内容供后续按键重试，避免宿主
+            // 暂时拒绝首次编辑会话时首字母被直接上屏或丢失。
+            RefreshCandidates();
             SHURU_LOG_WARN("SetCompositionString rejected key: 0x%08X", hr);
             return true;
         }
@@ -1155,23 +1139,6 @@ void TextService::ClearCompositionState() {
     has_last_candidate_rect_ = false;
 }
 
-HRESULT TextService::StartComposition(ITfContext* context) {
-    if (context == nullptr) {
-        return E_FAIL;
-    }
-    if (composition_ != nullptr) {
-        return S_OK;
-    }
-    auto* session = new (std::nothrow) StartCompositionEditSession(context, client_id_, static_cast<ITfCompositionSink*>(this), &composition_);
-    if (session == nullptr) {
-        return E_OUTOFMEMORY;
-    }
-    HRESULT hr_session = S_OK;
-    const HRESULT hr = context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
-    session->Release();
-    return SUCCEEDED(hr) ? hr_session : hr;
-}
-
 HRESULT TextService::EndComposition() {
     if (composition_ == nullptr || edit_context_ == nullptr) {
         if (composition_ != nullptr) {
@@ -1208,6 +1175,7 @@ HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text) {
         if (recent_committed_text_.size() > 128) {
             recent_committed_text_.erase(0, recent_committed_text_.size() - 128);
         }
+        candidate_window_.SetTypingStats(typing_stats_.Record(text));
     }
     SHURU_LOG_INFO("CommitText req=0x%08X session=0x%08X len=%u", hr, hr_session, static_cast<unsigned>(text.size()));
     return final_hr;
@@ -1227,13 +1195,9 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     if (context == nullptr) {
         return E_FAIL;
     }
-    if (composition_ == nullptr) {
-        const HRESULT start_hr = StartComposition(context);
-        if (FAILED(start_hr)) {
-            return start_hr;
-        }
-    }
-    auto* session = new (std::nothrow) SetCompositionEditSession(context, client_id_, &composition_, text, display_atom_);
+    auto* session = new (std::nothrow) SetCompositionEditSession(
+        context, client_id_, static_cast<ITfCompositionSink*>(this),
+        &composition_, text, display_atom_);
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -12,6 +13,7 @@ namespace ShuruSettings;
 public partial class MainWindow : Window
 {
     private const string Clsid = "{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}";
+    private const int OperationCancelled = 1223;
     private static string UserDictionaryPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "FacaiPinyin", "data", "lexicon", "user_dict.txt");
@@ -56,6 +58,7 @@ public partial class MainWindow : Window
         HalfWidthBox.IsChecked = !settings.FullWidthPunctuation;
         SelectComboValue(CandidateCountBox, settings.CandidateCount);
         SelectComboValue(CandidateFontSizeBox, settings.CandidateFontSize);
+        DisplayNameBox.Text = settings.DisplayName;
         UpdateFuzzyChildren();
     }
 
@@ -73,31 +76,89 @@ public partial class MainWindow : Window
             : throw new InvalidDataException($"请选择{fieldName}。");
     }
 
-    private AppSettings ReadSettings() => new(
-        EnglishDefaultBox.IsChecked == true,
-        LearningBox.IsChecked == true,
-        ContentLoggingBox.IsChecked == true,
-        FuzzyEnabledBox.IsChecked == true,
-        FuzzyInitialsBox.IsChecked == true,
-        FuzzyFinalsBox.IsChecked == true,
-        FuzzyMissingVowelBox.IsChecked == true,
-        ShuangpinBox.IsChecked == true,
-        FullWidthBox.IsChecked == true,
-        ReadComboValue(CandidateCountBox, "每页候选数量"),
-        ReadComboValue(CandidateFontSizeBox, "候选字体大小"));
+    private AppSettings ReadSettings()
+    {
+        var displayName = SettingsStore.NormalizeDisplayName(DisplayNameBox.Text) ??
+            throw new InvalidDataException("输入法列表名称须为 1 至 24 个可见字符。");
+        return new AppSettings(
+            EnglishDefaultBox.IsChecked == true,
+            LearningBox.IsChecked == true,
+            ContentLoggingBox.IsChecked == true,
+            FuzzyEnabledBox.IsChecked == true,
+            FuzzyInitialsBox.IsChecked == true,
+            FuzzyFinalsBox.IsChecked == true,
+            FuzzyMissingVowelBox.IsChecked == true,
+            ShuangpinBox.IsChecked == true,
+            FullWidthBox.IsChecked == true,
+            ReadComboValue(CandidateCountBox, "每页候选数量"),
+            ReadComboValue(CandidateFontSizeBox, "候选字体大小"),
+            displayName);
+    }
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         try
         {
-            SettingsStore.Save(ReadSettings());
-            StatusText.Text = "设置已保存。切换到其他输入法后再切回即可生效。";
+            var previous = SettingsStore.Load();
+            var updated = ReadSettings().Validated();
+            var registeredDll = FindRegisteredDll();
+            SettingsStore.Save(updated);
+            if (!string.Equals(previous.DisplayName, updated.DisplayName, StringComparison.Ordinal))
+            {
+                try
+                {
+                    ReregisterInputMethod(registeredDll);
+                }
+                catch (Win32Exception ex) when (ex.NativeErrorCode == OperationCancelled)
+                {
+                    SettingsStore.Save(previous);
+                    ApplySettings(previous);
+                    throw new InvalidOperationException("已取消管理员授权，输入法名称未更改。", ex);
+                }
+                catch (Exception registrationError)
+                {
+                    SettingsStore.Save(previous);
+                    ApplySettings(previous);
+                    try { ReregisterInputMethod(registeredDll); }
+                    catch { /* 配置已经恢复；注册回滚错误由下面的完整提示说明。 */ }
+                    throw new InvalidOperationException(
+                        "输入法重新注册失败，设置已恢复。请确认安装文件完整并允许管理员授权。",
+                        registrationError);
+                }
+                StatusText.Text = "设置与输入法名称已保存。切换到其他输入法后再切回即可刷新显示。";
+            }
+            else
+            {
+                StatusText.Text = "设置已保存。切换到其他输入法后再切回即可生效。";
+            }
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, "保存失败：" + ex.Message, "发财拼音",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private static void ReregisterInputMethod(string? dll)
+    {
+        if (string.IsNullOrWhiteSpace(dll) || !File.Exists(dll))
+            throw new FileNotFoundException("未找到已注册的 ShuruIme.dll。", dll);
+
+        var executable = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
+        var startInfo = new ProcessStartInfo(executable)
+        {
+            UseShellExecute = true,
+            Verb = "runas",
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+        startInfo.ArgumentList.Add("/s");
+        startInfo.ArgumentList.Add(dll);
+        using var process = Process.Start(startInfo) ??
+            throw new InvalidOperationException("无法启动输入法注册程序。");
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"输入法注册程序返回错误码 {process.ExitCode}。");
     }
 
     private void FuzzyEnabled_Changed(object sender, RoutedEventArgs e) => UpdateFuzzyChildren();

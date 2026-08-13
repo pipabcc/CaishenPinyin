@@ -63,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.1 `
+  -Version 0.4.4 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
@@ -77,7 +77,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
 
 `p1_engine` 报告文本/缓存加载耗时、缓存大小以及查询 P50/P95/P99。阈值采用相对加载时间和宽松 P99 上限：
 
-性能、设置、自定义短语、部署、状态栏及 TSF 编辑会话测试均包含在正式入口执行的完整 CTest 中。`tsf_e2e_core` 使用 `TF_TMAE_NOACTIVATETIP` 隔离机器上已安装的输入法版本。需要排查单项时，可在一次正式构建后运行：
+性能、设置、自定义短语、部署、隐藏状态栏、字数统计及 TSF 编辑会话测试均包含在正式入口执行的完整 CTest 中。`tsf_e2e_core` 使用 `TF_TMAE_NOACTIVATETIP` 隔离机器上已安装的输入法版本。需要排查单项时，可在一次正式构建后运行：
 
 ```powershell
 ctest --test-dir build-release -C Release -R p1_engine -V

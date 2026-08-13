@@ -12,7 +12,7 @@ Windows 11 本地拼音输入法，包含 TSF 文本服务、拼音引擎、候�
 | 设置程序 (WPF) | 常规、全拼/双拼、自定义短语、词库与隐私设置已连接运行时 |
 | C# 引擎演练 | 可运行 |
 | 本机 C++ 工具链 | **已安装到 E:\\shurufa\\tools，可编译** |
-| 发布版本 | **0.4.1**（现代化设置、自定义短语、开始菜单与状态栏设置入口） |
+| 发布版本 | **0.4.4**（精简今日字数、候选窗层级与设置控件对齐优化） |
 
 ## 架构
 
@@ -76,11 +76,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.1 `
+  -Version 0.4.4 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
-安装后可从开始菜单打开“发财拼音设置”，也可左键状态栏的“设”，或右键状态栏选择“输入法设置”。
+安装后可从开始菜单打开“发财拼音设置”，也可在候选框内右键直接打开设置。原“中 / 全 / 键 / 设”悬浮状态栏默认永久隐藏，软键盘仍可通过 `F9` 使用。
 
 卸载：
 
@@ -114,11 +114,11 @@ nihao	你好	9000
 - `docs/deployment.md`
 - `docs/privacy-input-policy.md`
 
-`user_dict.txt` 和 `custom_phrases.txt` 始终保存在 `%LOCALAPPDATA%`，升级流程不会覆盖。
+`user_dict.txt`、`custom_phrases.txt` 和字数统计始终保存在 `%LOCALAPPDATA%`，升级流程不会覆盖。
 
 ## 设置与生效
 
-设置保存在 `%LOCALAPPDATA%\FacaiPinyin\settings.ini`，采用同目录临时文件 + 原子替换，无需管理员权限。设置程序可控制全拼/双拼、学习、内容日志（默认关闭）、模糊拼音、全/半角标点、候选数量和字体，并可管理系统词库、自动学习词及自定义短语。自定义短语保存在 `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`，格式为 `输入码<TAB>短语<TAB>候选位置`。保存后切换到其他输入法再切回即可生效。
+设置保存在 `%LOCALAPPDATA%\FacaiPinyin\settings.ini`，采用同目录临时文件 + 原子替换。设置程序可控制全拼/双拼、学习、内容日志（默认关闭）、模糊拼音、全/半角标点、候选数量、字体和输入法列表名称，并可管理系统词库、自动学习词及自定义短语。修改输入法列表名称时会请求管理员权限重新注册；它不会修改 Windows 根据 `zh-CN` 显示的“简体”。自定义短语保存在 `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`，格式为 `输入码<TAB>短语<TAB>候选位置`。字数统计保存在 `%LOCALAPPDATA%\FacaiPinyin\data\typing_stats.txt`，只记录日期和当日累计计数，不保存输入正文；旧版速度计数桶会在读取时忽略。
 
 ## 下一步（Phase 1）
 

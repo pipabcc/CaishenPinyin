@@ -25,6 +25,7 @@ CandidateWindow::~CandidateWindow() {
 }
 
 bool CandidateWindow::Create(HINSTANCE instance) {
+    instance_ = instance;
     if (hwnd_ != nullptr) {
         return true;
     }
@@ -55,7 +56,10 @@ bool CandidateWindow::Create(HINSTANCE instance) {
         instance,
         this);
 
-    if (hwnd_ != nullptr) ApplyRoundedRegion();
+    if (hwnd_ != nullptr) {
+        ApplyRoundedRegion();
+        RefreshTypingStats();
+    }
 
     return hwnd_ != nullptr;
 }
@@ -73,7 +77,12 @@ void CandidateWindow::Destroy() {
         DeleteObject(font_comp_);
         font_comp_ = nullptr;
     }
+    if (font_meta_ != nullptr) {
+        DeleteObject(font_meta_);
+        font_meta_ = nullptr;
+    }
     visible_ = false;
+    instance_ = nullptr;
 }
 
 void CandidateWindow::EnsureFonts() {
@@ -87,6 +96,14 @@ void CandidateWindow::EnsureFonts() {
     if (font_comp_ == nullptr) {
         font_comp_ = CreateFontW(
             -Scale(GetRuntimeConfig().candidate_font_size + 1), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            L"Microsoft YaHei UI");
+    }
+    if (font_meta_ == nullptr) {
+        font_meta_ = CreateFontW(
+            -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
+            0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
             L"Microsoft YaHei UI");
@@ -142,6 +159,7 @@ void CandidateWindow::Show(const POINT& screen_pos) {
     }
     POINT pos = screen_pos;
     HMONITOR monitor = MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST);
+    if (!visible_) RefreshTypingStats();
     if (layout_dirty_) RecalcSize();
     MONITORINFO mi {};
     mi.cbSize = sizeof(mi);
@@ -261,11 +279,37 @@ void CandidateWindow::SetEnglishMode(bool english) {
     }
 }
 
+void CandidateWindow::SetTypingStats(const TypingStatsSnapshot& snapshot) {
+    if (!snapshot.available) return;
+    if (typing_stats_.available == snapshot.available &&
+        typing_stats_.daily_count == snapshot.daily_count) {
+        return;
+    }
+    typing_stats_ = snapshot;
+    layout_dirty_ = true;
+    paint_dirty_ = true;
+    if (visible_ && hwnd_ != nullptr) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void CandidateWindow::RefreshTypingStats() {
+    SetTypingStats(TypingStatsStore().Load());
+}
+
+void CandidateWindow::OpenSettings() {
+    if (!LaunchSettingsExecutable(hwnd_, instance_)) {
+        MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
+                    L"发财拼音", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
+}
+
 void CandidateWindow::RecalcSize() {
     HDC hdc = GetDC(nullptr);
     EnsureFonts();
 
-    if (hdc == nullptr || font_ == nullptr || font_comp_ == nullptr) {
+    if (hdc == nullptr || font_ == nullptr || font_comp_ == nullptr ||
+        font_meta_ == nullptr) {
         if (hdc != nullptr) {
             ReleaseDC(nullptr, hdc);
         }
@@ -278,7 +322,12 @@ void CandidateWindow::RecalcSize() {
         hdc, font_comp_, composing_.empty() ? L" " : composing_);
     const std::wstring page_text = BuildPageText(
         candidates_.size(), page_, page_size_);
-    const int page_w = MeasureText(hdc, font_, page_text);
+    const std::wstring status_text = BuildTypingStatisticsText(
+        typing_stats_.daily_count);
+    const std::wstring header_right_text = page_text.empty()
+        ? status_text
+        : status_text + L"   " + page_text;
+    const int page_w = MeasureText(hdc, font_meta_, header_right_text);
     int cand_w = 0;
     const size_t begin = page_ * page_size_;
     const size_t end = (std::min)(candidates_.size(), begin + page_size_);
@@ -358,8 +407,11 @@ LRESULT CandidateWindow::OnPaint() {
 
     // 左侧强调条
     HBRUSH accent = CreateSolidBrush(RGB(22, 119, 255));
-    RECT accent_rc {1, Scale(kCornerRadius / 2), Scale(4),
-                    rc.bottom - Scale(kCornerRadius / 2)};
+    const int window_height = static_cast<int>(rc.bottom - rc.top);
+    const int accent_height = (std::max)(Scale(1), window_height / 2);
+    const int accent_top = static_cast<int>(rc.top) +
+        (window_height - accent_height) / 2;
+    RECT accent_rc {1, accent_top, Scale(4), accent_top + accent_height};
     FillRect(mem, &accent_rc, accent);
     DeleteObject(accent);
 
@@ -373,7 +425,12 @@ LRESULT CandidateWindow::OnPaint() {
         Scale(kVerticalPadding), line_height, Scale(kRowGap));
     const std::wstring page_text = BuildPageText(
         candidates_.size(), page_, page_size_);
-    const int page_width = MeasureText(mem, font_, page_text);
+    const std::wstring status_text = BuildTypingStatisticsText(
+        typing_stats_.daily_count);
+    const std::wstring header_right_text = page_text.empty()
+        ? status_text
+        : status_text + L"   " + page_text;
+    const int page_width = MeasureText(mem, font_meta_, header_right_text);
     const auto header = BuildCandidateHeaderLayout(
         rc.right, page_width, horizontal_padding + Scale(4), horizontal_padding,
         Scale(kHeaderTextGap));
@@ -387,14 +444,13 @@ LRESULT CandidateWindow::OnPaint() {
     }
     DrawTextW(mem, comp_draw.c_str(), -1, &composing_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    if (!page_text.empty()) {
-        // 页码与候选序号使用同一正常字重字体，避免抢过组合串的视觉层级。
-        SelectObject(mem, font_);
-        RECT page_rect {header.page_left, vertical.composing_top,
-                        header.page_right, vertical.composing_bottom};
-        DrawTextW(mem, page_text.c_str(), -1, &page_rect,
-                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-    }
+    // 字数与页码使用独立小号字体，和候选文字形成清晰的次要层级。
+    SelectObject(mem, font_meta_);
+    SetTextColor(mem, RGB(90, 100, 115));
+    RECT page_rect {header.page_left, vertical.composing_top,
+                    header.page_right, vertical.composing_bottom};
+    DrawTextW(mem, header_right_text.c_str(), -1, &page_rect,
+              DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     // 预览字母不加下划线
 
@@ -475,6 +531,10 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             DeleteObject(self->font_comp_);
             self->font_comp_ = nullptr;
         }
+        if (self->font_meta_ != nullptr) {
+            DeleteObject(self->font_meta_);
+            self->font_meta_ = nullptr;
+        }
         self->layout_dirty_ = true;
         self->paint_dirty_ = true;
         self->RecalcSize();
@@ -500,6 +560,10 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         }
         return 0;
     }
+    case WM_RBUTTONUP:
+    case WM_CONTEXTMENU:
+        self->OpenSettings();
+        return 0;
     default:
         break;
     }

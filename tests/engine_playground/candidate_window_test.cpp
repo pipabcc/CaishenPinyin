@@ -19,7 +19,7 @@ BOOL CALLBACK FindCandidateWindow(HWND window, LPARAM value) {
 
 }  // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
     const int required_width = shuru::CandidateHeaderRequiredWidth(
         200, 50, 13, 9, 12);
     if (required_width != 284) {
@@ -33,32 +33,52 @@ int wmain() {
         std::fwprintf(stderr, L"candidate header rectangles are invalid\n");
         return 2;
     }
+    if (shuru::CandidateMetadataFontSize(19) != 15 ||
+        shuru::CandidateMetadataFontSize(14) != 11) {
+        std::fwprintf(stderr, L"candidate metadata font sizing is invalid\n");
+        return 3;
+    }
 
     shuru::CandidateWindow window;
-    if (!window.Create(GetModuleHandleW(nullptr))) return 3;
+    if (!window.Create(GetModuleHandleW(nullptr))) return 4;
 
     std::vector<shuru::Candidate> candidates(18);
     for (size_t i = 0; i < candidates.size(); ++i) {
         candidates[i].text = L"候选" + std::to_wstring(i + 1);
     }
     window.SetContent(L"bao", candidates, 0, 0, 9);
+    window.SetTypingStats(shuru::TypingStatsSnapshot {1286, true});
     window.Show(POINT {40, 40});
 
     HWND handle = nullptr;
     EnumThreadWindows(
         GetCurrentThreadId(), FindCandidateWindow, reinterpret_cast<LPARAM>(&handle));
-    if (handle == nullptr) return 4;
+    if (handle == nullptr) return 5;
+
+    if (argc > 1 && wcscmp(argv[1], L"--preview") == 0) {
+        const ULONGLONG deadline = GetTickCount64() + 30000;
+        MSG message {};
+        while (GetTickCount64() < deadline) {
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            Sleep(10);
+        }
+        window.Destroy();
+        return 0;
+    }
 
     const UINT dpi = (std::max)(UINT {96}, GetDpiForWindow(handle));
     const SIZE size = window.WindowSize();
     const int expected_height = MulDiv(74, static_cast<int>(dpi), 96);
     if (size.cy != expected_height) {
         std::fwprintf(stderr, L"candidate height=%d expected=%d\n", size.cy, expected_height);
-        return 5;
+        return 6;
     }
 
     HRGN region = CreateRectRgn(0, 0, 0, 0);
-    if (region == nullptr) return 6;
+    if (region == nullptr) return 7;
     const int region_type = GetWindowRgn(handle, region);
     const bool rounded = region_type == COMPLEXREGION &&
         !PtInRegion(region, 0, 0) &&
@@ -69,7 +89,7 @@ int wmain() {
     DeleteObject(region);
     if (!rounded) {
         std::fwprintf(stderr, L"candidate window region is not rounded\n");
-        return 7;
+        return 8;
     }
 
     window.Hide();

@@ -130,15 +130,20 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
 
 // -------- SetCompositionEditSession --------
 
-SetCompositionEditSession::SetCompositionEditSession(ITfContext* context, TfClientId client_id, ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom)
-    : context_(context), client_id_(client_id), composition_(composition), text_(text), display_atom_(display_atom) {
+SetCompositionEditSession::SetCompositionEditSession(
+    ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
+    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom)
+    : context_(context), client_id_(client_id), sink_(sink),
+      composition_(composition), text_(text), display_atom_(display_atom) {
     if (context_) {
         context_->AddRef();
     }
+    if (sink_) sink_->AddRef();
 }
 
 SetCompositionEditSession::~SetCompositionEditSession() {
     SafeRelease(&context_);
+    SafeRelease(&sink_);
 }
 
 STDMETHODIMP SetCompositionEditSession::QueryInterface(REFIID riid, void** ppvObj) {
@@ -167,8 +172,36 @@ STDMETHODIMP_(ULONG) SetCompositionEditSession::Release() {
 }
 
 STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
-    if (context_ == nullptr || composition_ == nullptr || *composition_ == nullptr) {
+    if (context_ == nullptr || composition_ == nullptr) {
         return E_FAIL;
+    }
+
+    if (*composition_ == nullptr) {
+        ITfInsertAtSelection* insert = nullptr;
+        HRESULT hr = context_->QueryInterface(
+            IID_ITfInsertAtSelection, reinterpret_cast<void**>(&insert));
+        if (FAILED(hr) || insert == nullptr) return FAILED(hr) ? hr : E_NOINTERFACE;
+        ITfRange* insertion_range = nullptr;
+        hr = insert->InsertTextAtSelection(
+            ec, TF_IAS_QUERYONLY, nullptr, 0, &insertion_range);
+        insert->Release();
+        if (FAILED(hr) || insertion_range == nullptr) {
+            SafeRelease(&insertion_range);
+            return FAILED(hr) ? hr : E_FAIL;
+        }
+        ITfContextComposition* context_composition = nullptr;
+        hr = context_->QueryInterface(
+            IID_ITfContextComposition,
+            reinterpret_cast<void**>(&context_composition));
+        if (SUCCEEDED(hr) && context_composition != nullptr) {
+            hr = context_composition->StartComposition(
+                ec, insertion_range, sink_, composition_);
+            context_composition->Release();
+        }
+        insertion_range->Release();
+        if (FAILED(hr) || *composition_ == nullptr) {
+            return FAILED(hr) ? hr : E_FAIL;
+        }
     }
 
     ITfRange* range = nullptr;
@@ -200,88 +233,6 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
 
     range->Release();
     return S_OK;
-}
-
-// -------- StartCompositionEditSession --------
-
-StartCompositionEditSession::StartCompositionEditSession(ITfContext* context, TfClientId client_id, ITfCompositionSink* sink, ITfComposition** composition)
-    : context_(context), client_id_(client_id), sink_(sink), composition_(composition) {
-    if (context_) {
-        context_->AddRef();
-    }
-    if (sink_) {
-        sink_->AddRef();
-    }
-}
-
-StartCompositionEditSession::~StartCompositionEditSession() {
-    SafeRelease(&context_);
-    SafeRelease(&sink_);
-}
-
-STDMETHODIMP StartCompositionEditSession::QueryInterface(REFIID riid, void** ppvObj) {
-    if (!ppvObj) {
-        return E_INVALIDARG;
-    }
-    *ppvObj = nullptr;
-    if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ITfEditSession)) {
-        *ppvObj = static_cast<ITfEditSession*>(this);
-        AddRef();
-        return S_OK;
-    }
-    return E_NOINTERFACE;
-}
-
-STDMETHODIMP_(ULONG) StartCompositionEditSession::AddRef() {
-    return InterlockedIncrement(&ref_);
-}
-
-STDMETHODIMP_(ULONG) StartCompositionEditSession::Release() {
-    const LONG v = InterlockedDecrement(&ref_);
-    if (v == 0) {
-        delete this;
-    }
-    return static_cast<ULONG>(v);
-}
-
-STDMETHODIMP StartCompositionEditSession::DoEditSession(TfEditCookie ec) {
-    if (context_ == nullptr || composition_ == nullptr) {
-        return E_FAIL;
-    }
-    if (*composition_ != nullptr) {
-        return S_OK;
-    }
-
-    ITfInsertAtSelection* insert = nullptr;
-    HRESULT hr = context_->QueryInterface(IID_ITfInsertAtSelection, reinterpret_cast<void**>(&insert));
-    if (FAILED(hr)) {
-        SHURU_LOG_ERROR("StartComp QI insert failed: 0x%08X", hr);
-        return hr;
-    }
-
-    ITfRange* range = nullptr;
-    hr = insert->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, nullptr, 0, &range);
-    insert->Release();
-    if (FAILED(hr) || range == nullptr) {
-        SHURU_LOG_ERROR("StartComp QUERYONLY failed: 0x%08X", hr);
-        return hr;
-    }
-
-    ITfContextComposition* context_composition = nullptr;
-    hr = context_->QueryInterface(IID_ITfContextComposition, reinterpret_cast<void**>(&context_composition));
-    if (FAILED(hr)) {
-        range->Release();
-        SHURU_LOG_ERROR("StartComp QI contextcomp failed: 0x%08X", hr);
-        return hr;
-    }
-
-    hr = context_composition->StartComposition(ec, range, sink_, composition_);
-    context_composition->Release();
-    range->Release();
-    if (FAILED(hr)) {
-        SHURU_LOG_ERROR("StartComposition failed: 0x%08X", hr);
-    }
-    return hr;
 }
 
 // -------- EndCompositionEditSession --------

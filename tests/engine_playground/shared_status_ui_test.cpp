@@ -50,10 +50,10 @@ void RunUiThread(UiThreadContext* context) {
         }
         return TRUE;
     }, reinterpret_cast<LPARAM>(&status_window));
-    const bool status_visible = status_window != nullptr && IsWindowVisible(status_window) != FALSE;
+    const bool status_hidden = status_window != nullptr && IsWindowVisible(status_window) == FALSE;
 
     context->owner_thread_id.store(owner_thread_id, std::memory_order_release);
-    context->ok.store(owner_matches && status_visible, std::memory_order_release);
+    context->ok.store(owner_matches && status_hidden, std::memory_order_release);
     SetEvent(context->ready);
 
     if (owner_matches) {

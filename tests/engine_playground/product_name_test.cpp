@@ -1,4 +1,5 @@
 #include "common/version.h"
+#include "common/runtime_config.h"
 
 #include <Windows.h>
 
@@ -52,7 +53,7 @@ int wmain() {
             kProfilePath,
             L"Description",
             &registered_description) &&
-        registered_description != SHURU_PRODUCT_NAME_W) {
+        registered_description != shuru::GetRuntimeConfig().display_name) {
         std::wcerr << L"已注册输入法名称仍为: " << registered_description << L'\n';
         return 2;
     }

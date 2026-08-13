@@ -28,27 +28,11 @@ private:
 
 class SetCompositionEditSession : public ITfEditSession {
 public:
-    SetCompositionEditSession(ITfContext* context, TfClientId client_id, ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom = TF_INVALID_GUIDATOM);
+    SetCompositionEditSession(
+        ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
+        ITfComposition** composition, const std::wstring& text,
+        TfGuidAtom display_atom = TF_INVALID_GUIDATOM);
     virtual ~SetCompositionEditSession();
-
-    STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
-    STDMETHODIMP_(ULONG) AddRef() override;
-    STDMETHODIMP_(ULONG) Release() override;
-    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
-
-private:
-    LONG ref_ = 1;
-    ITfContext* context_ = nullptr;
-    TfClientId client_id_ = TF_CLIENTID_NULL;
-    ITfComposition** composition_ = nullptr;
-    std::wstring text_;
-    TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
-};
-
-class StartCompositionEditSession : public ITfEditSession {
-public:
-    StartCompositionEditSession(ITfContext* context, TfClientId client_id, ITfCompositionSink* sink, ITfComposition** composition);
-    virtual ~StartCompositionEditSession();
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
     STDMETHODIMP_(ULONG) AddRef() override;
@@ -61,6 +45,8 @@ private:
     TfClientId client_id_ = TF_CLIENTID_NULL;
     ITfCompositionSink* sink_ = nullptr;
     ITfComposition** composition_ = nullptr;
+    std::wstring text_;
+    TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
 };
 
 class EndCompositionEditSession : public ITfEditSession {

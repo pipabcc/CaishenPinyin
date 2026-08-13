@@ -148,12 +148,8 @@ int wmain() {
 
     if (!RunEditSession(
             context, client_id,
-            new shuru::StartCompositionEditSession(
-                context, client_id, sink, &composition)) ||
-        !RunEditSession(
-            context, client_id,
             new shuru::SetCompositionEditSession(
-                context, client_id, &composition, L"suixinshuru")) ||
+                context, client_id, sink, &composition, L"suixinshuru")) ||
         !RunEditSession(
             context, client_id,
             new shuru::InsertTextEditSession(
@@ -164,12 +160,8 @@ int wmain() {
     // A committed prefix remains while the tail becomes a new real TSF composition.
     if (!RunEditSession(
             context, client_id,
-            new shuru::StartCompositionEditSession(
-                context, client_id, sink, &composition)) ||
-        !RunEditSession(
-            context, client_id,
             new shuru::SetCompositionEditSession(
-                context, client_id, &composition, L"shuru")) ||
+                context, client_id, sink, &composition, L"shuru")) ||
         !RunEditSession(
             context, client_id,
             new shuru::InsertTextEditSession(

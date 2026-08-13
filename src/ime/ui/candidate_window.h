@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/typing_stats.h"
 #include "engine/candidate.h"
 #include "ime_ui_logic.h"
 
@@ -33,6 +34,7 @@ public:
         size_t page_size = 9);
     void SetSelectedIndex(size_t selected_index);
     void SetEnglishMode(bool english);
+    void SetTypingStats(const TypingStatsSnapshot& snapshot);
     void SetSelectionHandler(std::function<void(size_t)> handler) { on_select_ = std::move(handler); }
 
 private:
@@ -46,14 +48,17 @@ private:
     static constexpr int kMaxWidth = 1440;
 
     HWND hwnd_ = nullptr;
+    HINSTANCE instance_ = nullptr;
     HFONT font_ = nullptr;
     HFONT font_comp_ = nullptr;
+    HFONT font_meta_ = nullptr;
     bool visible_ = false;
     bool english_mode_ = false;
     int width_ = kMinWidth;
     int height_ = kLineHeight * 2 + kVerticalPadding * 2 + kRowGap;
 
     std::wstring composing_;
+    TypingStatsSnapshot typing_stats_;
     std::vector<Candidate> candidates_;
     size_t selected_ = 0;
     size_t page_ = 0;
@@ -74,6 +79,8 @@ private:
         size_t page_size) const;
     int MeasureText(HDC hdc, HFONT font, const std::wstring& text) const;
     int HitTestCandidate(int x, int y) const;
+    void RefreshTypingStats();
+    void OpenSettings();
     LRESULT OnPaint();
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 };

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -245,6 +247,43 @@ inline std::vector<std::wstring> SettingsExecutableCandidates(
     add(module_dir + L"\\settings\\bin\\Release\\net8.0-windows");
     add(module_dir + L"\\..\\settings\\bin\\Release\\net8.0-windows");
     return paths;
+}
+
+inline bool LaunchSettingsExecutable(HWND owner, HINSTANCE module) {
+    wchar_t module_path[MAX_PATH] = {};
+    if (module == nullptr ||
+        GetModuleFileNameW(module, module_path, ARRAYSIZE(module_path)) == 0) {
+        return false;
+    }
+    for (const auto& path : SettingsExecutableCandidates(module_path)) {
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            continue;
+        }
+        const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(
+            owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+        if (result > 32) return true;
+    }
+    return false;
+}
+
+inline std::wstring FormatUnsignedWithSeparators(std::uint64_t value) {
+    std::wstring digits = std::to_wstring(value);
+    for (std::ptrdiff_t position = static_cast<std::ptrdiff_t>(digits.size()) - 3;
+         position > 0;
+         position -= 3) {
+        digits.insert(static_cast<std::size_t>(position), 1, L',');
+    }
+    return digits;
+}
+
+inline int CandidateMetadataFontSize(int candidate_font_size) noexcept {
+    return (std::max)(11, candidate_font_size - 4);
+}
+
+inline std::wstring BuildTypingStatisticsText(std::uint64_t daily_count) {
+    return L"今日 " + FormatUnsignedWithSeparators(daily_count) + L" 字";
 }
 
 }  // namespace shuru

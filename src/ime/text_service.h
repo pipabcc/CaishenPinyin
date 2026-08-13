@@ -2,6 +2,7 @@
 
 #include "../engine/pinyin_engine.h"
 #include "../engine/shared_engine.h"
+#include "../common/typing_stats.h"
 #include "ui/candidate_window.h"
 #include "ui/ime_ui_logic.h"
 #include "ui/shared_status_ui.h"
@@ -94,6 +95,7 @@ private:
 
     PinyinEngine* engine_ = nullptr;  // 进程内共享
     CandidateWindow candidate_window_;
+    TypingStatsStore typing_stats_;
     bool status_ui_acquired_ = false;
     DWORD status_ui_thread_id_ = 0;
 
@@ -123,7 +125,6 @@ private:
     bool CommitRawComposition(ITfContext* context);
     static void SendVirtualKey(WORD vk);
 
-    HRESULT StartComposition(ITfContext* context);
     HRESULT EndComposition();
     HRESULT CommitText(ITfContext* context, const std::wstring& text);
     HRESULT SetCompositionString(ITfContext* context, const std::wstring& text);

@@ -1,11 +1,14 @@
 #include "runtime_config.h"
 
+#include "com_utils.h"
+
 #include <Windows.h>
 
 #include <algorithm>
 #include <fstream>
 #include <map>
 #include <string>
+#include <cwctype>
 
 namespace shuru {
 namespace {
@@ -55,6 +58,16 @@ int ReadInt(const std::map<std::string, std::string>& values, const char* name,
     } catch (...) { return fallback; }
 }
 
+std::wstring ReadDisplayName(
+    const std::map<std::string, std::string>& values,
+    const std::wstring& fallback) {
+    const auto found = values.find("DisplayName");
+    if (found == values.end()) return fallback;
+    const std::wstring decoded = Utf8ToWide(found->second);
+    const std::wstring normalized = NormalizeDisplayName(decoded);
+    return normalized.empty() ? fallback : normalized;
+}
+
 RuntimeConfig ReadConfig() {
     const auto values = ReadValues();
     RuntimeConfig value;
@@ -69,6 +82,7 @@ RuntimeConfig ReadConfig() {
     value.shuangpin_xiaohe = ReadBool(values, "ShuangpinXiaohe", false);
     value.candidate_count = ReadInt(values, "CandidateCount", 9, 3, 9);
     value.candidate_font_size = ReadInt(values, "CandidateFontSize", 19, 14, 32);
+    value.display_name = ReadDisplayName(values, L"发财拼音");
     return value;
 }
 
@@ -99,6 +113,25 @@ void ReloadRuntimeConfig() {
     g_config = value;
     g_loaded = true;
     ReleaseSRWLockExclusive(&g_lock);
+}
+
+bool IsValidDisplayName(const std::wstring& value) noexcept {
+    if (value.empty() || value.size() > 24) return false;
+    return std::none_of(value.begin(), value.end(), [](wchar_t ch) {
+        return std::iswcntrl(ch) != 0 || (ch >= 0xD800 && ch <= 0xDFFF);
+    });
+}
+
+std::wstring NormalizeDisplayName(std::wstring value) {
+    const auto first = std::find_if_not(value.begin(), value.end(), [](wchar_t ch) {
+        return std::iswspace(ch) != 0;
+    });
+    const auto last = std::find_if_not(value.rbegin(), value.rend(), [](wchar_t ch) {
+        return std::iswspace(ch) != 0;
+    }).base();
+    if (first >= last) return {};
+    value = std::wstring(first, last);
+    return IsValidDisplayName(value) ? value : std::wstring{};
 }
 
 }  // namespace shuru

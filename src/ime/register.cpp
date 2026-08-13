@@ -4,6 +4,7 @@
 #include "../common/com_utils.h"
 #include "../common/guid_def.h"
 #include "../common/logger.h"
+#include "../common/runtime_config.h"
 #include "../common/version.h"
 
 #include <msctf.h>
@@ -97,8 +98,9 @@ HRESULT RegisterServer() {
         return E_FAIL;
     }
 
+    const std::wstring product_name = GetRuntimeConfig().display_name;
     const std::wstring clsid_key = L"CLSID\\" + clsid;
-    HRESULT hr = SetRegistryKeyValue(HKEY_CLASSES_ROOT, clsid_key, L"", SHURU_PRODUCT_NAME_W);
+    HRESULT hr = SetRegistryKeyValue(HKEY_CLASSES_ROOT, clsid_key, L"", product_name);
     if (FAILED(hr)) {
         return hr;
     }
@@ -132,6 +134,7 @@ HRESULT UnregisterServer() {
 }
 
 HRESULT RegisterProfile() {
+    const std::wstring product_name = GetRuntimeConfig().display_name;
     HRESULT hr = RegisterTipCategory();
     if (FAILED(hr)) {
         return hr;
@@ -155,15 +158,15 @@ HRESULT RegisterProfile() {
         return hr;
     }
 
-    // 先移除再添加，确保语言栏描述从旧名「舒入拼音」刷新为「发财拼音」
+    // 先移除再添加，确保 Windows 输入法列表刷新自定义名称。
     profiles->RemoveLanguageProfile(CLSID_ShuruTextService, SHURU_LANGID, GUID_ShuruProfile);
 
     hr = profiles->AddLanguageProfile(
         CLSID_ShuruTextService,
         SHURU_LANGID,
         GUID_ShuruProfile,
-        SHURU_PRODUCT_NAME_W,
-        static_cast<ULONG>(wcslen(SHURU_PRODUCT_NAME_W)),
+        product_name.c_str(),
+        static_cast<ULONG>(product_name.size()),
         nullptr,
         0,
         0);
@@ -173,14 +176,14 @@ HRESULT RegisterProfile() {
         return hr;
     }
 
-    // 双写注册表 Description（HKLM/HKCU），避免语言栏缓存旧名
+    // 双写注册表 Description（HKLM/HKCU），避免输入法列表缓存旧名。
     {
         const std::wstring tip =
             L"SOFTWARE\\Microsoft\\CTF\\TIP\\" + GuidToString(CLSID_ShuruTextService) +
             L"\\LanguageProfile\\0x00000804\\" + GuidToString(GUID_ShuruProfile);
-        SetRegistryKeyValue(HKEY_LOCAL_MACHINE, tip, L"Description", SHURU_PRODUCT_NAME_W);
-        SetRegistryKeyValue(HKEY_CURRENT_USER, tip, L"Description", SHURU_PRODUCT_NAME_W);
-        SetRegistryKeyValue(HKEY_CLASSES_ROOT, L"CLSID\\" + GuidToString(CLSID_ShuruTextService), L"", SHURU_PRODUCT_NAME_W);
+        SetRegistryKeyValue(HKEY_LOCAL_MACHINE, tip, L"Description", product_name);
+        SetRegistryKeyValue(HKEY_CURRENT_USER, tip, L"Description", product_name);
+        SetRegistryKeyValue(HKEY_CLASSES_ROOT, L"CLSID\\" + GuidToString(CLSID_ShuruTextService), L"", product_name);
     }
 
     // Enable for current user

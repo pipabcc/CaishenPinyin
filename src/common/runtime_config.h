@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace shuru {
 
 struct RuntimeConfig {
@@ -15,11 +17,14 @@ struct RuntimeConfig {
     bool shuangpin_xiaohe = false;
     int candidate_count = 9;
     int candidate_font_size = 19;
+    std::wstring display_name = L"发财拼音";
 };
 
 // Thread-safe, process-cached settings. Values are read from
 // %LOCALAPPDATA%\FacaiPinyin\settings.ini; missing/invalid values use safe defaults.
 RuntimeConfig GetRuntimeConfig();
 void ReloadRuntimeConfig();
+bool IsValidDisplayName(const std::wstring& value) noexcept;
+std::wstring NormalizeDisplayName(std::wstring value);
 
 }  // namespace shuru

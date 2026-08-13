@@ -14,17 +14,21 @@ public sealed record AppSettings(
     bool ShuangpinXiaohe = false,
     bool FullWidthPunctuation = true,
     int CandidateCount = 9,
-    int CandidateFontSize = 19)
+    int CandidateFontSize = 19,
+    string DisplayName = SettingsStore.DefaultDisplayName)
 {
     public AppSettings Validated() => this with
     {
         CandidateCount = CandidateCount is >= 3 and <= 9 ? CandidateCount : 9,
-        CandidateFontSize = CandidateFontSize is >= 14 and <= 32 ? CandidateFontSize : 19
+        CandidateFontSize = CandidateFontSize is >= 14 and <= 32 ? CandidateFontSize : 19,
+        DisplayName = SettingsStore.NormalizeDisplayName(DisplayName) ?? SettingsStore.DefaultDisplayName
     };
 }
 
 public static class SettingsStore
 {
+    public const string DefaultDisplayName = "发财拼音";
+
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "FacaiPinyin", "settings.ini");
@@ -44,6 +48,7 @@ public static class SettingsStore
                 (v == "0" || v == "1") ? v == "1" : fallback;
             int I(string key, int fallback) => values.TryGetValue(key, out var v) &&
                 int.TryParse(v, NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : fallback;
+            string S(string key, string fallback) => values.TryGetValue(key, out var v) ? v : fallback;
             return new AppSettings(
                 B("EnglishDefault", defaults.EnglishDefault),
                 B("LearningEnabled", defaults.LearningEnabled),
@@ -55,7 +60,8 @@ public static class SettingsStore
                 B("ShuangpinXiaohe", defaults.ShuangpinXiaohe),
                 B("FullWidthPunctuation", defaults.FullWidthPunctuation),
                 I("CandidateCount", defaults.CandidateCount),
-                I("CandidateFontSize", defaults.CandidateFontSize)).Validated();
+                I("CandidateFontSize", defaults.CandidateFontSize),
+                S("DisplayName", defaults.DisplayName)).Validated();
         }
         catch (IOException) { return defaults; }
         catch (UnauthorizedAccessException) { return defaults; }
@@ -83,6 +89,7 @@ public static class SettingsStore
             $"FullWidthPunctuation={Bit(settings.FullWidthPunctuation)}",
             $"CandidateCount={settings.CandidateCount}",
             $"CandidateFontSize={settings.CandidateFontSize}",
+            $"DisplayName={settings.DisplayName}",
             ""
         });
         try
@@ -104,4 +111,13 @@ public static class SettingsStore
     }
 
     private static int Bit(bool value) => value ? 1 : 0;
+
+    public static string? NormalizeDisplayName(string? value)
+    {
+        var normalized = value?.Trim();
+        return !string.IsNullOrEmpty(normalized) && normalized.Length <= 24 &&
+               normalized.All(ch => !char.IsControl(ch) && !char.IsSurrogate(ch))
+            ? normalized
+            : null;
+    }
 }

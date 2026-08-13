@@ -1,7 +1,5 @@
 #include "status_window.h"
 #include "ime_ui_logic.h"
-#include <shellapi.h>
-
 #include <algorithm>
 #include <cstdio>
 
@@ -113,10 +111,8 @@ void StatusWindow::PlaceBottomRight() {
 }
 
 void StatusWindow::Show() {
-    if (!hwnd_) return;
-    PlaceBottomRight();
-    ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    visible_ = true;
+    // 悬浮状态栏已停用；窗口对象仍保留，供跨线程生命周期与软键盘使用。
+    Hide();
 }
 
 void StatusWindow::Hide() {
@@ -263,14 +259,7 @@ LRESULT StatusWindow::OnLButtonUp(int x, int /*y*/) {
 }
 
 bool StatusWindow::LaunchSettings() const {
-    wchar_t module[MAX_PATH] = {};
-    if (instance_ == nullptr || GetModuleFileNameW(instance_, module, MAX_PATH) == 0) return false;
-    for (const auto& path : SettingsExecutableCandidates(module)) {
-        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
-        const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-        if (result > 32) return true;
-    }
-    return false;
+    return LaunchSettingsExecutable(hwnd_, instance_);
 }
 
 LRESULT StatusWindow::OnRButtonUp(int x, int y) {

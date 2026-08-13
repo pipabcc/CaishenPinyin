@@ -25,7 +25,7 @@
             </Border>
             <StackPanel Margin="12,1,0,0">
               <TextBlock Text="发财拼音" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
-              <TextBlock Text="输入法设置" Foreground="#9DACA4" FontSize="12" Margin="0,3,0,0"/>
+              <TextBlock Text="输入法设置" Foreground="#A7B0BE" FontSize="12" Margin="0,3,0,0"/>
             </StackPanel>
           </StackPanel>
         </StackPanel>
@@ -37,9 +37,9 @@
           <ListBoxItem Style="{StaticResource NavigationItemStyle}" Content="词库与隐私"/>
         </ListBox>
         <StackPanel Grid.Row="2" Margin="28,16,24,24">
-          <Border Height="1" Background="#34443B" Margin="0,0,0,16"/>
-          <TextBlock Text="0.4.1" Foreground="#91A198" FontSize="12"/>
-          <TextBlock Text="本地运行 · 数据归您所有" Foreground="#91A198" FontSize="12" Margin="0,5,0,0"/>
+          <Border Height="1" Background="#3A414C" Margin="0,0,0,16"/>
+          <TextBlock Text="0.4.4" Foreground="#9AA7B8" FontSize="12"/>
+          <TextBlock Text="本地运行 · 数据归您所有" Foreground="#9AA7B8" FontSize="12" Margin="0,5,0,0"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -61,6 +61,18 @@
                 <TextBlock Text="启动与输入" Style="{StaticResource SectionTitleStyle}"/>
                 <TextBlock Text="控制输入法每次激活后的默认状态。" Style="{StaticResource SectionDescriptionStyle}"/>
                 <CheckBox x:Name="EnglishDefaultBox" Content="启动后默认使用英文模式" Margin="0,18,0,0"/>
+              </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource SectionStyle}">
+              <StackPanel>
+                <TextBlock x:Name="DisplayNameLabel" Text="输入法列表名称" Style="{StaticResource SectionTitleStyle}"/>
+                <TextBlock Text="显示在 Windows 输入法切换列表中；任务栏的语言名称“简体”由系统管理。"
+                           Style="{StaticResource SectionDescriptionStyle}"/>
+                <TextBox x:Name="DisplayNameBox" MaxLength="24" Width="320"
+                         HorizontalAlignment="Left" Margin="0,16,0,0"
+                         AutomationProperties.LabeledBy="{Binding ElementName=DisplayNameLabel}"
+                         AutomationProperties.HelpText="输入一至二十四个可见字符"/>
               </StackPanel>
             </Border>
 
@@ -165,9 +177,12 @@
                         SelectionMode="Single" SelectionUnit="FullRow" BorderThickness="0"
                         MouseDoubleClick="PhraseGrid_MouseDoubleClick">
                 <DataGrid.Columns>
-                  <DataGridTextColumn Header="输入码" Binding="{Binding Code}" Width="150"/>
-                  <DataGridTextColumn Header="候选位置" Binding="{Binding Position}" Width="110"/>
-                  <DataGridTextColumn Header="短语内容" Binding="{Binding Phrase}" Width="*"/>
+                  <DataGridTextColumn Header="输入码" Binding="{Binding Code}" Width="150"
+                                      ElementStyle="{StaticResource CenteredDataGridTextStyle}"/>
+                  <DataGridTextColumn Header="候选位置" Binding="{Binding Position}" Width="110"
+                                      ElementStyle="{StaticResource CenteredDataGridTextStyle}"/>
+                  <DataGridTextColumn Header="短语内容" Binding="{Binding Phrase}" Width="*"
+                                      ElementStyle="{StaticResource CenteredDataGridTextStyle}"/>
                 </DataGrid.Columns>
               </DataGrid>
               <Grid Grid.Row="1" Margin="16,12">
@@ -232,6 +247,7 @@
         <Grid>
           <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <TextBlock x:Name="StatusText" Foreground="{StaticResource TextSecondaryBrush}"
+                     AutomationProperties.LiveSetting="Polite"
                      TextWrapping="Wrap" VerticalAlignment="Center"/>
           <StackPanel Grid.Column="1" Orientation="Horizontal">
             <Button Content="关闭" Width="88" Click="Close_Click"/>

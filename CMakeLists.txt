@@ -29,6 +29,7 @@ set(SHURU_ENGINE_FEATURE_SOURCES
 add_library(ShuruIme SHARED
   src/common/logger.cpp
   src/common/runtime_config.cpp
+  src/common/typing_stats.cpp
   src/common/private_acl.cpp
   src/engine/dictionary.cpp
   src/engine/lexicon_cache.cpp
@@ -71,6 +72,7 @@ target_link_libraries(ShuruIme PRIVATE
   gdi32
   advapi32
   bcrypt
+  shell32
 )
 
 add_custom_target(copy_runtime_lexicon ALL
@@ -129,6 +131,15 @@ if(BUILD_TESTING)
   set_tests_properties(runtime_config PROPERTIES
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-runtime-config"
   )
+
+  add_executable(typing_stats_test
+    tests/engine_playground/typing_stats_test.cpp
+    src/common/typing_stats.cpp
+  )
+  target_include_directories(typing_stats_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(typing_stats_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  add_test(NAME typing_stats COMMAND typing_stats_test)
+  set_tests_properties(typing_stats PROPERTIES TIMEOUT 30)
 
   add_executable(engine_phase1_test
     tests/engine_playground/phase1_test.cpp
@@ -241,6 +252,7 @@ if(BUILD_TESTING)
     tests/engine_playground/shared_status_ui_test.cpp
     src/common/logger.cpp
     src/common/runtime_config.cpp
+    src/common/typing_stats.cpp
     src/common/private_acl.cpp
     src/engine/dictionary.cpp
   src/engine/lexicon_cache.cpp
@@ -260,7 +272,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(shared_status_ui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(shared_status_ui_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt)
+  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt shell32)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
@@ -268,16 +280,18 @@ if(BUILD_TESTING)
   add_executable(candidate_window_test
     tests/engine_playground/candidate_window_test.cpp
     src/common/runtime_config.cpp
+    src/common/typing_stats.cpp
     src/ime/ui/candidate_window.cpp
   )
   target_include_directories(candidate_window_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(candidate_window_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(candidate_window_test PRIVATE user32 gdi32)
+  target_link_libraries(candidate_window_test PRIVATE user32 gdi32 shell32)
   add_test(NAME candidate_window COMMAND candidate_window_test)
   set_tests_properties(candidate_window PROPERTIES TIMEOUT 30)
 
   add_executable(product_name_test
     tests/engine_playground/product_name_test.cpp
+    src/common/runtime_config.cpp
   )
   target_include_directories(product_name_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(product_name_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

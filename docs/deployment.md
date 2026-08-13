@@ -8,7 +8,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.1 `
+  -Version 0.4.4 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
@@ -31,6 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 - `%LOCALAPPDATA%\FacaiPinyin\settings.ini`
 - `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\user_dict.txt`
 - `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`
+- `%LOCALAPPDATA%\FacaiPinyin\data\typing_stats.txt`
 
 注册/profile 健康检查需要管理员环境；本机交互验证可运行：
 
@@ -38,7 +39,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_local_tsf_e2e.ps1 -BuildDir build-release -RequireRegisteredProfile
 ```
 
-未注册或非交互会明确以退出码 77 跳过。安装后可从开始菜单、状态栏“设”区域或状态栏右键菜单打开设置。
+未注册或非交互会明确以退出码 77 跳过。安装后可从开始菜单或候选框右键打开设置；悬浮状态栏保持隐藏。
 
 非管理员核心测试使用显式临时根且跳过 COM 注册：
 

@@ -12,7 +12,7 @@
 |---|---|
 | `TextService` | `ITfTextInputProcessorEx` 主服务 |
 | `ClassFactory` | COM 类工厂 |
-| `Insert/Set/Start/EndCompositionEditSession` | 文档编辑会话 |
+| `Insert/Set/EndCompositionEditSession` | 文档编辑会话；Set 在同一会话中按需创建并写入组合串 |
 | `CandidateWindow` | 无焦点候选窗 |
 | `Register*` | CLSID / Language Profile 注册 |
 
@@ -38,6 +38,7 @@
 - `base_dict.txt`：系统词库
 - `user_dict.txt`：自动学习词，位于当前用户目录
 - `custom_phrases.txt`：自定义短语，位于当前用户目录
+- `typing_stats.txt`：当日累计计数，不保存输入正文；兼容忽略旧版速度桶
 - 系统词库从版本化的 `%ProgramData%\FacaiPinyin\data\lexicon` 加载
 
 ### 2.4 设置层（`settings`）
@@ -62,7 +63,7 @@ WPF 程序分为常规设置、输入方案、自定义短语、词库与隐私�
 
 Shift 在按下时进入待定状态，只有未与其他按键组合的抬起事件才执行动作；密码框等敏感输入域完全旁路。Enter 与组合中的 Shift 共用原始拼音提交路径，避免两套上屏逻辑产生行为差异。
 
-候选窗采用 Win32 无焦点弹窗和双缓冲绘制。内容未变化时不重复调整窗口或擦除背景；组合串与右侧页码使用独立矩形，长组合串只在自身区域内省略。窗口区域与背景均使用 8 像素圆角，垂直内边距为 5 像素。
+候选窗采用 Win32 无焦点弹窗和双缓冲绘制。内容未变化时不重复调整窗口或擦除背景；组合串与右侧“今日字数 · 页码”使用独立矩形，长组合串只在自身区域内省略。字数与页码使用比候选文字小 4 像素的次要字体，最低为 11 像素。窗口区域与背景均使用 8 像素圆角，左侧蓝色强调条为窗口高度的一半并垂直居中；候选窗右键启动同版本设置程序。
 
 ## 4. 构建产物
 
@@ -114,9 +115,9 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 - 注册 `GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER`
 - 组合 range 写 `GUID_PROP_ATTRIBUTE`（蓝色下划线，`TF_ATTR_INPUT`）
 
-### 状态栏 / 软键盘
-- 右下角状态条：中/英、全/双、软键盘和设置四个区域
-- 左键“设”直接打开同版本设置程序；右键任意区域显示“输入法设置”菜单
+### 候选窗入口 / 软键盘
+- 原右下角“中 / 全 / 键 / 设”悬浮状态栏永久隐藏，隐藏窗口仅保留跨线程生命周期
+- 候选窗右键直接打开同版本设置程序
 - 软键盘：26 键 + 空格/退格/Esc；`SendInput` 注入；快捷键 F9
 
 ### 光标跟随
@@ -143,7 +144,7 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 ## 9. 进程内共享资源
 
 - SharedEngine：词库/引擎只加载一次
-- SharedStatusUi：每个 TSF UI 线程只创建一套状态栏和软键盘；同一线程内由
+- SharedStatusUi：每个 TSF UI 线程只创建一套隐藏生命周期窗口和软键盘；同一线程内由
   Bind/Unbind 绑定当前前台 TextService，不同 UI 线程互不抢占 F9 软键盘回调
 
 ## 10. 自定义短语

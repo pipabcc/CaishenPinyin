@@ -10,9 +10,12 @@ try
     File.WriteAllText(path, "CandidateCount=99\nCandidateFontSize=no\nContentLogging=maybe\nFuzzyEnabled=0\n");
     var fallback = SettingsStore.Load(path);
     if (fallback.CandidateCount != 9 || fallback.CandidateFontSize != 19 || fallback.ContentLogging || fallback.FuzzyEnabled) return 2;
-    var expected = new AppSettings(true, false, true, true, false, true, false, true, false, 5, 24);
+    var expected = new AppSettings(true, false, true, true, false, true, false, true, false, 5, 24, "加油拼音");
     SettingsStore.Save(expected, path);
     if (SettingsStore.Load(path) != expected || Directory.GetFiles(dir, "*.tmp-*").Length != 0) return 3;
+    if (SettingsStore.NormalizeDisplayName("  加油  ") != "加油" ||
+        SettingsStore.NormalizeDisplayName("\r\n") is not null ||
+        SettingsStore.NormalizeDisplayName(new string('a', 25)) is not null) return 8;
 
     var phrasePath = Path.Combine(dir, "custom_phrases.txt");
     var phrases = new[]
