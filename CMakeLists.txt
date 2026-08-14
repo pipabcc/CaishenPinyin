@@ -25,6 +25,7 @@ set(SHURU_ENGINE_FEATURE_SOURCES
   src/engine/pinyin_correction.cpp
   src/engine/special_input.cpp
   src/engine/system_language_model.cpp
+  src/engine/system_lexeme_prior.cpp
 )
 
 add_library(ShuruIme SHARED
@@ -53,6 +54,11 @@ add_library(ShuruIme SHARED
   src/ime/ShuruIme.def
   src/ime/ShuruIme.rc
 )
+
+# Windows 资源编译器不会稳定地把 rc 内部 #include 写入 Ninja 依赖图。
+# 显式声明版本头，确保只修改版本号时也会重编资源并重新链接 DLL。
+set_property(SOURCE src/ime/ShuruIme.rc APPEND PROPERTY OBJECT_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.h")
 
 target_include_directories(ShuruIme PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -174,6 +180,15 @@ if(BUILD_TESTING)
   target_compile_definitions(system_language_model_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   add_test(NAME system_language_model COMMAND system_language_model_test)
   set_tests_properties(system_language_model PROPERTIES TIMEOUT 30)
+
+  add_executable(system_lexeme_prior_test
+    tests/engine_playground/system_lexeme_prior_test.cpp
+    src/engine/system_lexeme_prior.cpp
+  )
+  target_include_directories(system_lexeme_prior_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(system_lexeme_prior_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  add_test(NAME system_lexeme_prior COMMAND system_lexeme_prior_test)
+  set_tests_properties(system_lexeme_prior PROPERTIES TIMEOUT 30)
 
   add_executable(p1_engine_test
     tests/engine_playground/p1_engine_test.cpp

@@ -89,6 +89,7 @@ private:
     CandidatePageState candidate_state_;
     EngineQueryResult current_result_;
     std::wstring candidate_display_;
+    std::wstring candidate_display_fallback_;
     RECT last_candidate_rect_ {};
     bool has_last_candidate_rect_ = false;
     bool composition_edit_in_progress_ = false;

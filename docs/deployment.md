@@ -8,7 +8,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.4 `
+  -Version 0.4.5-lexeme-r2-20260814 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
@@ -20,7 +20,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action Cleanup
 ```
 
-程序安装到 `%ProgramFiles%\FacaiPinyin\versions\<version>`，每个版本包含 `ShuruIme.dll`、`ShuruSettings.exe`、`ShuruSettings.dll`、`ShuruSettings.deps.json` 和 `ShuruSettings.runtimeconfig.json`。安装脚本在公共开始菜单创建“发财拼音设置”快捷方式，并在升级或回滚时同步到当前版本。
+程序安装到 `%ProgramFiles%\CaishenPinyin\versions\<version>`，每个版本包含 `ShuruIme.dll`、`ShuruSettings.exe`、`ShuruSettings.dll`、`ShuruSettings.deps.json` 和 `ShuruSettings.runtimeconfig.json`。安装脚本在公共开始菜单创建“财神输入法设置”快捷方式，并在升级或回滚时同步到当前版本。
 
 当前版和上一版并存。应用与词库版本目录均不可变：同版本文件完全一致时直接复用，内容冲突时拒绝覆盖。重复安装当前版本不会改写上一版本指针。脚本不会终止占用 DLL 的应用，旧目录只在显式执行 `Cleanup` 时清理。日志写入安装根 `logs`。错误码：10/11 参数，20-29 包、哈希或签名，30-33 健康检查或版本冲突，40 注册，50 无可回滚版本。
 
@@ -28,10 +28,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 
 安装采用 staged → manifest/组件验证 → 版本目录原子切换 → 注册 → current 指针 → 快捷方式 → 真实健康检查。任一阶段失败会恢复旧 DLL 注册、current 指针和快捷方式；以下当前用户数据均不进入发布包，也不会被升级覆盖：
 
-- `%LOCALAPPDATA%\FacaiPinyin\settings.ini`
-- `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\user_dict.txt`
-- `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`
-- `%LOCALAPPDATA%\FacaiPinyin\data\typing_stats.txt`
+- `%LOCALAPPDATA%\CaishenPinyin\settings.ini`
+- `%LOCALAPPDATA%\CaishenPinyin\data\lexicon\user_dict.txt`
+- `%LOCALAPPDATA%\CaishenPinyin\data\lexicon\custom_phrases.txt`
+- `%LOCALAPPDATA%\CaishenPinyin\data\typing_stats.txt`
 
 注册/profile 健康检查需要管理员环境；本机交互验证可运行：
 

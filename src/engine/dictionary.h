@@ -84,6 +84,8 @@ private:
         int child[26] {};
         // 以该节点结尾的完整拼音（通常 0/1 个，重码少）
         std::vector<std::string> terminals;
+        int max_frequency = 0;
+        int terminal_frequency = 0;
         TrieNode() {
             for (int& c : child) {
                 c = -1;
@@ -120,7 +122,9 @@ private:
     void TrieInsert(const std::string& pinyin);
     void SyllableTrieInsert(const std::string& pinyin);
     void CollectTriePrefix(const std::string& prefix, size_t limit, std::vector<std::string>* out_keys) const;
-    void CollectTrieSubtree(int node, size_t limit, std::vector<std::string>* out_keys) const;
+    void CollectTrieSubtree(
+        int node, const std::string& prefix, size_t limit,
+        std::vector<std::string>* out_keys) const;
 
     void RebuildJianpinIndex();
     void RebuildWordPinyinIndex();

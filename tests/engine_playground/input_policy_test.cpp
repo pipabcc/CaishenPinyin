@@ -108,6 +108,17 @@ int main() {
     candidates.Select(3);
     CHECK(candidates.PageSize() == 1 && candidates.page == 3);
 
+    std::vector<Candidate> display_candidates(2);
+    display_candidates[0].input_segmentation = "wo'men'zhi'dao";
+    display_candidates[1].input_segmentation = "wo'men'xiang'xin";
+    CHECK(CandidateComposingDisplay(
+        display_candidates, 0, L"womenzhidao") == L"wo'men'zhi'dao");
+    CHECK(CandidateComposingDisplay(
+        display_candidates, 1, L"womenzhidao") == L"wo'men'xiang'xin");
+    display_candidates[1].input_segmentation.clear();
+    CHECK(CandidateComposingDisplay(
+        display_candidates, 1, L"womenzhidao") == L"womenzhidao");
+
     const RECT valid_rect {10, 20, 11, 40};
     const RECT flat_rect {10, 20, 11, 20};
     CHECK(IsReliableCandidateRect(valid_rect));

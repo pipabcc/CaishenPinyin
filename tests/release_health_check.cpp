@@ -180,10 +180,30 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"duan common-character ranking failed\n");
         return 1;
     }
+    const auto xiang = engine.Query("xiang", 9);
+    const auto xian = engine.Query("xian", 9);
+    if (xiang.candidates.empty() || xiang.candidates.front().text != L"想" ||
+        xiang.candidates.front().lexeme_prior == 0 ||
+        xian.candidates.empty() || xian.candidates.front().text != L"现" ||
+        xian.candidates.front().lexeme_prior == 0) {
+        std::fwprintf(stderr, L"system lexeme-prior ranking failed\n");
+        return 1;
+    }
     const auto duanju = engine.Query("duanju", 9);
     if (duanju.candidates.empty() || duanju.candidates.front().text != L"短剧" ||
         duanju.candidates.front().pinyin != "duanju") {
         std::fwprintf(stderr, L"duanju phrase ranking failed\n");
+        return 1;
+    }
+    const auto sentence = engine.Query("womenzhidao", 20);
+    const auto sentence_candidate = std::find_if(
+        sentence.candidates.begin(), sentence.candidates.end(),
+        [](const shuru::Candidate& candidate) {
+            return candidate.text == L"我们知道";
+        });
+    if (sentence_candidate == sentence.candidates.end() ||
+        sentence_candidate->input_segmentation != "wo'men'zhi'dao") {
+        std::fwprintf(stderr, L"multi-character input segmentation failed\n");
         return 1;
     }
 

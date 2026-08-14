@@ -37,6 +37,9 @@ struct Candidate {
     size_t segment_count = 1;
     double ranking_score = 0.0;
     double language_score = 0.0;
+    // 系统短字短词模型给出的无上下文常用度。为 0 表示模型中没有该词元；
+    // 排序时它替代系统词典原始频率，避免对同一证据重复加分。
+    std::uint32_t lexeme_prior = 0;
     CandidateSource source = CandidateSource::Raw;
     // 与当前候选对应的原始输入音节边界，例如 x'x'li'you。
     // 仅用于组合串展示；学习继续使用规范全拼 pinyin/learn_segments。

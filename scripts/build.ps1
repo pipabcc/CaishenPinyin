@@ -32,6 +32,8 @@ ctest --test-dir "$build" -C $Config --output-on-failure || exit /b 1
 "@ | Set-Content -LiteralPath $bat -Encoding ASCII
 cmd /c "`"$bat`"";if($LASTEXITCODE-ne 0){throw "configure/build/full CTest failed: $LASTEXITCODE"}
 if(-not(Test-Path $dll)){throw "expected DLL missing: $dll"}
+$builtVersion=(Get-Item -LiteralPath $dll).VersionInfo.FileVersion
+if($builtVersion-ne$productVersion){throw "DLL file version $builtVersion does not match source version $productVersion"}
 $settingsFiles=@('ShuruSettings.exe','ShuruSettings.dll','ShuruSettings.deps.json','ShuruSettings.runtimeconfig.json')
 foreach($name in $settingsFiles){if(-not(Test-Path -LiteralPath (Join-Path $settingsOutput $name) -PathType Leaf)){throw "expected settings file missing: $name"}}
 if(-not $NoPackage){

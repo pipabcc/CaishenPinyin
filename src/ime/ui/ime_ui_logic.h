@@ -121,6 +121,18 @@ struct CandidatePageState {
     }
 };
 
+inline std::wstring CandidateComposingDisplay(
+    const std::vector<Candidate>& candidates,
+    std::size_t selected,
+    const std::wstring& fallback) {
+    if (selected >= candidates.size() ||
+        candidates[selected].input_segmentation.empty()) {
+        return fallback;
+    }
+    const std::string& segmented = candidates[selected].input_segmentation;
+    return std::wstring(segmented.begin(), segmented.end());
+}
+
 struct CandidateItemLayout {
     std::size_t index = 0;
     int text_left = 0;

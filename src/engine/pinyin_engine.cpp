@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <cmath>
 #include <unordered_map>
@@ -315,6 +316,19 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     } else {
         SHURU_LOG_WARN("system_ngram.bin missing, mixed sentence ranking degraded");
     }
+    const std::wstring lexeme_prior_path =
+        lexicon_dir + L"\\system_lexeme_prior.bin";
+    if (FileExists(lexeme_prior_path)) {
+        const bool prior_ok = loaded_lexicon->lexeme_prior_model.LoadFromFile(
+            lexeme_prior_path);
+        SHURU_LOG_INFO(
+            "system lexeme prior load %s records=%zu",
+            prior_ok ? "ok" : "fail",
+            loaded_lexicon->lexeme_prior_model.size());
+    } else {
+        SHURU_LOG_WARN(
+            "system_lexeme_prior.bin missing, short candidate ranking degraded");
+    }
 
     if (FileExists(loaded_user_dict_path)) {
         loaded_user_dictionary.LoadFromFile(loaded_user_dict_path, true);
@@ -515,6 +529,18 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     auto bigram_count = [&](const std::wstring& previous, const std::wstring& next) {
         return bigram ? bigram->Count(previous, next) : 0;
     };
+    auto apply_lexeme_prior = [&](Candidate& candidate) {
+        if (candidate.lexeme_prior == 0 && !candidate.pinyin.empty() &&
+            !candidate.text.empty()) {
+            candidate.lexeme_prior = lexicon->lexeme_prior_model.Lookup(
+                candidate.pinyin, candidate.text);
+        }
+    };
+    auto ranking_frequency = [&](const Candidate& candidate) {
+        return candidate.lexeme_prior != 0
+            ? static_cast<double>(candidate.lexeme_prior)
+            : static_cast<double>((std::max)(0, candidate.frequency));
+    };
 
     if (schema == InputSchema::Quanpin && IsCalculatorInput(raw_input) &&
         raw_input.size() > 1) {
@@ -610,13 +636,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
 
     std::vector<Candidate> pool;
     auto score = [&](Candidate& c) {
+        apply_lexeme_prior(c);
         const double coverage = query.empty() ? 0.0 : double(c.covered_input_len) / double(query.size());
         // 上文搭配加成：刚上屏「发财」后，baofu 的「暴富」应压过更高频的「报复」。
         const double context_bonus = context.empty()
             ? 0.0
             : double((std::min)(3, bigram_count(context, c.text))) * 90.0;
         c.ranking_score = coverage * 10000.0 - double(c.segment_count > 0 ? c.segment_count - 1 : 0) * 55.0
-            + std::log1p(double((std::max)(0, c.frequency))) * 28.0
+            + std::log1p(ranking_frequency(c)) * 28.0
             - double(c.match_cost) * 0.20 + double((std::min)(90, c.learning_score)) * 2.0
             + (c.from_user && c.learning_score > 0 ? 400.0 : 0.0)
             + context_bonus + c.language_score * 1.5;
@@ -638,6 +665,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         if (a.ranking_score != b.ranking_score) return a.ranking_score > b.ranking_score;
         if (a.covered_input_len != b.covered_input_len) return a.covered_input_len > b.covered_input_len;
         if (a.match_cost != b.match_cost) return a.match_cost < b.match_cost;
+        if (a.lexeme_prior != b.lexeme_prior)
+            return a.lexeme_prior > b.lexeme_prior;
         if (a.frequency != b.frequency) return a.frequency > b.frequency;
         if (a.pinyin != b.pinyin) return a.pinyin < b.pinyin;
         return a.text < b.text;
@@ -755,8 +784,17 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 edges.erase(std::remove_if(edges.begin(), edges.end(), [&](const Candidate& c) {
                     return !acceptable_user_candidate(c);
                 }), edges.end());
-                std::sort(edges.begin(), edges.end(), [](const Candidate& left, const Candidate& right) {
-                    return left.frequency > right.frequency;
+                for (auto& edge : edges) apply_lexeme_prior(edge);
+                std::sort(edges.begin(), edges.end(), [&](const Candidate& left, const Candidate& right) {
+                    if (left.from_user != right.from_user)
+                        return left.from_user > right.from_user;
+                    if (left.learning_score != right.learning_score)
+                        return left.learning_score > right.learning_score;
+                    const double left_frequency = ranking_frequency(left);
+                    const double right_frequency = ranking_frequency(right);
+                    if (left_frequency != right_frequency)
+                        return left_frequency > right_frequency;
+                    return left.text < right.text;
                 });
                 if (edges.size() > 4) edges.resize(4);
                 for (const auto& prefix : paths[begin]) {
@@ -770,7 +808,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                         paths[endpos].push_back({
                             prefix.text + edge.text,
                             edge.text,
-                            prefix.log_freq + std::log1p(double((std::max)(0, edge.frequency))) + bigram_boost,
+                            prefix.log_freq + std::log1p(ranking_frequency(edge)) + bigram_boost,
                             prefix.learning + edge.learning_score,
                             prefix.segments + 1,
                             prefix.from_user || edge.from_user,
@@ -815,10 +853,26 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     auto matches = user_lexicon->dictionary.LookupExact(syllable);
                     auto base_matches = lexicon->dictionary.LookupExact(syllable);
                     matches.insert(matches.end(), base_matches.begin(), base_matches.end());
+                    for (auto& match : matches) apply_lexeme_prior(match);
+                    std::sort(matches.begin(), matches.end(), [&](
+                        const Candidate& left, const Candidate& right) {
+                        if (left.from_user != right.from_user)
+                            return left.from_user > right.from_user;
+                        if (left.learning_score != right.learning_score)
+                            return left.learning_score > right.learning_score;
+                        const double left_frequency = ranking_frequency(left);
+                        const double right_frequency = ranking_frequency(right);
+                        if (left_frequency != right_frequency)
+                            return left_frequency > right_frequency;
+                        return left.text < right.text;
+                    });
                     size_t taken = 0;
                     for (const auto& match : matches) {
                         if (match.text.size() != 1) continue;
-                        tail_words.push_back({match.text, syllable, match.frequency,
+                        const int rank_frequency = static_cast<int>((std::min)(
+                            ranking_frequency(match),
+                            static_cast<double>((std::numeric_limits<int>::max)())));
+                        tail_words.push_back({match.text, syllable, rank_frequency,
                                               match.learning_score, match.from_user});
                         if (++taken >= 2) break;
                     }
@@ -937,8 +991,9 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             matches.insert(matches.end(),
                            std::make_move_iterator(base_matches.begin()),
                            std::make_move_iterator(base_matches.end()));
+            for (auto& match : matches) apply_lexeme_prior(match.candidate);
 
-            std::sort(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
+            std::sort(matches.begin(), matches.end(), [&](const auto& left, const auto& right) {
                 if (left.consumed_input != right.consumed_input)
                     return left.consumed_input < right.consumed_input;
                 if (left.candidate.text != right.candidate.text)
@@ -947,7 +1002,11 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     return left.candidate.from_user > right.candidate.from_user;
                 if (left.candidate.learning_score != right.candidate.learning_score)
                     return left.candidate.learning_score > right.candidate.learning_score;
-                return left.candidate.frequency > right.candidate.frequency;
+                const double left_frequency = ranking_frequency(left.candidate);
+                const double right_frequency = ranking_frequency(right.candidate);
+                if (left_frequency != right_frequency)
+                    return left_frequency > right_frequency;
+                return left.candidate.pinyin < right.candidate.pinyin;
             });
             matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
                 return left.consumed_input == right.consumed_input &&
@@ -983,11 +1042,13 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                         match.candidate.pinyin, match.candidate.text});
                     // 反推单字会继承其所在长词的峰值词频，可能达到千万级；
                     // 该值适合保证单字可见，不适合直接当作整句语言概率。
-                    const int mixed_frequency = match.candidate.text.size() == 1
-                        ? (std::min)(600000, match.candidate.frequency)
-                        : match.candidate.frequency;
-                    next.log_frequency += std::log1p(double(
-                        (std::max)(0, mixed_frequency))) +
+                    // 混拼长句中的单字仍要封顶；否则“下/力”等超高单字先验
+                    // 会压过“学校/美女”这类完整词边，破坏既有长句模型。
+                    const double mixed_frequency = match.candidate.text.size() == 1
+                        ? (std::min)(600000.0, ranking_frequency(match.candidate))
+                        : ranking_frequency(match.candidate);
+                    next.log_frequency += std::log1p(
+                        (std::max)(0.0, mixed_frequency)) +
                         learned_pair_boost;
                     next.language_score += system_language_boost;
                     next.learning += match.candidate.learning_score;
@@ -1129,9 +1190,15 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             return candidate.source == CandidateSource::Exact && IsBmpChineseWord(candidate.text) &&
                 candidate.text.size() == 1;
         };
-        auto is_preferred_phrase = [](const Candidate& candidate) {
+        auto is_dictionary_phrase = [](const Candidate& candidate) {
             return IsBmpChineseWord(candidate.text) && candidate.text.size() > 1 &&
-                candidate.source <= CandidateSource::WordGraph;
+                (candidate.source == CandidateSource::Exact ||
+                 candidate.source == CandidateSource::Prefix);
+        };
+        auto is_graph_phrase = [](const Candidate& candidate) {
+            return IsBmpChineseWord(candidate.text) && candidate.text.size() > 1 &&
+                (candidate.source == CandidateSource::WordGraph ||
+                 candidate.source == CandidateSource::MixedSentence);
         };
         std::vector<Candidate> ordered;
         ordered.reserve(pool.size());
@@ -1151,10 +1218,25 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             : 0;
         size_t preferred_phrases = 0;
         for (size_t i = 0; i < pool.size() && preferred_phrases < phrase_quota; ++i) {
-            if (!moved[i] && is_preferred_phrase(pool[i])) {
+            if (!moved[i] && is_dictionary_phrase(pool[i])) {
                 ordered.push_back(std::move(pool[i]));
                 moved[i] = true;
                 ++preferred_phrases;
+            }
+        }
+        for (size_t i = 0; i < pool.size() && preferred_phrases < phrase_quota; ++i) {
+            if (!moved[i] && is_graph_phrase(pool[i])) {
+                ordered.push_back(std::move(pool[i]));
+                moved[i] = true;
+                ++preferred_phrases;
+            }
+        }
+        // 第一页之后继续列出词典词组，再进入生僻单字。否则内部 90 项预算
+        // 会被同音单字耗尽，用户永远翻不到“想法/想象/想要”等前缀词。
+        for (size_t i = 0; i < pool.size(); ++i) {
+            if (!moved[i] && is_dictionary_phrase(pool[i])) {
+                ordered.push_back(std::move(pool[i]));
+                moved[i] = true;
             }
         }
         for (size_t i = 0; i < pool.size(); ++i) {
@@ -1199,6 +1281,24 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         InsertCustomPhraseCandidates(
             custom_phrases->LookupExact(normalized), normalized,
             raw_input.size(), limit, &pool);
+    }
+    if (schema == InputSchema::Quanpin) {
+        std::unordered_map<size_t, std::vector<pinyin_data::SyllablePath>>
+            segmentation_lattices;
+        for (auto& candidate : pool) {
+            if (!candidate.input_segmentation.empty() ||
+                candidate.text.size() < 3 || candidate.covered_input_len == 0) continue;
+            const size_t covered = (std::min)(candidate.covered_input_len, query.size());
+            auto found = segmentation_lattices.find(covered);
+            if (found == segmentation_lattices.end()) {
+                found = segmentation_lattices.emplace(
+                    covered,
+                    pinyin_data::BuildSyllableLattice(query.substr(0, covered))).first;
+            }
+            candidate.input_segmentation =
+                pinyin_data::BuildCandidateInputSegmentationFromLattice(
+                    query.substr(0, covered), found->second, candidate);
+        }
     }
     for(const auto& c:pool) result.matched_pinyin_len=(std::max)(result.matched_pinyin_len,c.covered_input_len);
     result.candidates=std::move(pool); return result;

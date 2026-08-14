@@ -111,6 +111,34 @@ bool VerifyMixedPrefixLookupIsBoundedAndStable() {
     return true;
 }
 
+bool VerifyPrefixLookupIsBestFirstAndStable() {
+    shuru::Dictionary dictionary;
+    dictionary.BeginBulkLoad();
+    for (int index = 0; index < 300; ++index) {
+        std::string key = "xianga";
+        key.push_back(static_cast<char>('a' + (index / 26) % 26));
+        key.push_back(static_cast<char>('a' + index % 26));
+        dictionary.AddWord(key, L"低频词", 1, false);
+    }
+    dictionary.AddWord("xiangzzx", L"想法", 1000, false);
+    dictionary.AddWord("xiangzzy", L"想象", 900, false);
+    dictionary.AddWord("xiangzzz", L"想要", 800, false);
+    dictionary.EndBulkLoad();
+
+    const auto first = dictionary.LookupPrefix("xiang", 3);
+    const auto second = dictionary.LookupPrefix("xiang", 3);
+    if (first.size() != 3 || second.size() != first.size()) return false;
+    const std::wstring expected[] = {L"想法", L"想象", L"想要"};
+    for (size_t index = 0; index < first.size(); ++index) {
+        if (first[index].text != expected[index] ||
+            first[index].text != second[index].text ||
+            first[index].pinyin != second[index].pinyin) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool VerifyQueryStaysResponsiveDuringSave(
     shuru::PinyinEngine& engine,
     const std::string& learned_pinyin,
@@ -200,6 +228,51 @@ int wmain(int argc, wchar_t** argv) {
             return 2;
         }
 
+        const auto xiang = engine.Query("xiang", 90);
+        const auto xian = engine.Query("xian", 90);
+        if (xiang.candidates.empty() || xiang.candidates.front().text != L"想" ||
+            xian.candidates.empty() || xian.candidates.front().text != L"现" ||
+            xiang.candidates.front().lexeme_prior == 0 ||
+            xian.candidates.front().lexeme_prior == 0 ||
+            !ContainsText(xiang, L"想法") ||
+            !ContainsText(xiang, L"想象") ||
+            !ContainsText(xiang, L"想要")) {
+            std::cerr << "short lexeme prior or prefix recall failed: xiang=";
+            for (const auto& candidate : xiang.candidates) {
+                std::cerr << WideToUtf8(candidate.text) << ',';
+            }
+            std::cerr << " xian=";
+            for (const auto& candidate : xian.candidates) {
+                std::cerr << WideToUtf8(candidate.text) << ',';
+            }
+            std::cerr << '\n';
+            return 23;
+        }
+        engine.Learn("xian", L"先");
+        const auto learned_xian = engine.Query("xian", 9);
+        if (learned_xian.candidates.empty() ||
+            learned_xian.candidates.front().text != L"先" ||
+            !engine.UndoLastLearning()) {
+            std::cerr << "user learning did not override system lexeme prior\n";
+            return 24;
+        }
+
+        const auto segmented_sentence = engine.Query("womenzhidao", 20);
+        const auto segmented = std::find_if(
+            segmented_sentence.candidates.begin(), segmented_sentence.candidates.end(),
+            [](const Candidate& candidate) { return candidate.text == L"我们知道"; });
+        const auto predicted_suffix = engine.Query("haoduoc", 20);
+        const auto predicted = std::find_if(
+            predicted_suffix.candidates.begin(), predicted_suffix.candidates.end(),
+            [](const Candidate& candidate) { return candidate.text == L"好多次"; });
+        if (segmented == segmented_sentence.candidates.end() ||
+            segmented->input_segmentation != "wo'men'zhi'dao" ||
+            predicted == predicted_suffix.candidates.end() ||
+            predicted->input_segmentation != "hao'duo'c") {
+            std::cerr << "candidate input segmentation failed\n";
+            return 25;
+        }
+
         if (!VerifyMixedSentence(
                 engine, "xxliyouyigmein", L"学校里有一个美女",
                 "x'x'li'you'yi'g'mei'n") ||
@@ -212,7 +285,8 @@ int wmain(int argc, wchar_t** argv) {
             !VerifyMixedSentence(
                 engine, "mingtianxwqubj", L"明天下午去北京",
                 "ming'tian'x'w'qu'b'j") ||
-            !VerifyMixedPrefixLookupIsBoundedAndStable()) {
+            !VerifyMixedPrefixLookupIsBoundedAndStable() ||
+            !VerifyPrefixLookupIsBestFirstAndStable()) {
             return 22;
         }
 

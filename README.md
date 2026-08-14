@@ -12,7 +12,7 @@ Windows 11 本地拼音输入法，包含 TSF 文本服务、拼音引擎、候�
 | 设置程序 (WPF) | 常规、全拼/双拼、自定义短语、词库与隐私设置已连接运行时 |
 | C# 引擎演练 | 可运行 |
 | 本机 C++ 工具链 | **已安装到 E:\\shurufa\\tools，可编译** |
-| 发布版本 | **0.4.4**（精简今日字数、候选窗层级与设置控件对齐优化） |
+| 发布版本 | **0.4.5**（短字短词先验、最佳优先召回与多字拼音分界） |
 
 ## 架构
 
@@ -76,7 +76,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.4 `
+  -Version 0.4.5-lexeme-r2-20260814 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 

@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <queue>
 #include <sstream>
 
 namespace shuru {
@@ -124,7 +125,16 @@ void Dictionary::SyllableTrieInsert(const std::string& pinyin) {
 
 void Dictionary::TrieInsert(const std::string& pinyin) {
     EnsureTrieRoot();
+    int key_frequency = 0;
+    const auto entries = map_.find(pinyin);
+    if (entries != map_.end()) {
+        for (const auto& entry : entries->second) {
+            key_frequency = (std::max)(key_frequency, entry.frequency);
+        }
+    }
     int node = 0;
+    trie_[node].max_frequency =
+        (std::max)(trie_[node].max_frequency, key_frequency);
     for (unsigned char ch : pinyin) {
         if (ch < 'a' || ch > 'z') {
             return;
@@ -135,30 +145,65 @@ void Dictionary::TrieInsert(const std::string& pinyin) {
             trie_.emplace_back();
         }
         node = trie_[node].child[idx];
+        trie_[node].max_frequency =
+            (std::max)(trie_[node].max_frequency, key_frequency);
     }
     auto& terms = trie_[node].terminals;
     if (std::find(terms.begin(), terms.end(), pinyin) == terms.end()) {
         terms.push_back(pinyin);
     }
+    trie_[node].terminal_frequency =
+        (std::max)(trie_[node].terminal_frequency, key_frequency);
 }
 
-void Dictionary::CollectTrieSubtree(int node, size_t limit, std::vector<std::string>* out_keys) const {
+void Dictionary::CollectTrieSubtree(
+    int node, const std::string& prefix, size_t limit,
+    std::vector<std::string>* out_keys) const {
     if (!out_keys || node < 0 || node >= static_cast<int>(trie_.size())) {
         return;
     }
-    for (const auto& k : trie_[node].terminals) {
-        out_keys->push_back(k);
-        if (out_keys->size() >= limit) {
-            return;
+    struct WorkItem {
+        int node = -1;
+        int frequency = 0;
+        std::string key;
+        bool terminal = false;
+    };
+    struct LowerPriority {
+        bool operator()(const WorkItem& left, const WorkItem& right) const {
+            if (left.frequency != right.frequency)
+                return left.frequency < right.frequency;
+            if (left.key != right.key) return left.key > right.key;
+            return left.terminal < right.terminal;
         }
-    }
-    for (int c = 0; c < 26; ++c) {
-        const int child = trie_[node].child[c];
-        if (child >= 0) {
-            CollectTrieSubtree(child, limit, out_keys);
-            if (out_keys->size() >= limit) {
-                return;
-            }
+    };
+
+    std::priority_queue<WorkItem, std::vector<WorkItem>, LowerPriority> pending;
+    pending.push({node, trie_[node].max_frequency, prefix, false});
+    const size_t state_budget = (std::min)(
+        size_t{65536},
+        (std::max)(size_t{512},
+                   limit <= size_t{512} ? limit * 128 : size_t{65536}));
+    size_t visited = 0;
+    while (!pending.empty() && out_keys->size() < limit &&
+           visited < state_budget) {
+        WorkItem item = pending.top();
+        pending.pop();
+        ++visited;
+        if (item.terminal) {
+            out_keys->push_back(std::move(item.key));
+            continue;
+        }
+        const TrieNode& current = trie_[item.node];
+        for (const auto& terminal : current.terminals) {
+            pending.push({-1, current.terminal_frequency, terminal, true});
+        }
+        for (int character = 0; character < 26; ++character) {
+            const int child = current.child[character];
+            if (child < 0) continue;
+            std::string child_key = item.key;
+            child_key.push_back(static_cast<char>('a' + character));
+            pending.push({child, trie_[child].max_frequency,
+                          std::move(child_key), false});
         }
     }
 }
@@ -179,7 +224,7 @@ void Dictionary::CollectTriePrefix(const std::string& prefix, size_t limit, std:
         }
         node = child;
     }
-    CollectTrieSubtree(node, limit, out_keys);
+    CollectTrieSubtree(node, prefix, limit, out_keys);
 }
 
 void Dictionary::BeginBulkLoad() {
@@ -362,7 +407,11 @@ void Dictionary::AddWord(const std::string& pinyin, const std::wstring& word, in
             entry.frequency = (std::max)(entry.frequency, frequency);
             entry.from_user = entry.from_user || from_user;
             const int updated_frequency = entry.frequency;
-            if (!bulk_loading_) SortEntries(entries);
+            if (!bulk_loading_) {
+                SortEntries(entries);
+                TrieInsert(key);
+                SyllableTrieInsert(key);
+            }
             if (from_user) {
                 user_entries_[{key, word}] = UserDictionaryEntry{key, word, updated_frequency, entry.selection_count, entry.last_used_unix};
                 dirty_ = true;
@@ -372,7 +421,13 @@ void Dictionary::AddWord(const std::string& pinyin, const std::wstring& word, in
     }
     const bool is_new_key = entries.empty();
     entries.push_back(Entry{word, frequency, from_user});
-    if (!bulk_loading_) SortEntries(entries);
+    if (!bulk_loading_) {
+        SortEntries(entries);
+        if (!is_new_key) {
+            TrieInsert(key);
+            SyllableTrieInsert(key);
+        }
+    }
     if (from_user) {
         user_entries_[{key, word}] = UserDictionaryEntry{key, word, frequency, 0, 0};
     }
@@ -416,6 +471,8 @@ void Dictionary::IncreaseUserWord(
             entry.last_used_unix = now_unix;
             const int updated_frequency = entry.frequency;
             SortEntries(entries);
+            TrieInsert(key);
+            SyllableTrieInsert(key);
             user_entries_[{key, word}] = UserDictionaryEntry{key, word, updated_frequency, entry.selection_count, entry.last_used_unix};
             dirty_ = true;
             return;
@@ -435,6 +492,9 @@ void Dictionary::IncreaseUserWord(
                 jianpin_keys_sorted_.insert(it, jp);
             }
         }
+    } else {
+        TrieInsert(key);
+        SyllableTrieInsert(key);
     }
     dirty_ = true;
 }
@@ -497,6 +557,9 @@ bool Dictionary::DecreaseUserWord(const std::string& pinyin, const std::wstring&
             user->second.last_used_unix = it->last_used_unix;
             SortEntries(bucket->second);
         }
+        // max_frequency 是单调更新的上界；撤销学习会降低频率，因此需要
+        // 重建两个 Trie，避免旧峰值长期影响最佳优先召回顺序。
+        RebuildJianpinIndex();
         RebuildWordPinyinIndex();
         dirty_ = true;
         return true;

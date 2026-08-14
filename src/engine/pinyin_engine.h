@@ -6,6 +6,7 @@
 #include "english_dict.h"
 #include "fuzzy_pinyin.h"
 #include "system_language_model.h"
+#include "system_lexeme_prior.h"
 #include "user_bigram.h"
 
 #include <Windows.h>
@@ -82,6 +83,7 @@ private:
         Dictionary dictionary;
         EnglishDictionary english_dictionary;
         SystemLanguageModel language_model;
+        SystemLexemePriorModel lexeme_prior_model;
     };
 
     struct UserLexiconSnapshot {

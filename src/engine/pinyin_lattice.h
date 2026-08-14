@@ -107,6 +107,54 @@ inline std::string RemoveSyllableSeparators(const std::string& input) {
     return out;
 }
 
+// 为三字及以上、与实际输入完整对齐的候选生成展示边界。前缀预测允许最后
+// 一个音节仍是部分拼写，但只展示用户已经键入的字母，绝不补出未输入后缀。
+inline std::string BuildCandidateInputSegmentationFromLattice(
+    const std::string& typed,
+    const std::vector<SyllablePath>& paths,
+    const Candidate& candidate) {
+    if (!candidate.input_segmentation.empty() || candidate.text.size() < 3 ||
+        typed.empty() || candidate.pinyin.empty() ||
+        !std::all_of(candidate.text.begin(), candidate.text.end(), [](wchar_t ch) {
+            return ch >= L'\x4e00' && ch <= L'\x9fff';
+        })) {
+        return {};
+    }
+    const std::string compact = RemoveSyllableSeparators(typed);
+    if (compact.empty() || candidate.pinyin.size() < compact.size() ||
+        candidate.pinyin.compare(0, compact.size(), compact) != 0) {
+        return {};
+    }
+    for (const auto& path : paths) {
+        if (path.covered != typed.size() ||
+            path.edges.size() != candidate.text.size()) {
+            continue;
+        }
+        const bool valid_partial = !path.edges.empty() &&
+            path.edges.back().partial &&
+            std::none_of(path.edges.begin(), path.edges.end() - 1,
+                         [](const SyllableEdge& edge) { return edge.partial; });
+        if (!path.complete && !valid_partial) continue;
+
+        std::string segmented;
+        for (const auto& edge : path.edges) {
+            if (!segmented.empty()) segmented.push_back('\'');
+            segmented += edge.syllable;
+        }
+        return segmented;
+    }
+    return {};
+}
+
+inline std::string BuildCandidateInputSegmentation(
+    const std::string& input, const Candidate& candidate) {
+    if (candidate.covered_input_len == 0) return {};
+    const std::size_t covered = (std::min)(candidate.covered_input_len, input.size());
+    const std::string typed = input.substr(0, covered);
+    return BuildCandidateInputSegmentationFromLattice(
+        typed, BuildSyllableLattice(typed), candidate);
+}
+
 inline bool CandidateRespectsHardBoundaries(
     const std::string& query, const Candidate& candidate) {
     if (query.find('\'') == std::string::npos || candidate.is_english) return true;

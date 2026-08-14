@@ -1081,6 +1081,7 @@ void TextService::RefreshCandidates() {
     candidate_state_.page = 0;
 
     std::wstring comp = PinyinToWide(composing_pinyin_);
+    candidate_display_fallback_ = comp;
     if (engine_ == nullptr) {
         InitEngine();
     }
@@ -1123,24 +1124,18 @@ void TextService::RefreshCandidates() {
     candidate_state_.total = current_result_.candidates.size();
     candidate_state_.page_size = candidate_count;
     candidate_state_.Clamp();
-    std::wstring disp;
-    if (!current_result_.candidates.empty() &&
-        !current_result_.candidates.front().input_segmentation.empty()) {
-        disp = PinyinToWide(
-            current_result_.candidates.front().input_segmentation);
-    } else {
-        disp = engine_->FormatComposingDisplay(composing_pinyin_);
-    }
-    if (disp.empty()) {
-        disp = PinyinToWide(composing_pinyin_);
-    }
-    candidate_display_ = disp;
+    candidate_display_fallback_ = engine_->FormatComposingDisplay(composing_pinyin_);
+    if (candidate_display_fallback_.empty()) candidate_display_fallback_ = comp;
     SyncCandidateWindowCandidates();
 }
 
 void TextService::SyncCandidateWindowCandidates() {
     candidate_state_.total = current_result_.candidates.size();
     candidate_state_.Clamp();
+    candidate_display_ = CandidateComposingDisplay(
+        current_result_.candidates,
+        candidate_state_.selected,
+        candidate_display_fallback_);
     candidate_window_.SetContent(
         candidate_display_,
         current_result_.candidates,
@@ -1252,6 +1247,7 @@ void TextService::ClearCompositionState() {
     candidate_state_ = {};
     current_result_ = {};
     candidate_display_.clear();
+    candidate_display_fallback_.clear();
     has_last_candidate_rect_ = false;
     candidate_pos_overridden_ = false;
     DismissAssociation();
