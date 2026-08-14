@@ -87,6 +87,7 @@ EditMeasurement MeasureSingleEdit(
 
 struct CorrectionState {
     std::string pinyin;
+    std::string input_segmentation;
     int cost = 0;
     int ranking_cost = 0;
     std::size_t syllables = 0;
@@ -105,6 +106,8 @@ bool BetterState(const CorrectionState& left, const CorrectionState& right) {
         return left.ranking_cost < right.ranking_cost;
     if (left.cost != right.cost) return left.cost < right.cost;
     if (left.syllables != right.syllables) return left.syllables < right.syllables;
+    if (left.input_segmentation != right.input_segmentation)
+        return left.input_segmentation < right.input_segmentation;
     return left.pinyin < right.pinyin;
 }
 
@@ -171,8 +174,12 @@ std::vector<PinyinCorrection> GeneratePinyinCorrections(
             for (const auto& state : states[begin]) {
                 for (const auto& transition : transitions) {
                     if (state.cost + transition.edit.distance > limits.max_total_cost) continue;
+                    std::string input_segmentation = state.input_segmentation;
+                    if (!input_segmentation.empty()) input_segmentation.push_back('\'');
+                    input_segmentation += piece;
                     destination.push_back({
                         state.pinyin + transition.syllable,
+                        std::move(input_segmentation),
                         state.cost + transition.edit.distance,
                         state.ranking_cost + transition.edit.ranking_cost,
                         state.syllables + 1,
@@ -189,7 +196,8 @@ std::vector<PinyinCorrection> GeneratePinyinCorrections(
     results.reserve((std::min)(limits.max_results, states.back().size()));
     for (const auto& state : states.back()) {
         if (state.cost == 0) continue;
-        results.push_back({state.pinyin, state.cost, state.syllables});
+        results.push_back({state.pinyin, state.input_segmentation,
+                           state.cost, state.syllables});
         if (results.size() >= limits.max_results) break;
     }
     return results;

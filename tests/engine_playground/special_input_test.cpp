@@ -75,6 +75,7 @@ int main() {
     CHECK(HasCorrection(GeneratePinyinCorrections("hsi"), "shi"));
     CHECK(HasCorrection(GeneratePinyinCorrections("jui"), "jiu"));
     CHECK(HasCorrection(GeneratePinyinCorrections("zhhe"), "zhe"));
+    CHECK(HasCorrection(GeneratePinyinCorrections("chognqi"), "chongqi"));
     CHECK(GeneratePinyinCorrections(std::string(33, 'a')).empty());
     CHECK(GeneratePinyinCorrections("has space").empty());
 

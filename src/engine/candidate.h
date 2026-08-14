@@ -27,6 +27,7 @@ struct Candidate {
     std::string pinyin;
     int frequency = 0;
     int match_cost = 0;       // 0=精确；越大表示越弱的模糊恢复
+    int correction_edit_cost = 0; // 纠错编辑次数；仅 CandidateSource::Correction 使用
     int selection_count = 0;  // 用户明确选择次数
     std::int64_t last_used_unix = 0;
     int learning_score = 0;   // 经时间衰减后的有界、可解释加分

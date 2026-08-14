@@ -414,6 +414,41 @@ int wmain(int argc, wchar_t** argv) {
             return 17;
         }
 
+        const auto transposed = engine.Query("chognqi", 9);
+        if (transposed.candidates.empty() ||
+            transposed.candidates.front().text != L"重启" ||
+            transposed.candidates.front().source != CandidateSource::Correction ||
+            transposed.candidates.front().input_segmentation != "chogn'qi") {
+            std::cerr << "transposition correction failed: ";
+            for (const auto& candidate : transposed.candidates) {
+                std::cerr << WideToUtf8(candidate.text) << "["
+                          << candidate.input_segmentation << "],";
+            }
+            std::cerr << '\n';
+            return 26;
+        }
+        const auto correct_transposed = engine.Query("chongqi", 9);
+        if (correct_transposed.candidates.empty() ||
+            correct_transposed.candidates.front().text != L"重启" ||
+            correct_transposed.candidates.front().source != CandidateSource::Exact) {
+            std::cerr << "correct spelling changed after correction support\n";
+            return 27;
+        }
+        const auto duplicated = engine.Query("chonngqi", 9);
+        if (duplicated.candidates.empty() ||
+            duplicated.candidates.front().text != L"重启" ||
+            duplicated.candidates.front().source != CandidateSource::Correction ||
+            duplicated.candidates.front().input_segmentation != "chonng'qi") {
+            std::cerr << "duplicate-letter correction failed\n";
+            return 28;
+        }
+        const auto typing_prefix = engine.Query("zhengc", 9);
+        if (typing_prefix.candidates.empty() ||
+            typing_prefix.candidates.front().source == CandidateSource::Correction) {
+            std::cerr << "correction displaced an in-progress prefix\n";
+            return 29;
+        }
+
         const auto time_shortcut = engine.Query("sj", 9);
         if (time_shortcut.candidates.size() < 4 ||
             time_shortcut.candidates.front().source != CandidateSource::Dynamic ||

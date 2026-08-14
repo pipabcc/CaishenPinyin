@@ -99,25 +99,30 @@ bool IsSyllableAligned(const Candidate& candidate) {
     });
 }
 
-int SourcePriority(const Candidate& candidate) {
+int SourcePriority(
+    const Candidate& candidate, bool prefer_single_edit_correction = false) {
     switch (candidate.source) {
     case CandidateSource::Dynamic: return 0;
     case CandidateSource::Exact: return 1;
     case CandidateSource::WordGraph: return 2;
-    case CandidateSource::MixedSentence: return 3;
+    case CandidateSource::MixedSentence:
+        return prefer_single_edit_correction ? 6 : 3;
     // 键前缀/补全预测优先于纠错：zhengc 下「正常」（键前缀）不应被
     // 纠错变体「政策」无条件压制，纠错是编辑距离兜底手段。
     case CandidateSource::Prefix: return 4;
-    case CandidateSource::Correction: return 5;
-    case CandidateSource::Jianpin: return 6;
-    case CandidateSource::Mixed: return 7;
-    case CandidateSource::Fuzzy: return 8;
-    case CandidateSource::English: return 9;
-    case CandidateSource::LiteralMixed: return 10;
+    // 单次编辑的纠错可信度高于碎片化混拼；多次编辑仍作为兜底。
+    case CandidateSource::Correction:
+        return prefer_single_edit_correction && candidate.correction_edit_cost > 1
+            ? 7 : 5;
+    case CandidateSource::Jianpin: return prefer_single_edit_correction ? 8 : 6;
+    case CandidateSource::Mixed: return prefer_single_edit_correction ? 9 : 7;
+    case CandidateSource::Fuzzy: return prefer_single_edit_correction ? 10 : 8;
+    case CandidateSource::English: return prefer_single_edit_correction ? 11 : 9;
+    case CandidateSource::LiteralMixed: return prefer_single_edit_correction ? 12 : 10;
     case CandidateSource::CustomPhrase: return 0;
-    case CandidateSource::Raw: return 11;
+    case CandidateSource::Raw: return prefer_single_edit_correction ? 13 : 11;
     }
-    return 10;
+    return 12;
 }
 
 }  // namespace
@@ -635,6 +640,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         pinyin_data::Syllables().count(compact) != 0;
 
     std::vector<Candidate> pool;
+    bool prefer_single_edit_correction = false;
     auto score = [&](Candidate& c) {
         apply_lexeme_prior(c);
         const double coverage = query.empty() ? 0.0 : double(c.covered_input_len) / double(query.size());
@@ -655,10 +661,11 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         const bool full_a = a.covered_input_len >= query.size();
         const bool full_b = b.covered_input_len >= query.size();
         if (full_a != full_b) return full_a;
-        const int source_a = SourcePriority(a);
-        const int source_b = SourcePriority(b);
+        const int source_a = SourcePriority(a, prefer_single_edit_correction);
+        const int source_b = SourcePriority(b, prefer_single_edit_correction);
         if (source_a != source_b) return source_a < source_b;
         if (a.source == CandidateSource::Correction &&
+            b.source == CandidateSource::Correction &&
             a.segment_count != b.segment_count) {
             return a.segment_count < b.segment_count;
         }
@@ -680,6 +687,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         return !lexicon->dictionary.ContainsWord(c.text) ||
                lexicon->dictionary.ContainsWordPinyin(c.text, c.pinyin);
     };
+    std::string correction_display_segmentation;
+    int active_correction_edit_cost = 0;
     auto add = [&](std::vector<Candidate> items, size_t covered, int cost, size_t segments = 1,
                    bool enforce_spelling_boundaries = true,
                    CandidateSource source = CandidateSource::Exact) {
@@ -691,6 +700,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 c.match_cost = 0;
             c.segment_count = (std::max)(size_t{1}, segments);
             c.source = source;
+            if (source == CandidateSource::Correction &&
+                c.correction_edit_cost == 0) {
+                c.correction_edit_cost = active_correction_edit_cost;
+            }
+            if (source == CandidateSource::Correction &&
+                c.input_segmentation.empty() && !correction_display_segmentation.empty()) {
+                c.input_segmentation = correction_display_segmentation;
+            }
             if (!acceptable_user_candidate(c)) continue;
             if (enforce_spelling_boundaries &&
                 !pinyin_data::CandidateRespectsHardBoundaries(query.substr(0, c.covered_input_len), c)) continue;
@@ -932,6 +949,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     // 能匹配的分支前进；这里再以输入位置为节点组合多个词，避免旧
     // LookupMixed 对整张词典扫描且只能命中一个词的限制。
     bool has_complete_mixed_path = false;
+    int best_complete_mixed_cost = (std::numeric_limits<int>::max)();
     if (schema == InputSchema::Quanpin && !has_literal_candidate &&
         query.find('\'') == std::string::npos && compact.size() >= 4 &&
         compact.size() <= 48) {
@@ -1088,6 +1106,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             const int mixed_cost = 25 +
                 static_cast<int>(path.abbreviated) * 4 +
                 static_cast<int>(path.omitted_letters) * 9;
+            best_complete_mixed_cost = (std::min)(best_complete_mixed_cost, mixed_cost);
             add({candidate}, query.size(), mixed_cost, path.words,
                 false, CandidateSource::MixedSentence);
             has_complete_mixed_path = true;
@@ -1100,10 +1119,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             (candidate.source == CandidateSource::Exact ||
              candidate.source == CandidateSource::WordGraph);
     });
+    constexpr int kWeakMixedSentenceCost = 80;
+    const bool should_try_correction = !has_complete_mixed_path ||
+        best_complete_mixed_cost >= kWeakMixedSentenceCost;
     if (schema == InputSchema::Quanpin && !has_complete_exact_path &&
-        !has_complete_mixed_path &&
+        should_try_correction &&
         query.find('\'') == std::string::npos && compact.size() >= 5) {
         PinyinCorrectionLimits correction_limits;
+        if (has_complete_mixed_path) correction_limits.max_total_cost = 1;
         // 最终只展示至多四个纠错候选。保留两倍候选供词频排序即可，
         // 避免为默认 24 个拼写变体逐一重复构建完整词图。
         correction_limits.max_results = 8;
@@ -1117,14 +1140,32 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 continue;
             }
             const int correction_cost = 80 + correction.cost * 20;
-            add(user_lexicon->dictionary.LookupExact(correction.pinyin),
-                query.size(), correction_cost, correction.syllable_count,
-                false, CandidateSource::Correction);
-            add(lexicon->dictionary.LookupExact(correction.pinyin),
-                query.size(), correction_cost, correction.syllable_count,
-                false, CandidateSource::Correction);
+            const bool previous_preference = prefer_single_edit_correction;
+            if (has_complete_mixed_path && correction.cost == 1) {
+                prefer_single_edit_correction = true;
+            }
+            correction_display_segmentation = correction.input_segmentation;
+            active_correction_edit_cost = correction.cost;
+            auto add_correction_exact = [&](std::vector<Candidate> items) {
+                for (auto& candidate : items) {
+                    candidate.correction_edit_cost = correction.cost;
+                }
+                add(std::move(items), query.size(), correction_cost,
+                    correction.syllable_count, false, CandidateSource::Correction);
+            };
+            add_correction_exact(user_lexicon->dictionary.LookupExact(correction.pinyin));
+            add_correction_exact(lexicon->dictionary.LookupExact(correction.pinyin));
             add_word_graph(correction.pinyin, CandidateSource::Correction,
                            correction_cost, false);
+            if (!previous_preference &&
+                std::none_of(pool.begin(), pool.end(), [](const Candidate& candidate) {
+                    return candidate.source == CandidateSource::Correction &&
+                        candidate.correction_edit_cost == 1;
+                })) {
+                prefer_single_edit_correction = false;
+            }
+            active_correction_edit_cost = 0;
+            correction_display_segmentation.clear();
             if (pool.size() > limit * 8) break;
         }
     }

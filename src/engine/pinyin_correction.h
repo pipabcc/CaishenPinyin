@@ -15,6 +15,9 @@ struct PinyinCorrectionLimits {
 
 struct PinyinCorrection {
     std::string pinyin;
+    // 原始输入按修正后音节对齐的展示边界，例如 chogn'qi。
+    // 查询和学习仍使用 pinyin，界面展示使用该字段。
+    std::string input_segmentation;
     int cost = 0;
     std::size_t syllable_count = 0;
 };

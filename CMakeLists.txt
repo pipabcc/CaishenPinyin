@@ -56,9 +56,10 @@ add_library(ShuruIme SHARED
 )
 
 # Windows 资源编译器不会稳定地把 rc 内部 #include 写入 Ninja 依赖图。
-# 显式声明版本头，确保只修改版本号时也会重编资源并重新链接 DLL。
+# 显式声明版本头与图标文件，确保修改版本号或图标时也会重编资源并重新链接 DLL。
 set_property(SOURCE src/ime/ShuruIme.rc APPEND PROPERTY OBJECT_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.h")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ime/app.ico")
 
 target_include_directories(ShuruIme PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src

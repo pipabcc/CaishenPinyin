@@ -35,6 +35,23 @@ HRESULT SetRegistryKeyValue(HKEY root, const std::wstring& key_path, const std::
     return HRESULT_FROM_WIN32(err);
 }
 
+HRESULT SetRegistryKeyValueDWORD(HKEY root, const std::wstring& key_path, const std::wstring& value_name, DWORD value) {
+    HKEY key = nullptr;
+    LONG err = RegCreateKeyExW(root, key_path.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &key, nullptr);
+    if (err != ERROR_SUCCESS) {
+        return HRESULT_FROM_WIN32(err);
+    }
+    err = RegSetValueExW(
+        key,
+        value_name.empty() ? nullptr : value_name.c_str(),
+        0,
+        REG_DWORD,
+        reinterpret_cast<const BYTE*>(&value),
+        sizeof(DWORD));
+    RegCloseKey(key);
+    return HRESULT_FROM_WIN32(err);
+}
+
 std::wstring GetModulePath() {
     wchar_t path[MAX_PATH] = {};
     if (GetModuleFileNameW(g_module, path, MAX_PATH) == 0) {
@@ -161,14 +178,16 @@ HRESULT RegisterProfile() {
     // 先移除再添加，确保 Windows 输入法列表刷新自定义名称。
     profiles->RemoveLanguageProfile(CLSID_ShuruTextService, SHURU_LANGID, GUID_ShuruProfile);
 
+    const std::wstring module_path = GetModulePath();
+
     hr = profiles->AddLanguageProfile(
         CLSID_ShuruTextService,
         SHURU_LANGID,
         GUID_ShuruProfile,
         product_name.c_str(),
         static_cast<ULONG>(product_name.size()),
-        nullptr,
-        0,
+        module_path.c_str(),
+        static_cast<ULONG>(module_path.size()),
         0);
     if (FAILED(hr)) {
         profiles->Release();
@@ -176,13 +195,25 @@ HRESULT RegisterProfile() {
         return hr;
     }
 
-    // 双写注册表 Description（HKLM/HKCU），避免输入法列表缓存旧名。
+    // 双写注册表 Description/Display Description/IconFile/IconIndex（HKLM/HKCU），确保输入法列表与托盘刷新自定义图标与名称。
     {
         const std::wstring tip =
             L"SOFTWARE\\Microsoft\\CTF\\TIP\\" + GuidToString(CLSID_ShuruTextService) +
             L"\\LanguageProfile\\0x00000804\\" + GuidToString(GUID_ShuruProfile);
         SetRegistryKeyValue(HKEY_LOCAL_MACHINE, tip, L"Description", product_name);
+        SetRegistryKeyValue(HKEY_LOCAL_MACHINE, tip, L"Display Description", product_name);
+        if (!module_path.empty()) {
+            SetRegistryKeyValue(HKEY_LOCAL_MACHINE, tip, L"IconFile", module_path);
+            SetRegistryKeyValueDWORD(HKEY_LOCAL_MACHINE, tip, L"IconIndex", 0);
+        }
+
         SetRegistryKeyValue(HKEY_CURRENT_USER, tip, L"Description", product_name);
+        SetRegistryKeyValue(HKEY_CURRENT_USER, tip, L"Display Description", product_name);
+        if (!module_path.empty()) {
+            SetRegistryKeyValue(HKEY_CURRENT_USER, tip, L"IconFile", module_path);
+            SetRegistryKeyValueDWORD(HKEY_CURRENT_USER, tip, L"IconIndex", 0);
+        }
+
         SetRegistryKeyValue(HKEY_CLASSES_ROOT, L"CLSID\\" + GuidToString(CLSID_ShuruTextService), L"", product_name);
     }
 
@@ -222,5 +253,4 @@ HRESULT UnregisterProfile() {
     SHURU_LOG_INFO("UnregisterProfile hr=0x%08X", hr);
     return hr;
 }
-
 } // namespace shuru
