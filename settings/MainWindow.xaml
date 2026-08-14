@@ -1,7 +1,7 @@
 <Window x:Class="ShuruSettings.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="发财拼音设置" Width="1080" Height="760" MinWidth="920" MinHeight="660"
+        Title="财神输入法设置" Width="1080" Height="760" MinWidth="920" MinHeight="660"
         WindowStartupLocation="CenterScreen" UseLayoutRounding="True"
         Loaded="Window_Loaded">
   <Grid>
@@ -20,11 +20,11 @@
         <StackPanel Margin="24,28,20,24">
           <StackPanel Orientation="Horizontal">
             <Border Width="42" Height="42" Background="{StaticResource PrimaryBrush}" CornerRadius="8">
-              <TextBlock Text="发" Foreground="White" FontSize="21" FontWeight="SemiBold"
+              <TextBlock Text="财" Foreground="White" FontSize="21" FontWeight="SemiBold"
                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
             </Border>
             <StackPanel Margin="12,1,0,0">
-              <TextBlock Text="发财拼音" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
+              <TextBlock Text="财神输入法" Foreground="White" FontSize="18" FontWeight="SemiBold"/>
               <TextBlock Text="输入法设置" Foreground="#A7B0BE" FontSize="12" Margin="0,3,0,0"/>
             </StackPanel>
           </StackPanel>

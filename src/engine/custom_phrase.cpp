@@ -129,7 +129,7 @@ std::wstring GetCustomPhrasePath(const std::wstring& fallback_directory) {
             L"LOCALAPPDATA", local_app_data.data(), length);
         if (written != 0 && written < length) {
             local_app_data.resize(written);
-            return local_app_data + L"\\FacaiPinyin\\data\\lexicon\\custom_phrases.txt";
+            return local_app_data + L"\\CaishenPinyin\\data\\lexicon\\custom_phrases.txt";
         }
     }
     return fallback_directory.empty()

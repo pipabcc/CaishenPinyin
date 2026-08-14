@@ -43,7 +43,7 @@ try {
         throw 'settings application was not deployed'
     }
     $shortcutName = -join @(
-        [char]0x53D1, [char]0x8D22, [char]0x62FC, [char]0x97F3,
+        [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
         [char]0x8BBE, [char]0x7F6E
     )
     $shortcutPath = Join-Path $startMenuRoot ($shortcutName + '.lnk')
@@ -58,7 +58,10 @@ try {
 
     $userDictionary = Join-Path $temporaryRoot 'user_dict.txt'
     Set-Content -LiteralPath $userDictionary -Value 'keep-me'
-    $installedLexicon = Join-Path $dataRoot 'versions\1.2.0'
+    $lexiconVersion = [string](
+        Get-Content -LiteralPath (Join-Path $root 'data\lexicon\manifest.json') -Raw |
+            ConvertFrom-Json).version
+    $installedLexicon = Join-Path $dataRoot "versions\$lexiconVersion"
     $sentinel = Join-Path $installedLexicon 'reuse-sentinel.txt'
     Set-Content -LiteralPath $sentinel -Value 'keep-version-directory'
     $lock = [IO.File]::Open(

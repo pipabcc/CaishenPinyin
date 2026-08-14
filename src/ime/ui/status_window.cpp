@@ -1,7 +1,9 @@
 #include "status_window.h"
 #include "ime_ui_logic.h"
+#include "../../common/runtime_config.h"
 #include <algorithm>
 #include <cstdio>
+#include <shellapi.h>
 
 namespace shuru {
 namespace {
@@ -61,6 +63,7 @@ void StatusWindow::RecreateFont() {
 
 void StatusWindow::Destroy() {
     if (hwnd_) {
+        UninstallTrayIcon();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -253,7 +256,7 @@ LRESULT StatusWindow::OnLButtonUp(int x, int /*y*/) {
         if (on_toggle_keyboard_) on_toggle_keyboard_();
     } else if (!LaunchSettings()) {
         MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
-                    L"发财拼音", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+                    L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
     return 0;
 }
@@ -276,7 +279,7 @@ LRESULT StatusWindow::OnRButtonUp(int x, int y) {
     DestroyMenu(menu);
     if (command == 1 && !LaunchSettings()) {
         MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请检查安装目录或开发构建目录。",
-                    L"发财拼音", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+                    L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
     return 0;
 }
@@ -309,6 +312,8 @@ LRESULT CALLBACK StatusWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         return self->OnLButtonUp(static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam)));
     case WM_RBUTTONUP:
         return self->OnRButtonUp(static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam)));
+    case kTrayIconCallbackMsg:
+        return self->OnTrayIconMsg(lparam);
     case WM_CONTEXTMENU: {
         POINT point {static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam))};
         if (point.x == -1 && point.y == -1) {
@@ -336,7 +341,144 @@ LRESULT CALLBACK StatusWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-// ---------------- SoftKeyboard ----------------
+// ---- 托盘图标（财神主题） ----
+
+// 用 GDI 绘制一个 size×size 的文字图标并返回 HICON。
+// chinese 模式：深红底（#C0392B）+ 白字；英文模式：石板灰底（#4A5568）+ 白字。
+// 使用 DIBSection 32bpp，绘制后统一把 alpha 置为 0xFF（GDI 不写 alpha）。
+/*static*/
+HICON StatusWindow::CreateTextHIcon(const std::wstring& text, bool english_mode) {
+    const int sz = 32;
+    BITMAPV5HEADER bih {};
+    bih.bV5Size        = sizeof(bih);
+    bih.bV5Width       = sz;
+    bih.bV5Height      = -sz;
+    bih.bV5Planes      = 1;
+    bih.bV5BitCount    = 32;
+    bih.bV5Compression = BI_BITFIELDS;
+    bih.bV5RedMask     = 0x00FF0000;
+    bih.bV5GreenMask   = 0x0000FF00;
+    bih.bV5BlueMask    = 0x000000FF;
+    bih.bV5AlphaMask   = 0xFF000000;
+
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HBITMAP color_bmp = CreateDIBSection(
+        screen, reinterpret_cast<BITMAPINFO*>(&bih),
+        DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (!color_bmp || !bits) return nullptr;
+
+    HDC mem = CreateCompatibleDC(nullptr);
+    HGDIOBJ old = SelectObject(mem, color_bmp);
+
+    const COLORREF bg = english_mode ? RGB(74, 85, 104) : RGB(192, 57, 43);
+    HBRUSH br = CreateSolidBrush(bg);
+    RECT rc {0, 0, sz, sz};
+    FillRect(mem, &rc, br);
+    DeleteObject(br);
+
+    const int font_h = text.size() == 1 ? -20 : -16;
+    HFONT font = CreateFontW(font_h, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+    HGDIOBJ old_font = SelectObject(mem, font);
+    SetBkMode(mem, TRANSPARENT);
+    SetTextColor(mem, RGB(255, 255, 255));
+    DrawTextW(mem, text.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(mem, old_font);
+    DeleteObject(font);
+
+    // GDI 不写 alpha 通道；全部置 0xFF 使图标完全不透明
+    DWORD* px = static_cast<DWORD*>(bits);
+    for (int i = 0; i < sz * sz; ++i) px[i] |= 0xFF000000;
+
+    SelectObject(mem, old);
+    DeleteDC(mem);
+
+    HBITMAP mask_bmp = CreateBitmap(sz, sz, 1, 1, nullptr);
+    ICONINFO ii {};
+    ii.fIcon    = TRUE;
+    ii.hbmColor = color_bmp;
+    ii.hbmMask  = mask_bmp;
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(color_bmp);
+    DeleteObject(mask_bmp);
+    return icon;
+}
+
+bool StatusWindow::InstallTrayIcon(const std::wstring& tray_text, bool english_mode) {
+    if (!hwnd_ || tray_installed_) return false;
+    HICON icon = CreateTextHIcon(tray_text.empty() ? L"财" : tray_text, english_mode);
+
+    NOTIFYICONDATAW nid {};
+    nid.cbSize           = sizeof(nid);
+    nid.hWnd             = hwnd_;
+    nid.uID              = kTrayIconId;
+    nid.uFlags           = NIF_ICON | NIF_TIP | NIF_MESSAGE;
+    nid.uCallbackMessage = kTrayIconCallbackMsg;
+    nid.hIcon            = icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+    wcsncpy_s(nid.szTip, L"财神输入法", _TRUNCATE);
+
+    const bool ok = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    if (icon) DestroyIcon(icon);
+    tray_installed_ = ok;
+    return ok;
+}
+
+void StatusWindow::UninstallTrayIcon() {
+    if (!hwnd_ || !tray_installed_) return;
+    NOTIFYICONDATAW nid {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd   = hwnd_;
+    nid.uID    = kTrayIconId;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+    tray_installed_ = false;
+}
+
+void StatusWindow::UpdateTrayIcon(const std::wstring& tray_text, bool english_mode) {
+    if (!hwnd_ || !tray_installed_) return;
+    HICON icon = CreateTextHIcon(tray_text.empty() ? L"财" : tray_text, english_mode);
+
+    NOTIFYICONDATAW nid {};
+    nid.cbSize = sizeof(nid);
+    nid.hWnd   = hwnd_;
+    nid.uID    = kTrayIconId;
+    nid.uFlags = NIF_ICON;
+    nid.hIcon  = icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+    if (icon) DestroyIcon(icon);
+}
+
+LRESULT StatusWindow::OnTrayIconMsg(LPARAM lparam) {
+    const UINT event = LOWORD(lparam);
+    if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK) {
+        if (!LaunchSettings()) {
+            MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
+                        L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        }
+    } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
+        HMENU menu = CreatePopupMenu();
+        if (!menu) return 0;
+        AppendMenuW(menu, MF_STRING, 1, L"输入法设置");
+        POINT pt {};
+        GetCursorPos(&pt);
+        SetForegroundWindow(hwnd_);
+        const UINT cmd = TrackPopupMenu(
+            menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            pt.x, pt.y, 0, hwnd_, nullptr);
+        PostMessageW(hwnd_, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+        if (cmd == 1 && !LaunchSettings()) {
+            MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。",
+                        L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        }
+    }
+    return 0;
+}
+
+// ---- SoftKeyboard ----
 
 namespace {
 const wchar_t kKeys[] = L"qwertyuiopasdfghjklzxcvbnm";  // 26

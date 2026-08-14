@@ -1,4 +1,5 @@
 #include "engine/pinyin_engine.h"
+#include "engine/dictionary.h"
 #include "common/com_utils.h"
 
 #include <Windows.h>
@@ -54,11 +55,67 @@ bool VerifyCandidate(
     return false;
 }
 
+bool VerifyMixedSentence(
+    shuru::PinyinEngine& engine,
+    const std::string& input,
+    const std::wstring& expected,
+    const std::string& expected_segmentation) {
+    const auto result = engine.Query(input, 9);
+    if (!result.candidates.empty()) {
+        const auto& candidate = result.candidates.front();
+        if (candidate.text == expected &&
+            candidate.source == shuru::CandidateSource::MixedSentence &&
+            candidate.covered_input_len == input.size() &&
+            candidate.input_segmentation == expected_segmentation &&
+            !candidate.learn_segments.empty()) {
+            return true;
+        }
+    }
+    std::cerr << "mixed sentence assertion failed: input=" << input
+              << " expected=" << shuru::WideToUtf8(expected) << " actual=";
+    for (const auto& candidate : result.candidates) {
+        std::cerr << shuru::WideToUtf8(candidate.text)
+                  << "[" << candidate.input_segmentation << "]" << ',';
+    }
+    std::cerr << '\n';
+    return false;
+}
+
+bool VerifyMixedPrefixLookupIsBoundedAndStable() {
+    shuru::Dictionary dictionary;
+    dictionary.BeginBulkLoad();
+    dictionary.AddWord("xuexiao", L"学校", 1000, false);
+    dictionary.AddWord("xixi", L"西西", 900, false);
+    dictionary.AddWord("li", L"里", 800, false);
+    dictionary.AddWord("you", L"有", 700, false);
+    dictionary.AddWord("yige", L"一个", 600, false);
+    dictionary.AddWord("meinv", L"美女", 500, false);
+    dictionary.EndBulkLoad();
+
+    constexpr size_t kLimit = 3;
+    const std::string input = "xxliyouyigmein";
+    for (size_t length = 1; length <= input.size(); ++length) {
+        const std::string prefix = input.substr(0, length);
+        const auto first = dictionary.LookupMixedPrefixes(prefix, kLimit);
+        const auto second = dictionary.LookupMixedPrefixes(prefix, kLimit);
+        if (first.size() > kLimit || first.size() != second.size()) return false;
+        for (size_t index = 0; index < first.size(); ++index) {
+            if (first[index].candidate.text != second[index].candidate.text ||
+                first[index].consumed_input != second[index].consumed_input ||
+                first[index].segmented_input != second[index].segmented_input ||
+                first[index].consumed_input > length) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool VerifyQueryStaysResponsiveDuringSave(
     shuru::PinyinEngine& engine,
     const std::string& learned_pinyin,
     const std::wstring& learned_word) {
-    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\FacaiPinyin.UserDictionary");
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"Local\\CaishenPinyin.UserDictionary");
     if (mutex == nullptr) {
         std::cerr << "failed to create user dictionary test mutex\n";
         return false;
@@ -114,7 +171,7 @@ int wmain(int argc, wchar_t** argv) {
     if (cleanup_error ||
         !SetEnvironmentVariableW(L"LOCALAPPDATA", test_local_app_data.c_str())) return 12;
 
-    const fs::path custom_phrase_path = test_local_app_data / L"FacaiPinyin" /
+    const fs::path custom_phrase_path = test_local_app_data / L"CaishenPinyin" /
         L"data" / L"lexicon" / L"custom_phrases.txt";
     fs::create_directories(custom_phrase_path.parent_path(), cleanup_error);
     if (cleanup_error) return 20;
@@ -141,6 +198,22 @@ int wmain(int argc, wchar_t** argv) {
             !VerifyCandidate(engine, "sunguo", L"孙国") ||
             !VerifyCandidate(engine, "shurufa", L"输入法")) {
             return 2;
+        }
+
+        if (!VerifyMixedSentence(
+                engine, "xxliyouyigmein", L"学校里有一个美女",
+                "x'x'li'you'yi'g'mei'n") ||
+            !VerifyMixedSentence(
+                engine, "womenyqchifan", L"我们一起吃饭",
+                "wo'men'y'q'chi'fan") ||
+            !VerifyMixedSentence(
+                engine, "jintianqshangb", L"今天去上班",
+                "jin'tian'q'shang'b") ||
+            !VerifyMixedSentence(
+                engine, "mingtianxwqubj", L"明天下午去北京",
+                "ming'tian'x'w'qu'b'j") ||
+            !VerifyMixedPrefixLookupIsBoundedAndStable()) {
+            return 22;
         }
 
         const auto custom_phrases = engine.Query("sds", 9);
@@ -221,14 +294,20 @@ int wmain(int argc, wchar_t** argv) {
         if (!weighted_recovery) return 11;
 
         const auto mixed_language = engine.Query("duolaAmeng", 9);
-        if (mixed_language.candidates.empty() ||
-            mixed_language.candidates.front().text != L"哆啦A梦" ||
-            mixed_language.candidates.front().learnable) {
-            std::cerr << "mixed Chinese/English candidate failed: ";
-            for (const auto& candidate : mixed_language.candidates)
-                std::cerr << WideToUtf8(candidate.text) << ',';
-            std::cerr << '\n';
-            return 16;
+        {
+            const bool ok = !mixed_language.candidates.empty() &&
+                mixed_language.candidates.front().text == L"哆啦A梦" &&
+                // 混输候选改为按拼音子段学习（learn_segments 非空），整体仍
+                // 标记为 learnable=true；学习时由 LearnCandidate 逐段处理。
+                mixed_language.candidates.front().learnable &&
+                !mixed_language.candidates.front().learn_segments.empty();
+            if (!ok) {
+                std::cerr << "mixed Chinese/English candidate failed: ";
+                for (const auto& candidate : mixed_language.candidates)
+                    std::cerr << WideToUtf8(candidate.text) << ',';
+                std::cerr << '\n';
+                return 16;
+            }
         }
 
         const auto correction_started = std::chrono::steady_clock::now();

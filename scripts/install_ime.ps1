@@ -28,12 +28,12 @@ $SettingsFiles = @(
     'ShuruSettings.runtimeconfig.json'
 )
 $SettingsShortcutName = -join @(
-    [char]0x53D1, [char]0x8D22, [char]0x62FC, [char]0x97F3,
+    [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
     [char]0x8BBE, [char]0x7F6E
 )
 
-if (-not $InstallRoot) { $InstallRoot = Join-Path $env:ProgramFiles 'FacaiPinyin' }
-if (-not $DataRoot) { $DataRoot = Join-Path $env:ProgramData 'FacaiPinyin\data\lexicon' }
+if (-not $InstallRoot) { $InstallRoot = Join-Path $env:ProgramFiles 'CaishenPinyin' }
+if (-not $DataRoot) { $DataRoot = Join-Path $env:ProgramData 'CaishenPinyin\data\lexicon' }
 if (-not $StartMenuRoot) {
     $StartMenuRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
 }

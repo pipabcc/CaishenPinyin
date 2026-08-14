@@ -106,9 +106,11 @@ bool ShiftTapState::Begin(
     return keydown_eaten;
 }
 
-ShiftTapRelease ShiftTapState::TestKeyUp(bool sensitive_context) noexcept {
-    if (ShouldEatKeyUp()) return {ShiftTapAction::None, true};
-    return Release(false, sensitive_context);
+ShiftTapRelease ShiftTapState::TestKeyUp(bool /*sensitive_context*/) noexcept {
+    // 纯查询：宿主可能探测性地多次调用 OnTestKeyUp，也可能不再跟进真实
+    // OnKeyUp。这里绝不改动状态、绝不产生切换动作，动作只在 KeyUp 发生，
+    // 否则会在部分应用中被"测试"调用误切中英文模式。
+    return {ShiftTapAction::None, ShouldEatKeyUp()};
 }
 
 ShiftTapRelease ShiftTapState::KeyUp(

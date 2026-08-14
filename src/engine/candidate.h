@@ -19,6 +19,7 @@ enum class CandidateSource : std::uint8_t {
     Dynamic = 9,
     LiteralMixed = 10,
     CustomPhrase = 11,
+    MixedSentence = 12,
 };
 
 struct Candidate {
@@ -31,11 +32,18 @@ struct Candidate {
     int learning_score = 0;   // 经时间衰减后的有界、可解释加分
     bool from_user = false;
     bool is_english = false;  // 英文单词候选
-    bool learnable = true;    // 动态结果和中英混输不写入用户词库
+    bool learnable = true;    // 动态结果不写入用户词库
     size_t covered_input_len = 0; // candidate-local raw input coverage
     size_t segment_count = 1;
     double ranking_score = 0.0;
+    double language_score = 0.0;
     CandidateSource source = CandidateSource::Raw;
+    // 与当前候选对应的原始输入音节边界，例如 x'x'li'you。
+    // 仅用于组合串展示；学习继续使用规范全拼 pinyin/learn_segments。
+    std::string input_segmentation;
+    // 中英混输候选整体没有合法拼音串，改为按拼音子段学习：
+    // 每项为 (子段全拼, 子段选中文本)。为空时按 (pinyin, text) 整体学习。
+    std::vector<std::pair<std::string, std::wstring>> learn_segments;
 };
 
 struct EngineQueryResult {

@@ -11,7 +11,7 @@
 namespace shuru {
 namespace {
 
-constexpr wchar_t kStatsMutexName[] = L"Local\\FacaiPinyin.TypingStats";
+constexpr wchar_t kStatsMutexName[] = L"Local\\CaishenPinyin.TypingStats";
 
 struct StatsState {
     std::string local_date;
@@ -105,7 +105,7 @@ bool WriteState(const std::wstring& path, const StatsState& state) {
         std::ofstream output(std::filesystem::path(temporary),
                              std::ios::binary | std::ios::trunc);
         if (!output) return false;
-        output << "# Facai Pinyin daily typing statistics v2\n";
+        output << "# Caishen Pinyin daily typing statistics v2\n";
         output << "Date=" << state.local_date << "\n";
         output << "Total=" << state.daily_count << "\n";
         output.flush();
@@ -198,7 +198,7 @@ std::wstring TypingStatsStore::DefaultPath() {
     const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", root.data(), length);
     if (written == 0 || written >= length) return {};
     root.resize(written);
-    return root + L"\\FacaiPinyin\\data\\typing_stats.txt";
+    return root + L"\\CaishenPinyin\\data\\typing_stats.txt";
 }
 
 }  // namespace shuru

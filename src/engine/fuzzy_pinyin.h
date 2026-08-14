@@ -83,6 +83,7 @@ inline std::vector<FuzzyVariant> ExpandFuzzyPinyinWeighted(
             if (syl.rfind("ch", 0) == 0) replace_initial("ch", "c"); else replace_initial("c", "ch");
             if (syl.rfind("sh", 0) == 0) replace_initial("sh", "s"); else replace_initial("s", "sh");
             replace_initial("n", "l"); replace_initial("l", "n");
+            replace_initial("f", "h"); replace_initial("h", "f");
         }
         if (config.finals) {
             const auto base = one;

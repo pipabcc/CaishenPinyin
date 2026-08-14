@@ -1,4 +1,4 @@
-﻿# 注册发财拼音输入法（建议以管理员身份运行）
+﻿# 注册财神输入法（建议以管理员身份运行）
 param(
     [string]$DllPath = ""
 )
@@ -67,7 +67,7 @@ try {
             Set-WinUserLanguageList -LanguageList $langs -Force
         }
         Set-WinDefaultInputMethodOverride -InputTip $tip
-        Write-Host "已设置默认输入法: Facai Pinyin / 发财拼音"
+        Write-Host "已设置默认输入法: Caishen IME / 财神输入法"
     } catch {
         & $regsvr /u /s $DllPath
         throw "语言列表/profile 激活失败，已撤销 DLL 注册: $($_.Exception.Message)"

@@ -1,10 +1,10 @@
-# Check build toolchain for Facai Pinyin (prefer E:\shurufa\tools)
+# Check build toolchain for Caishen IME (prefer E:\shurufa\tools)
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 $ToolsRoot = Join-Path $Root "tools"
 $EnvScript = Join-Path $ToolsRoot "env.ps1"
 
-Write-Host "=== Facai Pinyin env check ===" -ForegroundColor Cyan
+Write-Host "=== Caishen IME env check ===" -ForegroundColor Cyan
 Write-Host "repo = $Root"
 
 if (Test-Path $EnvScript) {

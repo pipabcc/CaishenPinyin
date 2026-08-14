@@ -3,6 +3,7 @@
 #include "status_window.h"
 #include "../text_service.h"
 #include "../../common/logger.h"
+#include "../../common/runtime_config.h"
 
 #include <memory>
 #include <new>
@@ -253,8 +254,15 @@ bool SharedStatusUi::Acquire(HINSTANCE instance, DWORD* owner_thread_id) {
     state->refs = 1;
     ++g_ui_ref;
     InstallHandlers_NoLock(thread_id, state);
+    // 第一个 StatusWindow 创建时安装托盘图标（每进程一个）。
+    const bool first_window = (g_ui_ref == 1);
     const long refs = g_ui_ref;
     LeaveCriticalSection(&g_ui_cs);
+
+    if (first_window) {
+        const RuntimeConfig cfg = GetRuntimeConfig();
+        state->status->InstallTrayIcon(cfg.tray_text, false);
+    }
 
     *owner_thread_id = thread_id;
     SHURU_LOG_INFO("SharedStatusUi created total_ref=%ld thread=%lu", refs, thread_id);
@@ -369,6 +377,11 @@ void SharedStatusUi::SyncFrom(bool english_mode, bool shuangpin_mode) {
         snapshot.status->SetEnglishMode(english_mode);
         snapshot.status->SetShuangpinMode(shuangpin_mode);
         snapshot.status->SetKeyboardOpen(snapshot.soft && snapshot.soft->IsVisible());
+        // 托盘图标随输入模式同步更新
+        if (snapshot.status->HasTrayIcon()) {
+            const RuntimeConfig cfg = GetRuntimeConfig();
+            snapshot.status->UpdateTrayIcon(cfg.tray_text, english_mode);
+        }
     }
 }
 

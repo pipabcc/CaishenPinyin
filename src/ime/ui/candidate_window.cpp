@@ -2,12 +2,190 @@
 #include "common/runtime_config.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <cstdio>
+#include <cstdlib>
+#include <vector>
 
 namespace shuru {
+constexpr int kMaskSamplesPerAxis = 4;
+
+std::uint8_t RoundedRectanglePixelCoverage(
+    int pixel_x,
+    int pixel_y,
+    int left,
+    int top,
+    int width,
+    int height,
+    int radius) noexcept {
+    if (width <= 0 || height <= 0 || pixel_x < left || pixel_y < top ||
+        pixel_x >= left + width || pixel_y >= top + height) {
+        return 0;
+    }
+    const int right = left + width;
+    const int bottom = top + height;
+    const int rounded_radius = (std::max)(
+        0, (std::min)(radius, (std::min)(width, height) / 2));
+    if (rounded_radius == 0 ||
+        (pixel_x >= left + rounded_radius && pixel_x < right - rounded_radius) ||
+        (pixel_y >= top + rounded_radius && pixel_y < bottom - rounded_radius)) {
+        return 255;
+    }
+
+    int covered = 0;
+    for (int sample_y = 0; sample_y < kMaskSamplesPerAxis; ++sample_y) {
+        const double sample_y_position = pixel_y +
+            (sample_y + 0.5) / static_cast<double>(kMaskSamplesPerAxis);
+        const double nearest_y = (std::max)(
+            static_cast<double>(top + rounded_radius),
+            (std::min)(sample_y_position,
+                       static_cast<double>(bottom - rounded_radius)));
+        for (int sample_x = 0; sample_x < kMaskSamplesPerAxis; ++sample_x) {
+            const double sample_x_position = pixel_x +
+                (sample_x + 0.5) / static_cast<double>(kMaskSamplesPerAxis);
+            const double nearest_x = (std::max)(
+                static_cast<double>(left + rounded_radius),
+                (std::min)(sample_x_position,
+                           static_cast<double>(right - rounded_radius)));
+            const double delta_x = sample_x_position - nearest_x;
+            const double delta_y = sample_y_position - nearest_y;
+            if (delta_x * delta_x + delta_y * delta_y <=
+                static_cast<double>(rounded_radius * rounded_radius)) {
+                ++covered;
+            }
+        }
+    }
+    constexpr int kSampleCount =
+        kMaskSamplesPerAxis * kMaskSamplesPerAxis;
+    return static_cast<std::uint8_t>(
+        (covered * 255 + kSampleCount / 2) / kSampleCount);
+}
+
 namespace {
 
 const wchar_t kWindowClass[] = L"ShuruCandidateWindowClass";
+constexpr uint8_t kShadowOpacity = 48;
+
+std::vector<uint8_t> BuildRoundedCardMask(
+    int bitmap_width,
+    int bitmap_height,
+    int left,
+    int top,
+    int card_width,
+    int card_height,
+    int radius) {
+    std::vector<uint8_t> mask(
+        static_cast<size_t>(bitmap_width) * static_cast<size_t>(bitmap_height), 0);
+    if (bitmap_width <= 0 || bitmap_height <= 0 ||
+        card_width <= 0 || card_height <= 0) {
+        return mask;
+    }
+
+    const int right = (std::min)(bitmap_width, left + card_width);
+    const int bottom = (std::min)(bitmap_height, top + card_height);
+    for (int y = (std::max)(0, top); y < bottom; ++y) {
+        for (int x = (std::max)(0, left); x < right; ++x) {
+            const size_t index = static_cast<size_t>(y) * bitmap_width + x;
+            mask[index] = RoundedRectanglePixelCoverage(
+                x, y, left, top, card_width, card_height, radius);
+        }
+    }
+    return mask;
+}
+
+void BoxBlurHorizontal(
+    const std::vector<uint8_t>& source,
+    std::vector<uint8_t>* destination,
+    int width,
+    int height,
+    int radius) {
+    const int divisor = radius * 2 + 1;
+    for (int y = 0; y < height; ++y) {
+        int sum = 0;
+        const size_t row = static_cast<size_t>(y) * width;
+        for (int x = -radius; x <= radius; ++x) {
+            if (x >= 0 && x < width) sum += source[row + x];
+        }
+        for (int x = 0; x < width; ++x) {
+            (*destination)[row + x] = static_cast<uint8_t>(sum / divisor);
+            const int remove_x = x - radius;
+            const int add_x = x + radius + 1;
+            if (remove_x >= 0) sum -= source[row + remove_x];
+            if (add_x < width) sum += source[row + add_x];
+        }
+    }
+}
+
+void BoxBlurVertical(
+    const std::vector<uint8_t>& source,
+    std::vector<uint8_t>* destination,
+    int width,
+    int height,
+    int radius) {
+    const int divisor = radius * 2 + 1;
+    for (int x = 0; x < width; ++x) {
+        int sum = 0;
+        for (int y = -radius; y <= radius; ++y) {
+            if (y >= 0 && y < height) {
+                sum += source[static_cast<size_t>(y) * width + x];
+            }
+        }
+        for (int y = 0; y < height; ++y) {
+            (*destination)[static_cast<size_t>(y) * width + x] =
+                static_cast<uint8_t>(sum / divisor);
+            const int remove_y = y - radius;
+            const int add_y = y + radius + 1;
+            if (remove_y >= 0) {
+                sum -= source[static_cast<size_t>(remove_y) * width + x];
+            }
+            if (add_y < height) {
+                sum += source[static_cast<size_t>(add_y) * width + x];
+            }
+        }
+    }
+}
+
+void BlurMask(
+    std::vector<uint8_t>* mask,
+    int width,
+    int height,
+    int radius,
+    int passes) {
+    if (mask == nullptr || radius <= 0 || passes <= 0) return;
+    std::vector<uint8_t> scratch(mask->size(), 0);
+    for (int pass = 0; pass < passes; ++pass) {
+        BoxBlurHorizontal(*mask, &scratch, width, height, radius);
+        BoxBlurVertical(scratch, mask, width, height, radius);
+    }
+}
+
+void BlendSolidColor(
+    uint8_t* pixels,
+    const std::vector<uint8_t>& mask,
+    int bitmap_width,
+    int bitmap_height,
+    COLORREF color) {
+    if (pixels == nullptr || bitmap_width <= 0 || bitmap_height <= 0 ||
+        mask.size() != static_cast<size_t>(bitmap_width) * bitmap_height) {
+        return;
+    }
+    const uint32_t blue = GetBValue(color);
+    const uint32_t green = GetGValue(color);
+    const uint32_t red = GetRValue(color);
+    for (size_t index = 0; index < mask.size(); ++index) {
+        const uint32_t coverage = mask[index];
+        if (coverage == 0) continue;
+        const uint32_t inverse = 255 - coverage;
+        uint8_t* pixel = pixels + index * 4;
+        pixel[0] = static_cast<uint8_t>(
+            (blue * coverage + pixel[0] * inverse + 127) / 255);
+        pixel[1] = static_cast<uint8_t>(
+            (green * coverage + pixel[1] * inverse + 127) / 255);
+        pixel[2] = static_cast<uint8_t>(
+            (red * coverage + pixel[2] * inverse + 127) / 255);
+    }
+}
 
 std::wstring BuildPageText(size_t candidate_count, size_t page, size_t page_size) {
     const size_t normalized_page_size = (std::max)(size_t {1}, page_size);
@@ -32,7 +210,7 @@ bool CandidateWindow::Create(HINSTANCE instance) {
 
     WNDCLASSEXW wc {};
     wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
+    wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -43,32 +221,31 @@ bool CandidateWindow::Create(HINSTANCE instance) {
     }
 
     hwnd_ = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         kWindowClass,
         L"",
         WS_POPUP,
         0,
         0,
-        width_,
-        height_,
+        width_ + kShadowMargin * 2,
+        height_ + kShadowMargin * 2,
         nullptr,
         nullptr,
         instance,
         this);
 
-    if (hwnd_ != nullptr) {
-        ApplyRoundedRegion();
-        RefreshTypingStats();
-    }
+    if (hwnd_ != nullptr) RefreshTypingStats();
 
     return hwnd_ != nullptr;
 }
 
 void CandidateWindow::Destroy() {
     if (hwnd_ != nullptr) {
+        StopReadyPolling();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
+    ready_poll_ = nullptr;
     if (font_ != nullptr) {
         DeleteObject(font_);
         font_ = nullptr;
@@ -121,15 +298,6 @@ int CandidateWindow::Scale(int value) const {
     return MulDiv(value, static_cast<int>(dpi), 96);
 }
 
-void CandidateWindow::ApplyRoundedRegion() {
-    if (hwnd_ == nullptr || width_ <= 0 || height_ <= 0) return;
-    const int diameter = Scale(kCornerRadius * 2);
-    HRGN region = CreateRoundRectRgn(0, 0, width_ + 1, height_ + 1, diameter, diameter);
-    if (region == nullptr) return;
-    // 成功后区域句柄的所有权转移给系统；不立即触发背景擦除，统一由双缓冲重绘。
-    if (SetWindowRgn(hwnd_, region, FALSE) == 0) DeleteObject(region);
-}
-
 SIZE CandidateWindow::WindowSize() const {
     return SIZE {width_, height_};
 }
@@ -137,7 +305,8 @@ SIZE CandidateWindow::WindowSize() const {
 POINT CandidateWindow::ScreenPosition() const {
     RECT rect {};
     if (hwnd_ != nullptr && GetWindowRect(hwnd_, &rect)) {
-        return POINT {rect.left, rect.top};
+        const int shadow_margin = Scale(kShadowMargin);
+        return POINT {rect.left + shadow_margin, rect.top + shadow_margin};
     }
     return POINT {};
 }
@@ -161,47 +330,52 @@ void CandidateWindow::Show(const POINT& screen_pos) {
     HMONITOR monitor = MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST);
     if (!visible_) RefreshTypingStats();
     if (layout_dirty_) RecalcSize();
+    const int shadow_margin = Scale(kShadowMargin);
     MONITORINFO mi {};
     mi.cbSize = sizeof(mi);
     if (monitor && GetMonitorInfoW(monitor, &mi)) {
-        const int work_width = (std::max)(1, static_cast<int>(mi.rcWork.right - mi.rcWork.left) - Scale(8));
-        const int work_height = (std::max)(1, static_cast<int>(mi.rcWork.bottom - mi.rcWork.top) - Scale(8));
+        const int work_width = (std::max)(1,
+            static_cast<int>(mi.rcWork.right - mi.rcWork.left) -
+            Scale(8) - shadow_margin * 2);
+        const int work_height = (std::max)(1,
+            static_cast<int>(mi.rcWork.bottom - mi.rcWork.top) -
+            Scale(8) - shadow_margin * 2);
         width_ = (std::min)(width_, work_width);
         height_ = (std::min)(height_, work_height);
-        if (pos.x + width_ > mi.rcWork.right - Scale(4)) {
-            pos.x = mi.rcWork.right - width_ - Scale(4);
+        if (pos.x + width_ + shadow_margin > mi.rcWork.right - Scale(4)) {
+            pos.x = mi.rcWork.right - width_ - shadow_margin - Scale(4);
         }
-        if (pos.x < mi.rcWork.left + Scale(4)) {
-            pos.x = mi.rcWork.left + Scale(4);
+        if (pos.x - shadow_margin < mi.rcWork.left + Scale(4)) {
+            pos.x = mi.rcWork.left + shadow_margin + Scale(4);
         }
-        if (pos.y + height_ > mi.rcWork.bottom - Scale(4)) {
-            pos.y = screen_pos.y - height_ - Scale(4);
+        if (pos.y + height_ + shadow_margin > mi.rcWork.bottom - Scale(4)) {
+            pos.y = screen_pos.y - height_ - shadow_margin - Scale(4);
         }
-        if (pos.y < mi.rcWork.top + Scale(4)) {
-            pos.y = mi.rcWork.top + Scale(4);
+        if (pos.y - shadow_margin < mi.rcWork.top + Scale(4)) {
+            pos.y = mi.rcWork.top + shadow_margin + Scale(4);
         }
     }
+    const POINT window_origin {pos.x - shadow_margin, pos.y - shadow_margin};
+    const int window_width = width_ + shadow_margin * 2;
+    const int window_height = height_ + shadow_margin * 2;
     RECT previous_rect {};
     const bool has_previous_rect = GetWindowRect(hwnd_, &previous_rect) != FALSE;
     const bool position_changed = !visible_ || !has_previous_rect ||
-        previous_rect.left != pos.x || previous_rect.top != pos.y;
+        previous_rect.left != window_origin.x || previous_rect.top != window_origin.y;
     const bool size_changed = !has_previous_rect ||
-        previous_rect.right - previous_rect.left != width_ ||
-        previous_rect.bottom - previous_rect.top != height_;
+        previous_rect.right - previous_rect.left != window_width ||
+        previous_rect.bottom - previous_rect.top != window_height;
     const bool needs_show = !visible_;
-    if (needs_show || position_changed || size_changed) {
-        UINT flags = SWP_NOACTIVATE;
-        if (needs_show) flags |= SWP_SHOWWINDOW;
-        if (!position_changed) flags |= SWP_NOMOVE;
-        if (!size_changed) flags |= SWP_NOSIZE;
-        SetWindowPos(
-            hwnd_, HWND_TOPMOST, pos.x, pos.y, width_, height_, flags);
-        if (size_changed) ApplyRoundedRegion();
+    if (needs_show || position_changed || size_changed || paint_dirty_) {
+        if (!UpdateLayeredWindowContent(window_origin)) return;
     }
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
+                     (needs_show ? SWP_SHOWWINDOW : 0));
     visible_ = true;
-    if (paint_dirty_ || needs_show) {
-        InvalidateRect(hwnd_, nullptr, FALSE);
-        paint_dirty_ = false;
+    if (needs_show) {
+        // 像素和最终尺寸已经由 UpdateLayeredWindow 原子提交，此处只切换可见性。
+        UpdateWindow(hwnd_);
     }
 }
 
@@ -251,8 +425,9 @@ void CandidateWindow::SetContent(
     selected_ = normalized_selected;
     page_size_ = normalized_page_size;
     page_ = normalized_page;
-    layout_dirty_ = layout_changed;
+    layout_dirty_ = layout_dirty_ || layout_changed;
     paint_dirty_ = true;
+    if (layout_dirty_) RecalcSize();
 }
 
 void CandidateWindow::SetSelectedIndex(size_t selected_index) {
@@ -266,8 +441,12 @@ void CandidateWindow::SetSelectedIndex(size_t selected_index) {
     } else {
         page_ = 0;
     }
+    if (page_ != previous_page) {
+        layout_dirty_ = true;
+        RecalcSize();
+    }
+    paint_dirty_ = true;
     if (visible_) {
-        if (page_ != previous_page) RecalcSize();
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
 }
@@ -288,6 +467,7 @@ void CandidateWindow::SetTypingStats(const TypingStatsSnapshot& snapshot) {
     typing_stats_ = snapshot;
     layout_dirty_ = true;
     paint_dirty_ = true;
+    RecalcSize();
     if (visible_ && hwnd_ != nullptr) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -297,10 +477,27 @@ void CandidateWindow::RefreshTypingStats() {
     SetTypingStats(TypingStatsStore().Load());
 }
 
+void CandidateWindow::StartReadyPolling(std::function<bool()> poll) {
+    if (hwnd_ == nullptr) return;
+    ready_poll_ = std::move(poll);
+    if (!ready_poll_active_) {
+        ready_poll_active_ =
+            SetTimer(hwnd_, kReadyPollTimerId, kReadyPollIntervalMs, nullptr) != 0;
+    }
+}
+
+void CandidateWindow::StopReadyPolling() {
+    if (ready_poll_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, kReadyPollTimerId);
+    }
+    ready_poll_active_ = false;
+    ready_poll_ = nullptr;
+}
+
 void CandidateWindow::OpenSettings() {
     if (!LaunchSettingsExecutable(hwnd_, instance_)) {
         MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
-                    L"发财拼音", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+                    L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
 }
 
@@ -315,6 +512,7 @@ void CandidateWindow::RecalcSize() {
         }
         width_ = Scale(kMinWidth);
         height_ = Scale(kVerticalPadding * 2 + kLineHeight * 2 + kRowGap);
+        layout_dirty_ = false;
         return;
     }
 
@@ -355,6 +553,9 @@ void CandidateWindow::RecalcSize() {
 }
 
 int CandidateWindow::HitTestCandidate(int x, int y) const {
+    const int shadow_margin = Scale(kShadowMargin);
+    x -= shadow_margin;
+    y -= shadow_margin;
     const auto vertical = BuildCandidateWindowVerticalLayout(
         Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
     if (y < vertical.candidate_top || y >= vertical.candidate_bottom) {
@@ -371,52 +572,17 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
     return hit;
 }
 
-LRESULT CandidateWindow::OnPaint() {
-    PAINTSTRUCT ps {};
-    HDC hdc = BeginPaint(hwnd_, &ps);
-    if (hdc == nullptr) {
-        return 0;
-    }
-
-    RECT rc {};
-    GetClientRect(hwnd_, &rc);
-
-    // 双缓冲
-    HDC mem = CreateCompatibleDC(hdc);
-    HBITMAP bmp = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
-    if (mem == nullptr || bmp == nullptr) {
-        if (bmp != nullptr) DeleteObject(bmp);
-        if (mem != nullptr) DeleteDC(mem);
-        EndPaint(hwnd_, &ps);
-        return 0;
-    }
-    HGDIOBJ old_bmp = SelectObject(mem, bmp);
-
-    // 圆角背景与外边框；窗口区域也使用相同半径，四个角不会留下透明矩形命中区。
-    HBRUSH bg = CreateSolidBrush(RGB(250, 251, 252));
-    HPEN pen = CreatePen(PS_SOLID, 1, RGB(198, 205, 214));
-    HGDIOBJ old_pen = SelectObject(mem, pen);
-    HGDIOBJ old_brush = SelectObject(mem, bg);
-    const int corner_diameter = Scale(kCornerRadius * 2);
-    RoundRect(mem, rc.left, rc.top, rc.right, rc.bottom,
-              corner_diameter, corner_diameter);
-    SelectObject(mem, old_brush);
-    SelectObject(mem, old_pen);
+void CandidateWindow::DrawContent(
+    HDC hdc, uint8_t* pixels, int bitmap_width, int bitmap_height,
+    int content_offset) {
+    RECT rc {0, 0, width_, height_};
+    HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255));
+    FillRect(hdc, &rc, bg);
     DeleteObject(bg);
-    DeleteObject(pen);
-
-    // 左侧强调条
-    HBRUSH accent = CreateSolidBrush(RGB(22, 119, 255));
-    const int window_height = static_cast<int>(rc.bottom - rc.top);
-    const int accent_height = (std::max)(Scale(1), window_height / 2);
-    const int accent_top = static_cast<int>(rc.top) +
-        (window_height - accent_height) / 2;
-    RECT accent_rc {1, accent_top, Scale(4), accent_top + accent_height};
-    FillRect(mem, &accent_rc, accent);
-    DeleteObject(accent);
 
     EnsureFonts();
-    SetBkMode(mem, TRANSPARENT);
+    if (font_ == nullptr || font_comp_ == nullptr || font_meta_ == nullptr) return;
+    SetBkMode(hdc, TRANSPARENT);
 
     // 组合拼音行（加大、无下划线）
     const int horizontal_padding = Scale(kHorizontalPadding);
@@ -430,40 +596,40 @@ LRESULT CandidateWindow::OnPaint() {
     const std::wstring header_right_text = page_text.empty()
         ? status_text
         : status_text + L"   " + page_text;
-    const int page_width = MeasureText(mem, font_meta_, header_right_text);
+    const int page_width = MeasureText(hdc, font_meta_, header_right_text);
     const auto header = BuildCandidateHeaderLayout(
         rc.right, page_width, horizontal_padding + Scale(4), horizontal_padding,
         Scale(kHeaderTextGap));
     RECT composing_rect {header.composing_left, vertical.composing_top,
                          header.composing_right, vertical.composing_bottom};
-    HGDIOBJ old_font = SelectObject(mem, font_comp_);
-    SetTextColor(mem, RGB(15, 23, 42));
+    HGDIOBJ old_font = SelectObject(hdc, font_comp_);
+    SetTextColor(hdc, RGB(15, 23, 42));
     std::wstring comp_draw = composing_;
     if (comp_draw.empty()) {
         comp_draw = english_mode_ ? L"[EN]" : L"";
     }
-    DrawTextW(mem, comp_draw.c_str(), -1, &composing_rect,
+    DrawTextW(hdc, comp_draw.c_str(), -1, &composing_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     // 字数与页码使用独立小号字体，和候选文字形成清晰的次要层级。
-    SelectObject(mem, font_meta_);
-    SetTextColor(mem, RGB(90, 100, 115));
+    SelectObject(hdc, font_meta_);
+    SetTextColor(hdc, RGB(90, 100, 115));
     RECT page_rect {header.page_left, vertical.composing_top,
                     header.page_right, vertical.composing_bottom};
-    DrawTextW(mem, header_right_text.c_str(), -1, &page_rect,
+    DrawTextW(hdc, header_right_text.c_str(), -1, &page_rect,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
     // 预览字母不加下划线
 
     // 分隔线
     HPEN sep = CreatePen(PS_SOLID, 1, RGB(230, 233, 238));
-    HGDIOBJ old_sep = SelectObject(mem, sep);
-    MoveToEx(mem, Scale(8), vertical.separator_y, nullptr);
-    LineTo(mem, rc.right - Scale(8), vertical.separator_y);
-    SelectObject(mem, old_sep);
+    HGDIOBJ old_sep = SelectObject(hdc, sep);
+    MoveToEx(hdc, Scale(8), vertical.separator_y, nullptr);
+    LineTo(hdc, rc.right - Scale(8), vertical.separator_y);
+    SelectObject(hdc, old_sep);
     DeleteObject(sep);
 
     // 候选：逐项绘制，选中高亮
-    SelectObject(mem, font_);
+    SelectObject(hdc, font_);
     const int y2 = vertical.candidate_top;
     const size_t begin = page_ * page_size_;
     const size_t end = (std::min)(candidates_.size(), begin + page_size_);
@@ -478,26 +644,129 @@ LRESULT CandidateWindow::OnPaint() {
                       item_layout_[slot].hit_right, vertical.candidate_bottom};
 
         if (i == selected_) {
-            HBRUSH hot = CreateSolidBrush(RGB(22, 119, 255));
-            FillRect(mem, &item_rc, hot);
-            DeleteObject(hot);
-            SetTextColor(mem, RGB(255, 255, 255));
+            RECT hl {item_rc.left + Scale(2), item_rc.top + Scale(3),
+                     item_rc.right - Scale(2), item_rc.bottom - Scale(3)};
+            // 与外层卡片共用 4x4 子像素覆盖算法。直接混合 DIB 像素，
+            // 避免 GDI RoundRect 在小圆角处产生阶梯锯齿。
+            GdiFlush();
+            const std::vector<uint8_t> highlight_mask = BuildRoundedCardMask(
+                bitmap_width, bitmap_height,
+                content_offset + hl.left, content_offset + hl.top,
+                hl.right - hl.left, hl.bottom - hl.top,
+                Scale(kCornerRadius));
+            BlendSolidColor(
+                pixels, highlight_mask, bitmap_width, bitmap_height,
+                RGB(22, 119, 255));
+            SetTextColor(hdc, RGB(255, 255, 255));
         } else {
-            SetTextColor(mem, RGB(30, 30, 30));
+            SetTextColor(hdc, RGB(30, 30, 30));
         }
 
         RECT text_rc {item_layout_[slot].text_left, y2,
                       item_layout_[slot].hit_right, vertical.candidate_bottom};
-        DrawTextW(mem, item.c_str(), -1, &text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(hdc, item.c_str(), -1, &text_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    SelectObject(mem, old_font);
-    BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
-    SelectObject(mem, old_bmp);
-    DeleteObject(bmp);
-    DeleteDC(mem);
+    SelectObject(hdc, old_font);
+}
 
+bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
+    if (hwnd_ == nullptr || width_ <= 0 || height_ <= 0) return false;
+
+    const int shadow_margin = Scale(kShadowMargin);
+    const int bitmap_width = width_ + shadow_margin * 2;
+    const int bitmap_height = height_ + shadow_margin * 2;
+    const size_t pixel_count =
+        static_cast<size_t>(bitmap_width) * static_cast<size_t>(bitmap_height);
+
+    BITMAPINFO bitmap_info {};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = bitmap_width;
+    bitmap_info.bmiHeader.biHeight = -bitmap_height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    HDC screen_dc = GetDC(nullptr);
+    if (screen_dc == nullptr) return false;
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    void* bitmap_bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(
+        screen_dc, &bitmap_info, DIB_RGB_COLORS, &bitmap_bits, nullptr, 0);
+    if (memory_dc == nullptr || bitmap == nullptr || bitmap_bits == nullptr) {
+        if (bitmap != nullptr) DeleteObject(bitmap);
+        if (memory_dc != nullptr) DeleteDC(memory_dc);
+        ReleaseDC(nullptr, screen_dc);
+        return false;
+    }
+
+    std::memset(bitmap_bits, 0, pixel_count * 4);
+    HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
+    const int saved_dc = SaveDC(memory_dc);
+    SetViewportOrgEx(memory_dc, shadow_margin, shadow_margin, nullptr);
+    DrawContent(
+        memory_dc, static_cast<uint8_t*>(bitmap_bits),
+        bitmap_width, bitmap_height, shadow_margin);
+    if (saved_dc != 0) RestoreDC(memory_dc, saved_dc);
+    GdiFlush();
+
+    const std::vector<uint8_t> card_mask = BuildRoundedCardMask(
+        bitmap_width, bitmap_height, shadow_margin, shadow_margin,
+        width_, height_, Scale(kCornerRadius));
+    std::vector<uint8_t> shadow_mask(pixel_count, 0);
+    const int shadow_offset = Scale(2);
+    for (int y = 0; y < bitmap_height - shadow_offset; ++y) {
+        const size_t source_row = static_cast<size_t>(y) * bitmap_width;
+        const size_t destination_row =
+            static_cast<size_t>(y + shadow_offset) * bitmap_width;
+        for (int x = 0; x < bitmap_width; ++x) {
+            shadow_mask[destination_row + x] = card_mask[source_row + x];
+        }
+    }
+    BlurMask(&shadow_mask, bitmap_width, bitmap_height,
+             (std::max)(1, Scale(4)), kShadowBlurPasses);
+
+    auto* pixels = static_cast<uint8_t*>(bitmap_bits);
+    for (size_t i = 0; i < pixel_count; ++i) {
+        const uint32_t card_alpha = card_mask[i];
+        const uint32_t shadow_alpha =
+            (static_cast<uint32_t>(shadow_mask[i]) * kShadowOpacity + 127) / 255;
+        const uint32_t final_alpha = card_alpha +
+            ((255 - card_alpha) * shadow_alpha + 127) / 255;
+        uint8_t* pixel = pixels + i * 4;
+        pixel[0] = static_cast<uint8_t>((pixel[0] * card_alpha + 127) / 255);
+        pixel[1] = static_cast<uint8_t>((pixel[1] * card_alpha + 127) / 255);
+        pixel[2] = static_cast<uint8_t>((pixel[2] * card_alpha + 127) / 255);
+        pixel[3] = static_cast<uint8_t>(final_alpha);
+    }
+
+    POINT destination_origin = window_origin;
+    SIZE window_size {bitmap_width, bitmap_height};
+    POINT source_origin {0, 0};
+    BLENDFUNCTION blend {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    const BOOL updated = UpdateLayeredWindow(
+        hwnd_, screen_dc, &destination_origin, &window_size, memory_dc,
+        &source_origin, 0, &blend, ULW_ALPHA);
+
+    SelectObject(memory_dc, old_bitmap);
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+    if (updated) paint_dirty_ = false;
+    return updated != FALSE;
+}
+
+LRESULT CandidateWindow::OnPaint() {
+    PAINTSTRUCT ps {};
+    BeginPaint(hwnd_, &ps);
     EndPaint(hwnd_, &ps);
+
+    RECT window_rect {};
+    if (GetWindowRect(hwnd_, &window_rect)) {
+        UpdateLayeredWindowContent(POINT {window_rect.left, window_rect.top});
+    }
+
     return 0;
 }
 
@@ -539,15 +808,88 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         self->paint_dirty_ = true;
         self->RecalcSize();
         const auto* suggested = reinterpret_cast<const RECT*>(lparam);
-        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
-                     self->width_, self->height_, SWP_NOZORDER | SWP_NOACTIVATE);
-        self->ApplyRoundedRegion();
-        InvalidateRect(hwnd, nullptr, FALSE);
+        self->UpdateLayeredWindowContent(POINT {suggested->left, suggested->top});
         return 0;
+    }
+    case WM_NCHITTEST: {
+        RECT window_rect {};
+        if (!GetWindowRect(hwnd, &window_rect)) break;
+        const int x = static_cast<short>(LOWORD(lparam)) - window_rect.left;
+        const int y = static_cast<short>(HIWORD(lparam)) - window_rect.top;
+        const int shadow_margin = self->Scale(kShadowMargin);
+        if (x < shadow_margin || x >= shadow_margin + self->width_ ||
+            y < shadow_margin || y >= shadow_margin + self->height_) {
+            return HTTRANSPARENT;
+        }
+        return HTCLIENT;
     }
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
+    case WM_TIMER:
+        if (wparam == kReadyPollTimerId) {
+            // 先拷贝再调用：回调内部可能触发 Stop/StartReadyPolling 替换
+            // ready_poll_，直接调用成员会销毁正在执行的 lambda。
+            const std::function<bool()> poll = self->ready_poll_;
+            if (!poll || !poll()) {
+                self->StopReadyPolling();
+            }
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN: {
+        // 按下即捕获；位移超过系统拖动阈值判定为拖动，否则抬起时按点击选词。
+        self->mouse_down_ = true;
+        self->dragging_ = false;
+        GetCursorPos(&self->drag_start_cursor_);
+        RECT wr {};
+        if (GetWindowRect(hwnd, &wr)) {
+            self->drag_start_window_ = POINT {wr.left, wr.top};
+        }
+        SetCapture(hwnd);
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        if (!self->mouse_down_) {
+            break;
+        }
+        POINT cursor {};
+        GetCursorPos(&cursor);
+        const int dx = cursor.x - self->drag_start_cursor_.x;
+        const int dy = cursor.y - self->drag_start_cursor_.y;
+        if (!self->dragging_) {
+            if (std::abs(dx) < GetSystemMetrics(SM_CXDRAG) &&
+                std::abs(dy) < GetSystemMetrics(SM_CYDRAG)) {
+                break;
+            }
+            self->dragging_ = true;
+        }
+        SetWindowPos(hwnd, nullptr,
+                     self->drag_start_window_.x + dx,
+                     self->drag_start_window_.y + dy,
+                     0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
+    case WM_CAPTURECHANGED:
+        self->mouse_down_ = false;
+        self->dragging_ = false;
+        break;
     case WM_LBUTTONUP: {
+        const bool was_dragging = self->dragging_;
+        const bool was_down = self->mouse_down_;
+        self->mouse_down_ = false;
+        self->dragging_ = false;
+        if (was_down && GetCapture() == hwnd) {
+            ReleaseCapture();
+        }
+        if (was_dragging) {
+            RECT wr {};
+            if (GetWindowRect(hwnd, &wr) && self->on_drag_) {
+                const int shadow_margin = self->Scale(kShadowMargin);
+                self->on_drag_(POINT {
+                    wr.left + shadow_margin, wr.top + shadow_margin});
+            }
+            return 0;
+        }
         const int index = self->HitTestCandidate(
             static_cast<short>(LOWORD(lparam)),
             static_cast<short>(HIWORD(lparam)));

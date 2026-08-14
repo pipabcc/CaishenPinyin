@@ -15,6 +15,8 @@
 #include "../common/runtime_config.h"
 
 #include <algorithm>
+#include <chrono>
+#include <iterator>
 #include <map>
 #include <cmath>
 #include <unordered_map>
@@ -40,7 +42,7 @@ std::wstring GetWritableUserDictPath(const std::wstring& lexicon_dir) {
         return lexicon_dir + L"\\user_dict.txt";
     }
     local_app_data.resize(written);
-    return local_app_data + L"\\FacaiPinyin\\data\\lexicon\\user_dict.txt";
+    return local_app_data + L"\\CaishenPinyin\\data\\lexicon\\user_dict.txt";
 }
 
 struct CsGuard {
@@ -101,15 +103,18 @@ int SourcePriority(const Candidate& candidate) {
     case CandidateSource::Dynamic: return 0;
     case CandidateSource::Exact: return 1;
     case CandidateSource::WordGraph: return 2;
-    case CandidateSource::Correction: return 3;
+    case CandidateSource::MixedSentence: return 3;
+    // 键前缀/补全预测优先于纠错：zhengc 下「正常」（键前缀）不应被
+    // 纠错变体「政策」无条件压制，纠错是编辑距离兜底手段。
     case CandidateSource::Prefix: return 4;
-    case CandidateSource::Jianpin: return 5;
-    case CandidateSource::Mixed: return 6;
-    case CandidateSource::Fuzzy: return 7;
-    case CandidateSource::English: return 8;
-    case CandidateSource::LiteralMixed: return 9;
+    case CandidateSource::Correction: return 5;
+    case CandidateSource::Jianpin: return 6;
+    case CandidateSource::Mixed: return 7;
+    case CandidateSource::Fuzzy: return 8;
+    case CandidateSource::English: return 9;
+    case CandidateSource::LiteralMixed: return 10;
     case CandidateSource::CustomPhrase: return 0;
-    case CandidateSource::Raw: return 10;
+    case CandidateSource::Raw: return 11;
     }
     return 10;
 }
@@ -227,6 +232,21 @@ DWORD WINAPI PinyinEngine::SaveThreadProc(LPVOID param) {
             }
         }
 
+        // 用户 bigram 借同一保存线程与去抖节奏落盘；快照不可变，写盘在锁外。
+        std::shared_ptr<const UserBigramModel> bigram_to_save;
+        std::wstring bigram_path;
+        {
+            CsGuard guard(&self->lock_);
+            if (self->bigram_dirty_ && self->bigram_ && !self->bigram_path_.empty()) {
+                bigram_to_save = self->bigram_;
+                bigram_path = self->bigram_path_;
+                self->bigram_dirty_ = false;
+            }
+        }
+        if (bigram_to_save && !bigram_to_save->SaveToFile(bigram_path)) {
+            SHURU_LOG_WARN("user bigram save failed");
+        }
+
         if (stopping) {
             return 0;
         }
@@ -259,6 +279,9 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         SHURU_LOG_WARN("user dictionary ACL hardening unavailable; learning writes disabled");
     }
 
+    // 基础词库 + 单字库 + 单字反推共用一次批量装载：期间跳过逐条排序与
+    // 索引维护，结束时统一排序并只重建一次简拼/trie 索引。
+    loaded_dictionary.BeginBulkLoad();
     const bool base_ok = loaded_dictionary.LoadFromFile(base, false);
     // 完整单字库（含多音字）
     const std::wstring chars = lexicon_dir + L"\\char_dict.txt";
@@ -271,6 +294,7 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     if (base_ok) {
         loaded_dictionary.DeriveSingleCharacters();
     }
+    loaded_dictionary.EndBulkLoad();
     // 英文单词词库
     const std::wstring en_path = lexicon_dir + L"\\en_dict.txt";
     if (FileExists(en_path)) {
@@ -278,6 +302,18 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         SHURU_LOG_INFO("en_dict load %s size=%zu", en_ok ? "ok" : "fail", loaded_english_dictionary.Size());
     } else {
         SHURU_LOG_WARN("en_dict.txt missing");
+    }
+    const std::wstring language_model_path = lexicon_dir + L"\\system_ngram.bin";
+    if (FileExists(language_model_path)) {
+        const bool model_ok = loaded_lexicon->language_model.LoadFromFile(
+            language_model_path);
+        SHURU_LOG_INFO(
+            "system language model load %s bigrams=%zu trigrams=%zu",
+            model_ok ? "ok" : "fail",
+            loaded_lexicon->language_model.bigram_size(),
+            loaded_lexicon->language_model.trigram_size());
+    } else {
+        SHURU_LOG_WARN("system_ngram.bin missing, mixed sentence ranking degraded");
     }
 
     if (FileExists(loaded_user_dict_path)) {
@@ -293,6 +329,20 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     if (!loaded_custom_phrases->LoadFromFile(loaded_custom_phrase_path)) {
         SHURU_LOG_WARN("custom phrase file could not be read; using empty snapshot");
         loaded_custom_phrases = std::make_shared<CustomPhraseDictionary>();
+    }
+
+    // 用户 bigram 与用户词典同目录；缺失/损坏时从空模型开始。
+    std::shared_ptr<UserBigramModel> loaded_bigram;
+    std::wstring loaded_bigram_path;
+    try {
+        loaded_bigram = std::make_shared<UserBigramModel>();
+        const std::filesystem::path user_dict_file(loaded_user_dict_path);
+        loaded_bigram_path = (user_dict_file.parent_path() / L"user_bigram.txt").wstring();
+        if (FileExists(loaded_bigram_path)) {
+            loaded_bigram->LoadFromFile(loaded_bigram_path);
+        }
+    } catch (...) {
+        loaded_bigram = std::make_shared<UserBigramModel>();
     }
 
     if (!base_ok) {
@@ -312,6 +362,9 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         lexicon_ = std::move(loaded_lexicon);
         user_lexicon_ = std::move(loaded_user_lexicon);
         custom_phrases_ = std::move(loaded_custom_phrases);
+        bigram_ = std::move(loaded_bigram);
+        bigram_path_ = loaded_bigram_path;
+        bigram_dirty_ = false;
         user_dict_revision_ = 0;
         lexicon_dir_ = lexicon_dir;
         user_dict_path_ = loaded_user_dict_path;
@@ -445,11 +498,23 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     const bool fuzzy_enabled = options.fuzzy_enabled;
     FuzzyConfig fuzzy_config = options.fuzzy_config;
     const InputSchema schema = options.schema;
+    std::string repeat_pinyin;
+    std::wstring repeat_text;
+    int repeat_count = 0;
+    std::shared_ptr<const UserBigramModel> bigram;
     {
         CsGuard guard(&lock_);
         if (!ready_ || !lexicon_ || !user_lexicon_) return result;
         lexicon = lexicon_; user_lexicon = user_lexicon_; custom_phrases = custom_phrases_;
+        bigram = bigram_;
+        repeat_pinyin = repeat_selection_pinyin_;
+        repeat_text = repeat_selection_text_;
+        repeat_count = repeat_selection_count_;
     }
+    const std::wstring& context = options.context;
+    auto bigram_count = [&](const std::wstring& previous, const std::wstring& next) {
+        return bigram ? bigram->Count(previous, next) : 0;
+    };
 
     if (schema == InputSchema::Quanpin && IsCalculatorInput(raw_input) &&
         raw_input.size() > 1) {
@@ -463,6 +528,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         struct MixedPath {
             std::wstring text;
             double score = 0.0;
+            std::vector<std::pair<std::string, std::wstring>> chosen;
         };
         std::vector<MixedPath> paths(1);
         for (const auto& segment : mixed_segments) {
@@ -489,6 +555,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     MixedPath next = path;
                     next.text += choices[choice]->text;
                     next.score += choices[choice]->ranking_score - static_cast<double>(choice) * 10.0;
+                    next.chosen.push_back({choices[choice]->pinyin, choices[choice]->text});
                     expanded.push_back(std::move(next));
                     if (expanded.size() >= 64) break;
                 }
@@ -508,7 +575,10 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             candidate.pinyin = raw_input;
             candidate.covered_input_len = raw_input.size();
             candidate.source = CandidateSource::LiteralMixed;
-            candidate.learnable = false;
+            // 整体没有合法拼音串，改为按拼音子段学习：选过一次「L站」后，
+            // zhan 段的「站」获得用户词加成，下次混输直接排前。
+            candidate.learnable = true;
+            candidate.learn_segments = path.chosen;
             candidate.ranking_score = path.score;
             result.candidates.push_back(std::move(candidate));
             if (result.candidates.size() >= limit) break;
@@ -520,10 +590,18 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     std::vector<Candidate> dynamic_candidates = BuildCurrentTimeCandidates(raw_input);
     const std::string normalized = NormalizeInput(raw_input);
     std::string preview;
-    const std::string query = schema == InputSchema::ShuangpinXiaohe
+    std::string query = schema == InputSchema::ShuangpinXiaohe
         ? DecodeXiaoheShuangpin(pinyin_data::RemoveSyllableSeparators(normalized), &preview)
         : normalized;
-    if (schema == InputSchema::Quanpin) preview = normalized;
+    if (schema == InputSchema::Quanpin) {
+        preview = normalized;
+        // lue/nue 是 lve/nve 的常用替代拼写（词库与音节表统一用 v 形式），
+        // 等长替换，不影响覆盖长度的对应关系。
+        for (size_t pos = query.find("lue"); pos != std::string::npos; pos = query.find("lue", pos + 1))
+            query[pos + 1] = 'v';
+        for (size_t pos = query.find("nue"); pos != std::string::npos; pos = query.find("nue", pos + 1))
+            query[pos + 1] = 'v';
+    }
     if (query.empty()) return result;
     const std::string compact = pinyin_data::RemoveSyllableSeparators(query);
     const auto lattice = pinyin_data::BuildSyllableLattice(query);
@@ -533,12 +611,23 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     std::vector<Candidate> pool;
     auto score = [&](Candidate& c) {
         const double coverage = query.empty() ? 0.0 : double(c.covered_input_len) / double(query.size());
+        // 上文搭配加成：刚上屏「发财」后，baofu 的「暴富」应压过更高频的「报复」。
+        const double context_bonus = context.empty()
+            ? 0.0
+            : double((std::min)(3, bigram_count(context, c.text))) * 90.0;
         c.ranking_score = coverage * 10000.0 - double(c.segment_count > 0 ? c.segment_count - 1 : 0) * 55.0
             + std::log1p(double((std::max)(0, c.frequency))) * 28.0
             - double(c.match_cost) * 0.20 + double((std::min)(90, c.learning_score)) * 2.0
-            + (c.from_user && c.learning_score > 0 ? 400.0 : 0.0);
+            + (c.from_user && c.learning_score > 0 ? 400.0 : 0.0)
+            + context_bonus + c.language_score * 1.5;
     };
     auto better = [&](const Candidate& a, const Candidate& b) {
+        // 覆盖全部输入的候选优先于部分覆盖：zhengt 的补全「整体/整天」应
+        // 排在词图只覆盖 zheng 的「正」之前，haoduoc 的「好多次」应排在
+        // 只覆盖 haoduo 的「好多」之前。
+        const bool full_a = a.covered_input_len >= query.size();
+        const bool full_b = b.covered_input_len >= query.size();
+        if (full_a != full_b) return full_a;
         const int source_a = SourcePriority(a);
         const int source_b = SourcePriority(b);
         if (source_a != source_b) return source_a < source_b;
@@ -554,6 +643,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         return a.text < b.text;
     };
     std::unordered_map<std::wstring, size_t> by_text;
+    // 旧版可能在打过的前缀下学到整词（duan -> 短剑，c -> 词）。这类行保留
+    // 在盘上以便恢复，但结构非法，绝不能进入排序或词图边。
+    auto acceptable_user_candidate = [&](const Candidate& c) {
+        if (!c.from_user) return true;
+        if (!IsSyllableAligned(c)) return false;
+        return !lexicon->dictionary.ContainsWord(c.text) ||
+               lexicon->dictionary.ContainsWordPinyin(c.text, c.pinyin);
+    };
     auto add = [&](std::vector<Candidate> items, size_t covered, int cost, size_t segments = 1,
                    bool enforce_spelling_boundaries = true,
                    CandidateSource source = CandidateSource::Exact) {
@@ -565,12 +662,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 c.match_cost = 0;
             c.segment_count = (std::max)(size_t{1}, segments);
             c.source = source;
-            // Older builds could learn a prefix prediction under the typed prefix
-            // (duan -> 短剑). Such rows are kept on disk for recoverability, but are
-            // structurally invalid and must never enter ranking or word-graph edges.
-            if (c.from_user && (!IsSyllableAligned(c) ||
-                (lexicon->dictionary.ContainsWord(c.text) &&
-                 !lexicon->dictionary.ContainsWordPinyin(c.text, c.pinyin)))) continue;
+            if (!acceptable_user_candidate(c)) continue;
             if (enforce_spelling_boundaries &&
                 !pinyin_data::CandidateRespectsHardBoundaries(query.substr(0, c.covered_input_len), c)) continue;
             score(c);
@@ -612,14 +704,26 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
 
     // 词图只沿合法音节边界移动。纠错变体复用同一个有界实现，避免为每个
     // 变体扫描整张词典。
-    struct Path { std::wstring text; int frequency=0; int learning=0; size_t segments=0; bool from_user=false; };
+    // 路径打分在对数域累积联合概率：每增加一段要付出 kSegmentLogTotal 的
+    // 归一化代价，多段组合的字频虚高（好+度+哦 平均上百万）不再压过真正
+    // 的整词（好多）。
+    constexpr double kSegmentLogTotal = 17.0;
+    auto joint_frequency = [&](double log_freq_sum, size_t segments) {
+        const double joint = segments <= 1
+            ? log_freq_sum
+            : log_freq_sum - kSegmentLogTotal * static_cast<double>(segments - 1);
+        const double clamped = (std::max)(0.0, (std::min)(20.0, joint));
+        return static_cast<int>(std::llround(std::expm1(clamped)));
+    };
+    struct Path { std::wstring text; std::wstring last_word; double log_freq=0.0; int learning=0; size_t segments=0; bool from_user=false; };
     auto add_word_graph = [&](const std::string& graph_query,
                               CandidateSource source,
                               int full_cost,
                               bool enforce_boundaries) {
         const auto graph_lattice = pinyin_data::BuildSyllableLattice(graph_query);
         std::vector<std::vector<Path>> paths(graph_query.size() + 1);
-        paths[0].push_back({});
+        // 空路径以会话上文为「前词」，使 bigram 对句首词也生效。
+        paths[0].push_back({std::wstring(), context, 0.0, 0, 0, false});
         std::vector<size_t> legal_ends;
         std::vector<bool> is_legal_end(graph_query.size() + 1, false);
         for (const auto& lattice_path : graph_lattice) {
@@ -646,15 +750,27 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 auto edges = user_lexicon->dictionary.LookupExact(edge_pinyin);
                 auto base = lexicon->dictionary.LookupExact(edge_pinyin);
                 edges.insert(edges.end(), base.begin(), base.end());
+                // 脏用户行（如旧版学到的 c -> 词）会伪造出直达输入末尾的词边，
+                // 既挤掉合法切分又阻断尾部补全，必须在成边前剔除。
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&](const Candidate& c) {
+                    return !acceptable_user_candidate(c);
+                }), edges.end());
                 std::sort(edges.begin(), edges.end(), [](const Candidate& left, const Candidate& right) {
                     return left.frequency > right.frequency;
                 });
                 if (edges.size() > 4) edges.resize(4);
                 for (const auto& prefix : paths[begin]) {
                     for (const auto& edge : edges) {
+                        // 用户搭配折算进对数频率：一次计数约等于频率 ×12，
+                        // 「发财→暴富」学习一次即可在同段数路径内胜出。
+                        const int pair_count = bigram_count(prefix.last_word, edge.text);
+                        const double bigram_boost = pair_count > 0
+                            ? 2.5 * double((std::min)(3, pair_count))
+                            : 0.0;
                         paths[endpos].push_back({
                             prefix.text + edge.text,
-                            prefix.frequency + edge.frequency,
+                            edge.text,
+                            prefix.log_freq + std::log1p(double((std::max)(0, edge.frequency))) + bigram_boost,
                             prefix.learning + edge.learning_score,
                             prefix.segments + 1,
                             prefix.from_user || edge.from_user,
@@ -665,7 +781,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 std::sort(bucket.begin(), bucket.end(), [](const Path& left, const Path& right) {
                     if (left.segments != right.segments) return left.segments < right.segments;
                     if (left.learning != right.learning) return left.learning > right.learning;
-                    if (left.frequency != right.frequency) return left.frequency > right.frequency;
+                    if (left.log_freq != right.log_freq) return left.log_freq > right.log_freq;
                     return left.text < right.text;
                 });
                 if (bucket.size() > 128) bucket.resize(128);
@@ -676,17 +792,78 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         if (source == CandidateSource::Correction && covered != graph_query.size()) {
             return false;
         }
+        // 尾部声母/不完整音节补全：haoduoc 的 c 补出「好多次/好多词」，
+        // zhengt 的 t 补出「整体/整天」。把尾巴当作某个音节的前缀，用该
+        // 前缀音节的高频单字接到已达路径上，生成覆盖全部输入的预测候选。
+        if (source == CandidateSource::WordGraph && covered < graph_query.size() &&
+            !paths[covered].empty()) {
+            const std::string tail = pinyin_data::RemoveSyllableSeparators(
+                graph_query.substr(covered));
+            if (!tail.empty() && tail.size() <= 2 &&
+                tail.find('\'') == std::string::npos) {
+                struct TailWord {
+                    std::wstring text;
+                    std::string syllable;
+                    int frequency = 0;
+                    int learning = 0;
+                    bool from_user = false;
+                };
+                std::vector<TailWord> tail_words;
+                for (const auto& syllable : pinyin_data::Syllables()) {
+                    if (syllable.size() <= tail.size() ||
+                        syllable.compare(0, tail.size(), tail) != 0) continue;
+                    auto matches = user_lexicon->dictionary.LookupExact(syllable);
+                    auto base_matches = lexicon->dictionary.LookupExact(syllable);
+                    matches.insert(matches.end(), base_matches.begin(), base_matches.end());
+                    size_t taken = 0;
+                    for (const auto& match : matches) {
+                        if (match.text.size() != 1) continue;
+                        tail_words.push_back({match.text, syllable, match.frequency,
+                                              match.learning_score, match.from_user});
+                        if (++taken >= 2) break;
+                    }
+                }
+                std::sort(tail_words.begin(), tail_words.end(),
+                          [](const TailWord& left, const TailWord& right) {
+                    if (left.learning != right.learning) return left.learning > right.learning;
+                    if (left.frequency != right.frequency) return left.frequency > right.frequency;
+                    return left.syllable < right.syllable;
+                });
+                if (tail_words.size() > 8) tail_words.resize(8);
+                const std::string covered_pinyin = pinyin_data::RemoveSyllableSeparators(
+                    graph_query.substr(0, covered));
+                size_t used_paths = 0;
+                for (const auto& path : paths[covered]) {
+                    if (used_paths++ >= 2) break;
+                    for (const auto& tail_word : tail_words) {
+                        Candidate candidate;
+                        candidate.text = path.text + tail_word.text;
+                        candidate.pinyin = covered_pinyin + tail_word.syllable;
+                        const size_t segments = path.segments + 1;
+                        candidate.frequency = joint_frequency(
+                            path.log_freq + std::log1p(double((std::max)(0, tail_word.frequency))),
+                            segments);
+                        candidate.learning_score = (std::min)(90, path.learning + tail_word.learning);
+                        // 组合是引擎生造的预测，不继承「用户选过这个词」的
+                        // from_user 加成，否则含高频学习字的任意组合都会置顶。
+                        candidate.from_user = false;
+                        // 补全的读音超出用户输入，无法按原字面校验音节边界。
+                        add({candidate}, graph_query.size(), 30, segments,
+                            false, CandidateSource::Prefix);
+                    }
+                }
+            }
+        }
         for (const auto& path : paths[covered]) {
             if (path.text.empty()) continue;
             Candidate candidate;
             candidate.text = path.text;
             candidate.pinyin = pinyin_data::RemoveSyllableSeparators(
                 graph_query.substr(0, covered));
-            candidate.frequency = path.segments == 0
-                ? 0
-                : path.frequency / static_cast<int>(path.segments);
+            candidate.frequency = joint_frequency(path.log_freq, path.segments);
             candidate.learning_score = (std::min)(90, path.learning);
-            candidate.from_user = path.from_user;
+            // 多段组合不继承 from_user：+400 加成只属于用户真正选过的整词。
+            candidate.from_user = path.from_user && path.segments <= 1;
             const bool complete = covered == graph_query.size();
             add({candidate}, source == CandidateSource::Correction ? query.size() : covered,
                 complete ? full_cost : full_cost + 25, path.segments,
@@ -697,14 +874,187 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
 
     add_word_graph(query, CandidateSource::WordGraph, 10, true);
 
+    // 全拼与声母简写可在一句话中任意交错。词典的音节 Trie 只沿当前输入
+    // 能匹配的分支前进；这里再以输入位置为节点组合多个词，避免旧
+    // LookupMixed 对整张词典扫描且只能命中一个词的限制。
+    bool has_complete_mixed_path = false;
+    if (schema == InputSchema::Quanpin && !has_literal_candidate &&
+        query.find('\'') == std::string::npos && compact.size() >= 4 &&
+        compact.size() <= 48) {
+        struct MixedPath {
+            std::wstring text;
+            std::wstring last_word;
+            std::string full_pinyin;
+            std::string segmented_input;
+            std::vector<std::pair<std::string, std::wstring>> learn_segments;
+            double log_frequency = 0.0;
+            int learning = 0;
+            size_t words = 0;
+            size_t syllables = 0;
+            size_t abbreviated = 0;
+            size_t omitted_letters = 0;
+            double language_score = 0.0;
+            bool from_user = false;
+        };
+        constexpr size_t kMixedBeamWidth = 64;
+        std::vector<std::vector<MixedPath>> mixed_paths(compact.size() + 1);
+        mixed_paths[0].push_back({std::wstring(), context});
+
+        constexpr double kOmittedLetterCost = 0.50;
+        constexpr double kAbbreviatedWordCost = 1.50;
+        auto mixed_path_quality = [&](const MixedPath& path) {
+            const double segment_cost = path.words <= 1
+                ? 0.0
+                : kSegmentLogTotal * static_cast<double>(path.words - 1);
+            return path.log_frequency - segment_cost +
+                static_cast<double>((std::min)(90, path.learning)) / 14.0 -
+                kOmittedLetterCost * static_cast<double>(path.omitted_letters) -
+                kAbbreviatedWordCost * static_cast<double>(path.abbreviated) +
+                path.language_score * 0.32;
+        };
+        auto mixed_path_better = [&](const MixedPath& left, const MixedPath& right) {
+            const double left_quality = mixed_path_quality(left);
+            const double right_quality = mixed_path_quality(right);
+            if (left_quality != right_quality) return left_quality > right_quality;
+            if (left.words != right.words) return left.words < right.words;
+            if (left.abbreviated != right.abbreviated)
+                return left.abbreviated < right.abbreviated;
+            return left.text < right.text;
+        };
+
+        for (size_t begin = 0; begin < compact.size(); ++begin) {
+            auto& prefixes = mixed_paths[begin];
+            if (prefixes.empty()) continue;
+            std::sort(prefixes.begin(), prefixes.end(), mixed_path_better);
+            if (prefixes.size() > kMixedBeamWidth) prefixes.resize(kMixedBeamWidth);
+
+            const std::string remaining = compact.substr(begin);
+            constexpr size_t kMixedEdgeLimit = 128;
+            auto matches = user_lexicon->dictionary.LookupMixedPrefixes(
+                remaining, kMixedEdgeLimit);
+            auto base_matches = lexicon->dictionary.LookupMixedPrefixes(
+                remaining, kMixedEdgeLimit);
+            matches.insert(matches.end(),
+                           std::make_move_iterator(base_matches.begin()),
+                           std::make_move_iterator(base_matches.end()));
+
+            std::sort(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
+                if (left.consumed_input != right.consumed_input)
+                    return left.consumed_input < right.consumed_input;
+                if (left.candidate.text != right.candidate.text)
+                    return left.candidate.text < right.candidate.text;
+                if (left.candidate.from_user != right.candidate.from_user)
+                    return left.candidate.from_user > right.candidate.from_user;
+                if (left.candidate.learning_score != right.candidate.learning_score)
+                    return left.candidate.learning_score > right.candidate.learning_score;
+                return left.candidate.frequency > right.candidate.frequency;
+            });
+            matches.erase(std::unique(matches.begin(), matches.end(), [](const auto& left, const auto& right) {
+                return left.consumed_input == right.consumed_input &&
+                    left.candidate.text == right.candidate.text;
+            }), matches.end());
+
+            for (const auto& match : matches) {
+                if (match.consumed_input == 0 ||
+                    begin + match.consumed_input > compact.size() ||
+                    !acceptable_user_candidate(match.candidate)) {
+                    continue;
+                }
+                const size_t end = begin + match.consumed_input;
+                for (const auto& prefix : prefixes) {
+                    MixedPath next = prefix;
+                    const int pair_count = bigram_count(
+                        prefix.last_word, match.candidate.text);
+                    const double learned_pair_boost = pair_count > 0
+                        ? 2.5 * double((std::min)(3, pair_count))
+                        : 0.0;
+                    const double system_language_boost =
+                        lexicon->language_model.AppendScore(
+                            prefix.text, match.candidate.text);
+                    next.text += match.candidate.text;
+                    next.last_word = match.candidate.text;
+                    next.full_pinyin += match.candidate.pinyin;
+                    if (!next.segmented_input.empty() &&
+                        !match.segmented_input.empty()) {
+                        next.segmented_input.push_back('\'');
+                    }
+                    next.segmented_input += match.segmented_input;
+                    next.learn_segments.push_back({
+                        match.candidate.pinyin, match.candidate.text});
+                    // 反推单字会继承其所在长词的峰值词频，可能达到千万级；
+                    // 该值适合保证单字可见，不适合直接当作整句语言概率。
+                    const int mixed_frequency = match.candidate.text.size() == 1
+                        ? (std::min)(600000, match.candidate.frequency)
+                        : match.candidate.frequency;
+                    next.log_frequency += std::log1p(double(
+                        (std::max)(0, mixed_frequency))) +
+                        learned_pair_boost;
+                    next.language_score += system_language_boost;
+                    next.learning += match.candidate.learning_score;
+                    ++next.words;
+                    next.syllables += match.syllable_count;
+                    next.abbreviated += match.abbreviated_syllables;
+                    next.omitted_letters += match.omitted_letters;
+                    next.from_user = next.from_user || match.candidate.from_user;
+                    mixed_paths[end].push_back(std::move(next));
+                }
+                auto& destination = mixed_paths[end];
+                if (destination.size() > kMixedBeamWidth * 4) {
+                    std::sort(destination.begin(), destination.end(), mixed_path_better);
+                    destination.resize(kMixedBeamWidth);
+                }
+            }
+        }
+
+        auto& complete_paths = mixed_paths.back();
+        std::sort(complete_paths.begin(), complete_paths.end(), mixed_path_better);
+        if (complete_paths.size() > kMixedBeamWidth)
+            complete_paths.resize(kMixedBeamWidth);
+        const size_t mixed_candidate_quota = (std::min)(
+            size_t {32}, (std::max)(size_t {4}, limit / 2));
+        size_t added_mixed_candidates = 0;
+        for (const auto& path : complete_paths) {
+            if (path.text.empty() || path.abbreviated == 0) continue;
+            Candidate candidate;
+            candidate.text = path.text;
+            candidate.pinyin = path.full_pinyin;
+            candidate.input_segmentation = path.segmented_input;
+            candidate.learn_segments = path.learn_segments;
+            candidate.frequency = joint_frequency(path.log_frequency, path.words);
+            candidate.language_score = path.language_score;
+            candidate.learning_score = (std::min)(90, path.learning);
+            candidate.from_user = path.from_user && path.words <= 1;
+            const int mixed_cost = 25 +
+                static_cast<int>(path.abbreviated) * 4 +
+                static_cast<int>(path.omitted_letters) * 9;
+            add({candidate}, query.size(), mixed_cost, path.words,
+                false, CandidateSource::MixedSentence);
+            has_complete_mixed_path = true;
+            if (++added_mixed_candidates >= mixed_candidate_quota) break;
+        }
+    }
+
     const bool has_complete_exact_path = std::any_of(pool.begin(), pool.end(), [&](const Candidate& candidate) {
         return candidate.covered_input_len == query.size() &&
             (candidate.source == CandidateSource::Exact ||
              candidate.source == CandidateSource::WordGraph);
     });
     if (schema == InputSchema::Quanpin && !has_complete_exact_path &&
+        !has_complete_mixed_path &&
         query.find('\'') == std::string::npos && compact.size() >= 5) {
-        for (const auto& correction : GeneratePinyinCorrections(compact)) {
+        PinyinCorrectionLimits correction_limits;
+        // 最终只展示至多四个纠错候选。保留两倍候选供词频排序即可，
+        // 避免为默认 24 个拼写变体逐一重复构建完整词图。
+        correction_limits.max_results = 8;
+        for (const auto& correction :
+             GeneratePinyinCorrections(compact, correction_limits)) {
+            // 纯尾部删除的变体等价于「输入还没打完」：zhengt 打字进行中会被
+            // 解释成「多打了 t 的 zheng」，把 zheng 的单字顶成全覆盖候选。
+            // 这类场景交给前缀补全处理，纠错只保留中间位置的编辑。
+            if (correction.pinyin.size() < compact.size() &&
+                compact.compare(0, correction.pinyin.size(), correction.pinyin) == 0) {
+                continue;
+            }
             const int correction_cost = 80 + correction.cost * 20;
             add(user_lexicon->dictionary.LookupExact(correction.pinyin),
                 query.size(), correction_cost, correction.syllable_count,
@@ -820,6 +1170,15 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
         pool = std::move(ordered);
     }
+    // 同一输入码下连续选择两次同一候选后直接置顶（短期记忆，主流输入法行为）。
+    if (repeat_count >= 2 && repeat_pinyin == compact) {
+        for (size_t i = 1; i < pool.size(); ++i) {
+            if (pool[i].text == repeat_text) {
+                std::rotate(pool.begin(), pool.begin() + i, pool.begin() + i + 1);
+                break;
+            }
+        }
+    }
     if(pool.size()>limit)pool.resize(limit);
     if (!dynamic_candidates.empty()) {
         std::unordered_set<std::wstring> dynamic_text;
@@ -891,7 +1250,7 @@ bool PinyinEngine::PersistUserDictSnapshot(
         return false;
     }
 
-    NamedMutexLock dictionary_mutex(L"Local\\FacaiPinyin.UserDictionary", 5000);
+    NamedMutexLock dictionary_mutex(L"Local\\CaishenPinyin.UserDictionary", 5000);
     if (!dictionary_mutex.owns_mutex()) {
         return false;
     }
@@ -932,6 +1291,51 @@ bool PinyinEngine::ScheduleUserDictSave() {
     return false;
 }
 
+void PinyinEngine::ObserveBigram(const std::wstring& previous, const std::wstring& next) {
+    if (previous.empty() || next.empty()) return;
+    bool scheduled = false;
+    {
+        CsGuard guard(&lock_);
+        const RuntimeConfig config = GetRuntimeConfig();
+        if (!config.learning_enabled || !ready_ || !bigram_) return;
+        const std::int64_t now_unix = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        // 快照写时复制：查询线程继续读旧模型，锁内只做小模型拷贝与发布。
+        std::shared_ptr<UserBigramModel> updated;
+        try {
+            updated = std::make_shared<UserBigramModel>(*bigram_);
+        } catch (...) {
+            return;
+        }
+        updated->Observe(previous, next, now_unix);
+        bigram_ = std::move(updated);
+        bigram_dirty_ = true;
+        scheduled = ScheduleUserDictSave();
+    }
+    (void)scheduled;
+}
+
+std::vector<Candidate> PinyinEngine::PredictNext(
+    const std::wstring& context, size_t limit) const {
+    std::vector<Candidate> out;
+    if (context.empty() || limit == 0) return out;
+    std::shared_ptr<const UserBigramModel> bigram;
+    {
+        CsGuard guard(&lock_);
+        if (!ready_ || !bigram_) return out;
+        bigram = bigram_;
+    }
+    for (const auto& successor : bigram->Successors(context, limit)) {
+        Candidate candidate;
+        candidate.text = successor.text;
+        candidate.frequency = successor.count;
+        candidate.source = CandidateSource::Dynamic;
+        candidate.learnable = false;  // 联想选择经 ObserveBigram 强化，不入用户词库
+        out.push_back(std::move(candidate));
+    }
+    return out;
+}
+
 void PinyinEngine::Learn(const std::string& pinyin, const std::wstring& word) {
     bool scheduled = false;
     {
@@ -958,6 +1362,14 @@ void PinyinEngine::Learn(const std::string& pinyin, const std::wstring& word) {
             normalized_pinyin, word, 20, base_frequency);
         last_learned_pinyin_ = normalized_pinyin;
         last_learned_word_ = word;
+        if (repeat_selection_pinyin_ == normalized_pinyin &&
+            repeat_selection_text_ == word) {
+            ++repeat_selection_count_;
+        } else {
+            repeat_selection_pinyin_ = normalized_pinyin;
+            repeat_selection_text_ = word;
+            repeat_selection_count_ = 1;
+        }
         if (user_lexicon_->dictionary.dirty()) {
             ++user_dict_revision_;
             scheduled = ScheduleUserDictSave();

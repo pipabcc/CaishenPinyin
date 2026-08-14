@@ -20,6 +20,29 @@ BOOL CALLBACK FindCandidateWindow(HWND window, LPARAM value) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    bool found_antialiased_corner = false;
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 8; ++x) {
+            const std::uint8_t coverage =
+                shuru::RoundedRectanglePixelCoverage(x, y, 0, 0, 20, 20, 8);
+            if (coverage != shuru::RoundedRectanglePixelCoverage(
+                                19 - x, y, 0, 0, 20, 20, 8) ||
+                coverage != shuru::RoundedRectanglePixelCoverage(
+                                x, 19 - y, 0, 0, 20, 20, 8)) {
+                std::fwprintf(stderr, L"rounded mask corners are asymmetric\n");
+                return 1;
+            }
+            found_antialiased_corner = found_antialiased_corner ||
+                (coverage > 0 && coverage < 255);
+        }
+    }
+    if (!found_antialiased_corner ||
+        shuru::RoundedRectanglePixelCoverage(10, 10, 0, 0, 20, 20, 8) != 255 ||
+        shuru::RoundedRectanglePixelCoverage(-1, 0, 0, 0, 20, 20, 8) != 0) {
+        std::fwprintf(stderr, L"rounded mask antialiasing is invalid\n");
+        return 1;
+    }
+
     const int required_width = shuru::CandidateHeaderRequiredWidth(
         200, 50, 13, 9, 12);
     if (required_width != 284) {
@@ -48,6 +71,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     window.SetContent(L"bao", candidates, 0, 0, 9);
     window.SetTypingStats(shuru::TypingStatsSnapshot {1286, true});
+    const SIZE size_before_show = window.WindowSize();
     window.Show(POINT {40, 40});
 
     HWND handle = nullptr;
@@ -76,24 +100,49 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"candidate height=%d expected=%d\n", size.cy, expected_height);
         return 6;
     }
+    if (size_before_show.cx != size.cx || size_before_show.cy != size.cy) {
+        std::fwprintf(stderr, L"candidate layout changed during first Show\n");
+        return 7;
+    }
+
+    const LONG_PTR extended_style = GetWindowLongPtrW(handle, GWL_EXSTYLE);
+    if ((extended_style & WS_EX_LAYERED) == 0) {
+        std::fwprintf(stderr, L"candidate window is not layered\n");
+        return 8;
+    }
+    const ULONG_PTR class_style = GetClassLongPtrW(handle, GCL_STYLE);
+    if ((class_style & CS_DROPSHADOW) != 0) {
+        std::fwprintf(stderr, L"candidate window still uses CS_DROPSHADOW\n");
+        return 9;
+    }
 
     HRGN region = CreateRectRgn(0, 0, 0, 0);
-    if (region == nullptr) return 7;
+    if (region == nullptr) return 10;
     const int region_type = GetWindowRgn(handle, region);
-    const bool rounded = region_type == COMPLEXREGION &&
-        !PtInRegion(region, 0, 0) &&
-        !PtInRegion(region, size.cx - 1, 0) &&
-        !PtInRegion(region, 0, size.cy - 1) &&
-        !PtInRegion(region, size.cx - 1, size.cy - 1) &&
-        PtInRegion(region, size.cx / 2, size.cy / 2);
     DeleteObject(region);
-    if (!rounded) {
-        std::fwprintf(stderr, L"candidate window region is not rounded\n");
-        return 8;
+    if (region_type != ERROR) {
+        std::fwprintf(stderr, L"candidate window still has a GDI region\n");
+        return 11;
+    }
+
+    RECT actual_rect {};
+    if (!GetWindowRect(handle, &actual_rect)) return 12;
+    const int shadow_margin = MulDiv(12, static_cast<int>(dpi), 96);
+    const int expected_actual_width = size.cx + shadow_margin * 2;
+    const int expected_actual_height = size.cy + shadow_margin * 2;
+    if (actual_rect.right - actual_rect.left != expected_actual_width ||
+        actual_rect.bottom - actual_rect.top != expected_actual_height) {
+        std::fwprintf(stderr,
+            L"layered size=%dx%d expected=%dx%d\n",
+            actual_rect.right - actual_rect.left,
+            actual_rect.bottom - actual_rect.top,
+            expected_actual_width,
+            expected_actual_height);
+        return 13;
     }
 
     window.Hide();
     window.Destroy();
-    std::wprintf(L"candidate window compact layout and rounded region passed\n");
+    std::wprintf(L"candidate layered shadow and stable first frame passed\n");
     return 0;
 }

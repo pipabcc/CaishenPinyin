@@ -16,7 +16,7 @@ public partial class MainWindow : Window
     private const int OperationCancelled = 1223;
     private static string UserDictionaryPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FacaiPinyin", "data", "lexicon", "user_dict.txt");
+        "CaishenPinyin", "data", "lexicon", "user_dict.txt");
 
     private readonly List<CustomPhrase> phrases_ = new();
 
@@ -134,7 +134,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, "保存失败：" + ex.Message, "发财拼音",
+            MessageBox.Show(this, "保存失败：" + ex.Message, "财神输入法",
                 MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -378,7 +378,7 @@ public partial class MainWindow : Window
     private static string ResolveLexiconDirectory(string? dll)
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "FacaiPinyin", "data", "lexicon");
+            "CaishenPinyin", "data", "lexicon");
         try
         {
             var pointer = Path.Combine(root, "current");
@@ -410,7 +410,7 @@ public partial class MainWindow : Window
     private void OpenLexicon_Click(object sender, RoutedEventArgs e)
     {
         if (Directory.Exists(LexiconPathBox.Text)) OpenFolder(LexiconPathBox.Text);
-        else MessageBox.Show(this, "系统词库目录不存在。", "发财拼音");
+        else MessageBox.Show(this, "系统词库目录不存在。", "财神输入法");
     }
 
     private void OpenUserDictionary_Click(object sender, RoutedEventArgs e) =>
@@ -428,7 +428,7 @@ public partial class MainWindow : Window
         var dialog = new SaveFileDialog
         {
             Filter = "用户词文本|*.txt",
-            FileName = "facai-user-dict.txt"
+            FileName = "caishen-user-dict.txt"
         };
         if (dialog.ShowDialog(this) == true)
         {
@@ -503,7 +503,7 @@ public partial class MainWindow : Window
     }
 
     private void ShowOperationError(Exception ex) => MessageBox.Show(
-        this, "操作失败：" + ex.Message, "发财拼音",
+        this, "操作失败：" + ex.Message, "财神输入法",
         MessageBoxButton.OK, MessageBoxImage.Error);
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();

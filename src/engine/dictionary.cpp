@@ -62,11 +62,63 @@ int SaturatingAdd(int value, int delta) {
     return value + delta;
 }
 
+bool IsBmpChineseText(const std::wstring& text) {
+    return !text.empty() && std::all_of(text.begin(), text.end(), [](wchar_t ch) {
+        return ch >= L'\x4e00' && ch <= L'\x9fff';
+    });
+}
+
 }  // namespace
 
 void Dictionary::EnsureTrieRoot() {
     if (trie_.empty()) {
         trie_.emplace_back();
+    }
+}
+
+void Dictionary::EnsureSyllableTrieRoot() {
+    if (syllable_trie_.empty()) syllable_trie_.emplace_back();
+}
+
+void Dictionary::SyllableTrieInsert(const std::string& pinyin) {
+    EnsureSyllableTrieRoot();
+    int key_frequency = 0;
+    const auto entries = map_.find(pinyin);
+    if (entries != map_.end()) {
+        for (const auto& entry : entries->second) {
+            key_frequency = (std::max)(key_frequency, entry.frequency);
+        }
+    }
+    const auto paths = pinyin_data::BuildSyllableLattice(pinyin, 16);
+    for (const auto& path : paths) {
+        if (!path.complete || path.covered != pinyin.size() || path.edges.empty()) continue;
+        int node = 0;
+        syllable_trie_[node].max_frequency =
+            (std::max)(syllable_trie_[node].max_frequency, key_frequency);
+        for (const auto& edge : path.edges) {
+            int child_node = -1;
+            for (const auto& child : syllable_trie_[node].children) {
+                if (child.syllable == edge.syllable) {
+                    child_node = child.node;
+                    break;
+                }
+            }
+            if (child_node < 0) {
+                child_node = static_cast<int>(syllable_trie_.size());
+                syllable_trie_.emplace_back();
+                syllable_trie_[node].children.push_back({edge.syllable, child_node});
+            }
+            node = child_node;
+            syllable_trie_[node].max_frequency =
+                (std::max)(syllable_trie_[node].max_frequency, key_frequency);
+        }
+        auto& terminals = syllable_trie_[node].terminals;
+        const bool exists = std::any_of(
+            terminals.begin(), terminals.end(), [&](const auto& terminal) {
+                return terminal.pinyin == pinyin &&
+                    terminal.syllable_count == path.edges.size();
+            });
+        if (!exists) terminals.push_back({pinyin, path.edges.size()});
     }
 }
 
@@ -130,6 +182,21 @@ void Dictionary::CollectTriePrefix(const std::string& prefix, size_t limit, std:
     CollectTrieSubtree(node, limit, out_keys);
 }
 
+void Dictionary::BeginBulkLoad() {
+    bulk_loading_ = true;
+}
+
+void Dictionary::EndBulkLoad() {
+    if (!bulk_loading_) return;
+    bulk_loading_ = false;
+    for (auto& kv : map_) {
+        SortEntries(kv.second);
+    }
+    RebuildJianpinIndex();
+    SHURU_LOG_INFO("bulk load finalized keys=%zu jianpin=%zu trie=%zu",
+                   map_.size(), jianpin_index_.size(), trie_.size());
+}
+
 bool Dictionary::LoadFromFile(const std::wstring& path, bool from_user) {
     if (!from_user) {
         const std::wstring cache = path + L".bin";
@@ -138,7 +205,7 @@ bool Dictionary::LoadFromFile(const std::wstring& path, bool from_user) {
                 AddWord(row.pinyin, Utf8ToWide(row.word_utf8), row.frequency, false);
                 return true;
             }, &row_count)) {
-            RebuildJianpinIndex();
+            if (!bulk_loading_) RebuildJianpinIndex();
             SHURU_LOG_INFO("validated streaming lexicon cache loaded entries=%zu", row_count);
             return row_count != 0;
         }
@@ -221,7 +288,7 @@ bool Dictionary::LoadFromUtf8Lines(const std::vector<std::string>& lines, bool f
         }
         ++loaded;
     }
-    RebuildJianpinIndex();
+    if (!bulk_loading_) RebuildJianpinIndex();
     SHURU_LOG_INFO("dictionary loaded entries=%zu keys=%zu jianpin=%zu trie=%zu user=%d",
                    loaded, map_.size(), jianpin_index_.size(), trie_.size(), from_user ? 1 : 0);
     return loaded > 0;
@@ -229,6 +296,7 @@ bool Dictionary::LoadFromUtf8Lines(const std::vector<std::string>& lines, bool f
 
 void Dictionary::IndexPinyinKey(const std::string& pinyin) {
     TrieInsert(pinyin);
+    SyllableTrieInsert(pinyin);
     const std::string jp = pinyin_data::ToJianpin(pinyin);
     if (jp.empty()) {
         return;
@@ -251,9 +319,20 @@ void Dictionary::RebuildJianpinSortedKeys() {
 void Dictionary::RebuildJianpinIndex() {
     jianpin_index_.clear();
     trie_.clear();
+    syllable_trie_.clear();
     EnsureTrieRoot();
+    EnsureSyllableTrieRoot();
     for (const auto& kv : map_) {
         IndexPinyinKey(kv.first);
+    }
+    for (auto& node : syllable_trie_) {
+        std::sort(node.children.begin(), node.children.end(), [](const auto& left, const auto& right) {
+            return left.syllable < right.syllable;
+        });
+        std::sort(node.terminals.begin(), node.terminals.end(), [](const auto& left, const auto& right) {
+            if (left.pinyin != right.pinyin) return left.pinyin < right.pinyin;
+            return left.syllable_count < right.syllable_count;
+        });
     }
     RebuildJianpinSortedKeys();
 }
@@ -283,7 +362,7 @@ void Dictionary::AddWord(const std::string& pinyin, const std::wstring& word, in
             entry.frequency = (std::max)(entry.frequency, frequency);
             entry.from_user = entry.from_user || from_user;
             const int updated_frequency = entry.frequency;
-            SortEntries(entries);
+            if (!bulk_loading_) SortEntries(entries);
             if (from_user) {
                 user_entries_[{key, word}] = UserDictionaryEntry{key, word, updated_frequency, entry.selection_count, entry.last_used_unix};
                 dirty_ = true;
@@ -293,11 +372,11 @@ void Dictionary::AddWord(const std::string& pinyin, const std::wstring& word, in
     }
     const bool is_new_key = entries.empty();
     entries.push_back(Entry{word, frequency, from_user});
-    SortEntries(entries);
+    if (!bulk_loading_) SortEntries(entries);
     if (from_user) {
         user_entries_[{key, word}] = UserDictionaryEntry{key, word, frequency, 0, 0};
     }
-    if (is_new_key) {
+    if (is_new_key && !bulk_loading_) {
         IndexPinyinKey(key);
         // 增量维护 sorted jianpin（全量重建成本高，这里简单 insert）
         const std::string jp = pinyin_data::ToJianpin(key);
@@ -466,7 +545,7 @@ bool Dictionary::SaveUserToFile(const std::wstring& path) const {
         return false;
     }
     out << "\xEF\xBB\xBF";
-    out << "# 发财拼音用户词库\n";
+    out << "# 财神输入法用户词库\n";
     out << "# v2: pinyin<TAB>词<TAB>词频<TAB>selection_count<TAB>last_used_unix\n";
     for (const auto& row : rows) {
         out << row.pinyin << '\t' << WideToUtf8(row.word) << '\t' << row.frequency << '\t' << row.selection_count << '\t' << row.last_used_unix << '\n';
@@ -649,46 +728,186 @@ std::vector<Candidate> Dictionary::LookupJianpin(const std::string& jianpin, siz
 std::vector<Candidate> Dictionary::LookupMixed(const std::string& input, size_t limit) const {
     const std::string pattern = NormalizePinyin(input);
     if (pattern.size() < 2 || limit == 0) return {};
-    std::vector<Candidate> all;
-    for (const auto& kv : map_) {
-        // 混合拼写只由完整音节和声母组成，因此输入必须与完整拼音首字母相同，
-        // 且是其有序子序列。先做廉价过滤，避免为几乎每个词条构建音节词图。
-        if (kv.first.size() < pattern.size() || kv.first.front() != pattern.front()) continue;
-        size_t subsequence = 0;
-        for (const char ch : kv.first) {
-            if (ch == pattern[subsequence] && ++subsequence == pattern.size()) break;
+    std::vector<Candidate> results;
+    const size_t prefix_limit = (std::max)(limit * 8, pattern.size() * 4);
+    for (auto& match : LookupMixedPrefixes(pattern, prefix_limit)) {
+        if (match.consumed_input != pattern.size() ||
+            match.abbreviated_syllables == 0) {
+            continue;
         }
-        if (subsequence != pattern.size()) continue;
-        const auto paths = pinyin_data::BuildSyllableLattice(kv.first, 16);
-        bool matches = false;
-        for (const auto& path : paths) {
-            if (!path.complete || path.covered != kv.first.size()) continue;
-            size_t cursor = 0;
-            bool used_short = false;
-            for (const auto& edge : path.edges) {
-                if (cursor >= pattern.size()) { matches = true; break; }
-                const std::string& syl = edge.syllable;
-                size_t full = 0;
-                while (full < syl.size() && cursor + full < pattern.size() && pattern[cursor + full] == syl[full]) ++full;
-                if (full == syl.size()) cursor += full;
-                else if (pattern[cursor] == syl[0]) { ++cursor; used_short = true; }
-                else { cursor = pattern.size() + 1; break; }
-            }
-            matches = cursor == pattern.size() && used_short;
-            if (matches) break;
-        }
-        if (!matches) continue;
-        auto part = ToCandidates(kv.first, kv.second);
-        all.insert(all.end(), part.begin(), part.end());
+        match.candidate.input_segmentation = std::move(match.segmented_input);
+        results.push_back(std::move(match.candidate));
+        if (results.size() >= limit) break;
     }
-    std::sort(all.begin(), all.end(), [](const Candidate& a, const Candidate& b) {
-        if (a.learning_score != b.learning_score) return a.learning_score > b.learning_score;
-        if (a.frequency != b.frequency) return a.frequency > b.frequency;
-        if (a.pinyin.size() != b.pinyin.size()) return a.pinyin.size() < b.pinyin.size();
-        return a.text < b.text;
+    return results;
+}
+
+std::vector<MixedPrefixMatch> Dictionary::LookupMixedPrefixes(
+    const std::string& input, size_t limit) const {
+    const std::string pattern = NormalizePinyin(input);
+    if (pattern.empty() || limit == 0 || syllable_trie_.empty()) return {};
+
+    struct SearchState {
+        int node = 0;
+        size_t input_pos = 0;
+        size_t abbreviated = 0;
+        size_t omitted_letters = 0;
+        size_t syllables = 0;
+        std::string segmented;
+    };
+    constexpr size_t kBeamPerPosition = 64;
+    std::vector<std::vector<SearchState>> states(pattern.size() + 1);
+    states[0].push_back({});
+    std::vector<MixedPrefixMatch> matches;
+
+    auto add_state = [&](SearchState next) {
+        if (next.input_pos > pattern.size()) return;
+        auto& bucket = states[next.input_pos];
+        const auto duplicate = std::find_if(bucket.begin(), bucket.end(), [&](const SearchState& item) {
+            return item.node == next.node;
+        });
+        if (duplicate == bucket.end()) {
+            bucket.push_back(std::move(next));
+        } else if (next.abbreviated < duplicate->abbreviated ||
+                   (next.abbreviated == duplicate->abbreviated &&
+                    (next.omitted_letters < duplicate->omitted_letters ||
+                     (next.omitted_letters == duplicate->omitted_letters &&
+                      next.segmented < duplicate->segmented)))) {
+            *duplicate = std::move(next);
+        }
+    };
+
+    for (size_t position = 0; position < pattern.size(); ++position) {
+        auto& bucket = states[position];
+        if (bucket.empty()) continue;
+        std::sort(bucket.begin(), bucket.end(), [&](const SearchState& left, const SearchState& right) {
+            const int left_frequency = syllable_trie_[left.node].max_frequency;
+            const int right_frequency = syllable_trie_[right.node].max_frequency;
+            if (left_frequency != right_frequency) return left_frequency > right_frequency;
+            if (left.abbreviated != right.abbreviated)
+                return left.abbreviated < right.abbreviated;
+            if (left.omitted_letters != right.omitted_letters)
+                return left.omitted_letters < right.omitted_letters;
+            if (left.syllables != right.syllables) return left.syllables < right.syllables;
+            return left.node < right.node;
+        });
+        if (bucket.size() > kBeamPerPosition) bucket.resize(kBeamPerPosition);
+
+        for (const auto& state : bucket) {
+            if (state.node < 0 || state.node >= static_cast<int>(syllable_trie_.size())) continue;
+            const auto& node = syllable_trie_[state.node];
+            for (const auto& child : node.children) {
+                if (child.syllable.empty() || child.syllable.front() != pattern[position]) continue;
+                auto advance = [&](size_t consumed, bool abbreviated) {
+                    SearchState next;
+                    next.node = child.node;
+                    next.input_pos = position + consumed;
+                    next.abbreviated = state.abbreviated + (abbreviated ? 1 : 0);
+                    next.omitted_letters = state.omitted_letters +
+                        (abbreviated ? child.syllable.size() - 1 : 0);
+                    next.syllables = state.syllables + 1;
+                    next.segmented = state.segmented;
+                    if (!next.segmented.empty()) next.segmented.push_back('\'');
+                    next.segmented.append(pattern, position, consumed);
+
+                    const auto& destination = syllable_trie_[next.node];
+                    for (const auto& terminal : destination.terminals) {
+                        const auto found = map_.find(terminal.pinyin);
+                        if (found == map_.end()) continue;
+                        size_t entry_count = 0;
+                        for (auto candidate : ToCandidates(found->first, found->second)) {
+                            // 同一拼音可能有多种切分（xian / xi'an）。只有字数与
+                            // 音节数一致的中文词才能挂在这条路径上，否则会生成
+                            // 汉字和输入音节错位的词边。
+                            if (IsBmpChineseText(candidate.text) &&
+                                candidate.text.size() != terminal.syllable_count) {
+                                continue;
+                            }
+                            matches.push_back({
+                                std::move(candidate), next.input_pos,
+                                next.abbreviated, next.omitted_letters,
+                                terminal.syllable_count,
+                                next.segmented,
+                            });
+                            if (++entry_count >= 4) break;
+                        }
+                    }
+                    if (next.input_pos < pattern.size()) add_state(std::move(next));
+                };
+
+                if (position + child.syllable.size() <= pattern.size() &&
+                    pattern.compare(position, child.syllable.size(), child.syllable) == 0) {
+                    advance(child.syllable.size(), false);
+                }
+                if (child.syllable.size() > 1) advance(1, true);
+            }
+        }
+    }
+
+    const auto edge_quality = [](const MixedPrefixMatch& match) {
+        const int frequency = match.candidate.text.size() == 1
+            ? (std::min)(600000, match.candidate.frequency)
+            : match.candidate.frequency;
+        return std::log1p(static_cast<double>((std::max)(0, frequency))) +
+            static_cast<double>((std::min)(90, match.candidate.learning_score)) / 14.0 -
+            static_cast<double>(match.abbreviated_syllables) * 0.35 -
+            static_cast<double>(match.omitted_letters) * 0.18;
+    };
+    const auto quality_better = [&](const MixedPrefixMatch& left,
+                                    const MixedPrefixMatch& right) {
+        if (left.candidate.from_user != right.candidate.from_user)
+            return left.candidate.from_user > right.candidate.from_user;
+        const double left_quality = edge_quality(left);
+        const double right_quality = edge_quality(right);
+        if (left_quality != right_quality) return left_quality > right_quality;
+        if (left.syllable_count != right.syllable_count)
+            return left.syllable_count < right.syllable_count;
+        if (left.candidate.pinyin != right.candidate.pinyin)
+            return left.candidate.pinyin < right.candidate.pinyin;
+        return left.candidate.text < right.candidate.text;
+    };
+
+    std::sort(matches.begin(), matches.end(), [&](const MixedPrefixMatch& left,
+                                                   const MixedPrefixMatch& right) {
+        if (left.consumed_input != right.consumed_input)
+            return left.consumed_input < right.consumed_input;
+        return quality_better(left, right);
     });
-    if (all.size() > limit) all.resize(limit);
-    return all;
+
+    std::vector<std::vector<MixedPrefixMatch>> by_end(pattern.size() + 1);
+    for (auto& match : matches) {
+        auto& bucket = by_end[match.consumed_input];
+        const bool duplicate = std::any_of(
+            bucket.begin(), bucket.end(), [&](const MixedPrefixMatch& item) {
+                return item.candidate.text == match.candidate.text;
+            });
+        if (duplicate) {
+            continue;
+        }
+        bucket.push_back(std::move(match));
+    }
+
+    // 先在每个可达终点保留第一名，再保留第二名，以此类推。调用方给出
+    // 固定工作上限，使短边有足够多的同音候选供上下文模型选择。
+    std::vector<MixedPrefixMatch> selected;
+    selected.reserve((std::min)(limit, matches.size()));
+    for (size_t rank = 0; selected.size() < limit; ++rank) {
+        bool appended = false;
+        for (size_t end = 1; end < by_end.size() && selected.size() < limit; ++end) {
+            if (rank >= by_end[end].size()) continue;
+            selected.push_back(std::move(by_end[end][rank]));
+            appended = true;
+        }
+        if (!appended) break;
+    }
+
+    std::sort(selected.begin(), selected.end(), [&](const MixedPrefixMatch& left,
+                                                     const MixedPrefixMatch& right) {
+        if (left.consumed_input != right.consumed_input)
+            return left.consumed_input > right.consumed_input;
+        return quality_better(left, right);
+    });
+    return selected;
 }
 
 size_t Dictionary::Size() const {
@@ -772,13 +991,16 @@ size_t Dictionary::DeriveSingleCharacters() {
                     }
                 }
             }
-            AddWord(py_kv.first, ch_kv.first, freq, false);
+            // char_dict 中已有的单字频率是同一量纲下的字符先验。不能再用
+            // 某个长词的峰值频率覆盖它，否则「版本」等高频词会把「版」
+            // 人为抬到千万级，破坏句子中的同音字排序。
             if (!existed) {
+                AddWord(py_kv.first, ch_kv.first, freq, false);
                 ++added_or_boosted;
             }
         }
     }
-    RebuildJianpinIndex();
+    if (!bulk_loading_) RebuildJianpinIndex();
     SHURU_LOG_INFO("DeriveSingleCharacters paired_words=%zu pure_syllable_keys=%zu new_singles~=%zu",
                    paired, singles.size(), added_or_boosted);
     return added_or_boosted;

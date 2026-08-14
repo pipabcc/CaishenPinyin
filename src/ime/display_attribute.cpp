@@ -65,7 +65,7 @@ STDMETHODIMP DisplayAttributeInfo::GetDescription(BSTR* pbstrDesc) {
     if (!pbstrDesc) {
         return E_INVALIDARG;
     }
-    *pbstrDesc = SysAllocString(L"发财拼音组合串");
+    *pbstrDesc = SysAllocString(L"财神输入法组合串");
     return *pbstrDesc ? S_OK : E_OUTOFMEMORY;
 }
 

@@ -37,6 +37,13 @@ public:
     void SetOwnerThreadTaskHandler(DWORD owner_thread_id, OwnerThreadTaskFn fn) noexcept;
     bool PostOwnerThreadTask(UINT task) const noexcept;
 
+    // 财神主题托盘图标：安装到系统通知区；图标字符从 RuntimeConfig::tray_text 取得。
+    bool InstallTrayIcon(const std::wstring& tray_text, bool english_mode);
+    void UninstallTrayIcon();
+    // 输入模式变化时更新托盘图标字符与颜色。
+    void UpdateTrayIcon(const std::wstring& tray_text, bool english_mode);
+    bool HasTrayIcon() const { return tray_installed_; }
+
 private:
     static constexpr int kBaseWidth = 216;
     static constexpr int kBaseHeight = 36;
@@ -60,8 +67,13 @@ private:
     LRESULT OnPaint();
     LRESULT OnLButtonUp(int x, int y);
     LRESULT OnRButtonUp(int x, int y);
+    LRESULT OnTrayIconMsg(LPARAM lparam);
     bool LaunchSettings() const;
+    static HICON CreateTextHIcon(const std::wstring& text, bool english_mode);
     static constexpr UINT kOwnerThreadTaskMessage = WM_APP + 0x51;
+    static constexpr UINT kTrayIconCallbackMsg   = WM_APP + 0x52;
+    static constexpr UINT kTrayIconId = 1;
+    bool tray_installed_ = false;
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 };
 

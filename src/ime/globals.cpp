@@ -26,7 +26,7 @@ std::wstring GetLexiconDirectory() {
         L"ProgramData", program_data, static_cast<DWORD>(_countof(program_data)));
     if (length > 0 && length < _countof(program_data)) {
         const std::wstring root =
-            std::wstring(program_data) + L"\\FacaiPinyin\\data\\lexicon";
+            std::wstring(program_data) + L"\\CaishenPinyin\\data\\lexicon";
         const std::wstring pointer_path = root + L"\\current";
         HANDLE file = CreateFileW(pointer_path.c_str(), GENERIC_READ,
                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

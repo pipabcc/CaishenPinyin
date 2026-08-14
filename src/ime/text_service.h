@@ -92,6 +92,14 @@ private:
     RECT last_candidate_rect_ {};
     bool has_last_candidate_rect_ = false;
     bool composition_edit_in_progress_ = false;
+    // 用户拖动候选窗后的固定位置；仅当前组合会话内有效，组合结束即恢复跟随光标。
+    bool candidate_pos_overridden_ = false;
+    POINT candidate_override_pos_ {};
+    // 上屏后联想：最近一次上屏的候选文本作为上下文；联想激活期间
+    // 候选窗展示 bigram 后继，数字键直接上屏。
+    std::wstring last_committed_word_;
+    bool association_active_ = false;
+    std::vector<Candidate> association_candidates_;
 
     PinyinEngine* engine_ = nullptr;  // 进程内共享
     CandidateWindow candidate_window_;
@@ -110,8 +118,12 @@ private:
     HRESULT AdviseKeyEventSink();
     HRESULT UnadviseKeyEventSink();
 
-    bool HandleKeyDown(ITfContext* context, WPARAM wparam, bool* eaten);
+    bool HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam, bool* eaten);
     void RefreshCandidates();
+    void LearnCandidate(ITfContext* context, const Candidate& candidate,
+                        const std::string& learned_pinyin, const std::string& learned_input);
+    void ShowAssociation(ITfContext* context);
+    void DismissAssociation();
     void SyncCandidateWindowCandidates();
     void UpdateCandidateWindow(ITfContext* context);
     bool GetCaretScreenRect(ITfContext* context, RECT* rect);

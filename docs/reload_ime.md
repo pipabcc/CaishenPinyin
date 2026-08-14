@@ -17,4 +17,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File E:\shurufa\scripts\hide_stat
 
 ## 当前版本
 - DLL：0.3.0（版本化旁路安装，旧版本目录保留）
-- 词库：1.2.0（系统词库独立版本化，升级不覆盖用户词库）
+- 词库：1.3.0（系统词库独立版本化，升级不覆盖用户词库）

@@ -9,11 +9,11 @@ public static class CustomPhraseStore
 {
     private const int MaximumCodeLength = 32;
     private const int MaximumPhraseLength = 128;
-    private const string MutexName = @"Local\FacaiPinyin.CustomPhrases";
+    private const string MutexName = @"Local\CaishenPinyin.CustomPhrases";
 
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FacaiPinyin", "data", "lexicon", "custom_phrases.txt");
+        "CaishenPinyin", "data", "lexicon", "custom_phrases.txt");
 
     public static IReadOnlyList<CustomPhrase> Load(string? path = null) =>
         Read(path ?? DefaultPath, strict: false);
@@ -45,7 +45,7 @@ public static class CustomPhraseStore
                            4096, FileOptions.WriteThrough))
                 using (var writer = new StreamWriter(stream, new UTF8Encoding(true)))
                 {
-                    writer.WriteLine("# 发财拼音自定义短语 v1");
+                    writer.WriteLine("# 财神输入法自定义短语 v1");
                     writer.WriteLine("# code<TAB>phrase<TAB>position");
                     foreach (var item in validated)
                         writer.WriteLine($"{item.Code}\t{item.Phrase}\t{item.Position}");

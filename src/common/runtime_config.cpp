@@ -24,7 +24,7 @@ std::wstring SettingsPath() {
     const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", root.data(), length);
     if (written == 0 || written >= length) return {};
     root.resize(written);
-    return root + L"\\FacaiPinyin\\settings.ini";
+    return root + L"\\CaishenPinyin\\settings.ini";
 }
 
 std::map<std::string, std::string> ReadValues() {
@@ -80,9 +80,17 @@ RuntimeConfig ReadConfig() {
     value.fuzzy_finals = ReadBool(values, "FuzzyFinals", true);
     value.fuzzy_missing_vowel = ReadBool(values, "FuzzyMissingVowel", true);
     value.shuangpin_xiaohe = ReadBool(values, "ShuangpinXiaohe", false);
+    value.association_enabled = ReadBool(values, "AssociationEnabled", true);
     value.candidate_count = ReadInt(values, "CandidateCount", 9, 3, 9);
     value.candidate_font_size = ReadInt(values, "CandidateFontSize", 19, 14, 32);
-    value.display_name = ReadDisplayName(values, L"发财拼音");
+    value.display_name = ReadDisplayName(values, L"财神输入法");
+    {
+        const auto found = values.find("TrayText");
+        if (found != values.end()) {
+            const std::wstring normalized = NormalizeTrayText(Utf8ToWide(found->second));
+            if (!normalized.empty()) value.tray_text = normalized;
+        }
+    }
     return value;
 }
 
@@ -132,6 +140,12 @@ std::wstring NormalizeDisplayName(std::wstring value) {
     if (first >= last) return {};
     value = std::wstring(first, last);
     return IsValidDisplayName(value) ? value : std::wstring{};
+}
+
+std::wstring NormalizeTrayText(std::wstring value) {
+    value = NormalizeDisplayName(std::move(value));
+    if (value.empty() || value.size() > 2) return {};
+    return value;
 }
 
 }  // namespace shuru

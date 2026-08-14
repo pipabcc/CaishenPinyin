@@ -27,11 +27,11 @@ public sealed record AppSettings(
 
 public static class SettingsStore
 {
-    public const string DefaultDisplayName = "发财拼音";
+    public const string DefaultDisplayName = "财神输入法";
 
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "FacaiPinyin", "settings.ini");
+        "CaishenPinyin", "settings.ini");
 
     public static AppSettings Load(string? path = null)
     {
@@ -77,7 +77,7 @@ public static class SettingsStore
         var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
         var content = string.Join("\n", new[]
         {
-            "# Facai Pinyin settings v1",
+            "# Caishen Pinyin settings v1",
             $"EnglishDefault={Bit(settings.EnglishDefault)}",
             $"LearningEnabled={Bit(settings.LearningEnabled)}",
             $"ContentLogging={Bit(settings.ContentLogging)}",

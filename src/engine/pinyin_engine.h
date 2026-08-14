@@ -5,12 +5,16 @@
 #include "dictionary.h"
 #include "english_dict.h"
 #include "fuzzy_pinyin.h"
+#include "system_language_model.h"
+#include "user_bigram.h"
 
 #include <Windows.h>
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace shuru {
 
@@ -23,6 +27,8 @@ struct QueryOptions {
     InputSchema schema = InputSchema::Quanpin;
     bool fuzzy_enabled = true;
     FuzzyConfig fuzzy_config {};
+    // 最近一次上屏的候选文本（会话上下文）；用于 bigram 加权与整句转换。
+    std::wstring context;
 };
 
 class PinyinEngine {
@@ -55,6 +61,11 @@ public:
 
     void Learn(const std::string& pinyin, const std::wstring& word);
     bool UndoLastLearning();
+    // 记录「上一个上屏词 -> 本次上屏词」的搭配；由 TextService 在成功
+    // 上屏后调用（密码域/关闭学习时不调用）。
+    void ObserveBigram(const std::wstring& previous, const std::wstring& next);
+    // 上屏后联想：返回 context 的高频后继（仅用户 bigram，冷启动为空）。
+    std::vector<Candidate> PredictNext(const std::wstring& context, size_t limit) const;
     bool ExportUserDictionary(const std::wstring& path) const;
     bool ImportUserDictionary(const std::wstring& path);
     bool ClearUserDictionary();
@@ -70,6 +81,7 @@ private:
     struct LexiconSnapshot {
         Dictionary dictionary;
         EnglishDictionary english_dictionary;
+        SystemLanguageModel language_model;
     };
 
     struct UserLexiconSnapshot {
@@ -85,16 +97,23 @@ private:
     std::shared_ptr<LexiconSnapshot> lexicon_;
     std::shared_ptr<UserLexiconSnapshot> user_lexicon_;
     std::shared_ptr<CustomPhraseDictionary> custom_phrases_;
+    std::shared_ptr<const UserBigramModel> bigram_;
     bool ready_ = false;
     bool fuzzy_enabled_ = true;
     FuzzyConfig fuzzy_config_ {};
     InputSchema schema_ = InputSchema::Quanpin;
     std::string last_learned_pinyin_;
     std::wstring last_learned_word_;
+    // 同一输入码下连续选择同一候选的次数；达到 2 次后该候选直接置顶。
+    std::string repeat_selection_pinyin_;
+    std::wstring repeat_selection_text_;
+    int repeat_selection_count_ = 0;
     mutable CRITICAL_SECTION lock_ {};
     bool lock_ready_ = false;
     std::wstring user_dict_path_;
     std::wstring custom_phrase_path_;
+    std::wstring bigram_path_;
+    bool bigram_dirty_ = false;
     std::wstring lexicon_dir_;
     HANDLE save_event_ = nullptr;
     HANDLE save_thread_ = nullptr;

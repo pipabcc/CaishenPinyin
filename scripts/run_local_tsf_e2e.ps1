@@ -12,10 +12,10 @@ if($RequireRegisteredProfile){
  if(-not(Test-Path -LiteralPath $registeredDll -PathType Leaf)){throw "Registered DLL missing: $registeredDll"}
  $dll=$registeredDll
  $lexicon=Join-Path $root 'data\lexicon'
- $dataCurrent=Join-Path $env:ProgramData 'FacaiPinyin\data\lexicon\current'
+ $dataCurrent=Join-Path $env:ProgramData 'CaishenPinyin\data\lexicon\current'
  if(Test-Path -LiteralPath $dataCurrent){
   $dataVersion=(Get-Content -LiteralPath $dataCurrent -Raw).Trim()
-  $deployedLexicon=Join-Path $env:ProgramData "FacaiPinyin\data\lexicon\versions\$dataVersion"
+  $deployedLexicon=Join-Path $env:ProgramData "CaishenPinyin\data\lexicon\versions\$dataVersion"
   if(Test-Path -LiteralPath $deployedLexicon -PathType Container){$lexicon=$deployedLexicon}
  }
  & (Join-Path $root "$BuildDir\release_health_check.exe") $registeredDll $lexicon --registered

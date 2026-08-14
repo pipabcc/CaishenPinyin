@@ -24,6 +24,6 @@ Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Where-Object {$_.Name -
   }
   $files += [pscustomobject]$item
 }
-$manifest=[ordered]@{schemaVersion='1';product='Facai Pinyin';version=$Version;signingPolicy=$SigningPolicy;createdUtc=(Get-Date).ToUniversalTime().ToString('O');files=$files}
+$manifest=[ordered]@{schemaVersion='1';product='Caishen IME';version=$Version;signingPolicy=$SigningPolicy;createdUtc=(Get-Date).ToUniversalTime().ToString('O');files=$files}
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $PackageRoot 'release-manifest.json') -Encoding UTF8
 Write-Host "release manifest created: $PackageRoot\release-manifest.json"

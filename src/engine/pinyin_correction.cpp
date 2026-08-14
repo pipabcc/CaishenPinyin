@@ -14,6 +14,26 @@ struct EditMeasurement {
     int ranking_cost = 4;
 };
 
+// QWERTY 相邻键：手滑打错几乎都落在物理相邻键上，替换代价按键距分级，
+// 相邻键纠错排序优先于任意替换。
+bool AreKeysAdjacent(char left, char right) {
+    static const std::unordered_map<char, const char*> kNeighbors = {
+        {'q', "wa"},     {'w', "qeas"},   {'e', "wrsd"},  {'r', "etdf"},
+        {'t', "ryfg"},   {'y', "tugh"},   {'u', "yihj"},  {'i', "uojk"},
+        {'o', "ipkl"},   {'p', "ol"},     {'a', "qwsz"},  {'s', "awedzx"},
+        {'d', "serfxc"}, {'f', "drtgcv"}, {'g', "ftyhvb"},{'h', "gyujbn"},
+        {'j', "huiknm"}, {'k', "jiolm"},  {'l', "kop"},   {'z', "asx"},
+        {'x', "zsdc"},   {'c', "xdfv"},   {'v', "cfgb"},  {'b', "vghn"},
+        {'n', "bhjm"},   {'m', "njk"},
+    };
+    const auto found = kNeighbors.find(left);
+    if (found == kNeighbors.end()) return false;
+    for (const char* neighbor = found->second; *neighbor; ++neighbor) {
+        if (*neighbor == right) return true;
+    }
+    return false;
+}
+
 EditMeasurement MeasureSingleEdit(
     const std::string& left,
     const std::string& right) {
@@ -29,9 +49,17 @@ EditMeasurement MeasureSingleEdit(
             if (tail == left.size()) return {1, 1};
         }
         std::size_t differences = 0;
-        for (std::size_t index = 0; index < left.size(); ++index)
-            if (left[index] != right[index]) ++differences;
-        return differences == 1 ? EditMeasurement{1, 3} : EditMeasurement{};
+        std::size_t mismatch = 0;
+        for (std::size_t index = 0; index < left.size(); ++index) {
+            if (left[index] != right[index]) {
+                ++differences;
+                mismatch = index;
+            }
+        }
+        if (differences != 1) return {};
+        return AreKeysAdjacent(left[mismatch], right[mismatch])
+            ? EditMeasurement{1, 2}
+            : EditMeasurement{1, 4};
     }
     if (left.size() + 1 == right.size()) {
         std::size_t input = 0;

@@ -141,7 +141,7 @@ void LogWrite(LogLevel level, const char* file, int line, const char* fmt, ...) 
             LeaveCriticalSection(&g_log_cs);
             return;
         }
-        wcscat_s(path, L"FacaiIme.log");
+        wcscat_s(path, L"CaishenIme.log");
     }
 
     if (g_log_handle == INVALID_HANDLE_VALUE || g_open_path != path) {

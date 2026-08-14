@@ -12,6 +12,17 @@
 
 namespace shuru {
 
+// 返回一个像素被圆角矩形覆盖的 0..255 面积比例。候选框和选中背景
+// 共用该 4x4 子像素算法，保证相同半径下边缘形状一致。
+std::uint8_t RoundedRectanglePixelCoverage(
+    int pixel_x,
+    int pixel_y,
+    int left,
+    int top,
+    int width,
+    int height,
+    int radius) noexcept;
+
 class CandidateWindow {
 public:
     CandidateWindow() = default;
@@ -36,6 +47,11 @@ public:
     void SetEnglishMode(bool english);
     void SetTypingStats(const TypingStatsSnapshot& snapshot);
     void SetSelectionHandler(std::function<void(size_t)> handler) { on_select_ = std::move(handler); }
+    void SetDragHandler(std::function<void(POINT)> handler) { on_drag_ = std::move(handler); }
+
+    // 引擎就绪轮询：poll 返回 true 继续轮询，false 停止。
+    void StartReadyPolling(std::function<bool()> poll);
+    void StopReadyPolling();
 
 private:
     static constexpr int kHorizontalPadding = 9;
@@ -44,8 +60,12 @@ private:
     static constexpr int kRowGap = 4;
     static constexpr int kHeaderTextGap = 12;
     static constexpr int kCornerRadius = 8;
+    static constexpr int kShadowMargin = 12;
+    static constexpr int kShadowBlurPasses = 3;
     static constexpr int kMinWidth = 280;
     static constexpr int kMaxWidth = 1440;
+    static constexpr UINT_PTR kReadyPollTimerId = 1;
+    static constexpr UINT kReadyPollIntervalMs = 80;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -54,6 +74,11 @@ private:
     HFONT font_meta_ = nullptr;
     bool visible_ = false;
     bool english_mode_ = false;
+    bool mouse_down_ = false;
+    bool dragging_ = false;
+    POINT drag_start_cursor_ {};
+    POINT drag_start_window_ {};
+    bool ready_poll_active_ = false;
     int width_ = kMinWidth;
     int height_ = kLineHeight * 2 + kVerticalPadding * 2 + kRowGap;
 
@@ -67,10 +92,11 @@ private:
     bool layout_dirty_ = true;
     bool paint_dirty_ = true;
     std::function<void(size_t)> on_select_;
+    std::function<void(POINT)> on_drag_;
+    std::function<bool()> ready_poll_;
 
     int Scale(int value) const;
     void EnsureFonts();
-    void ApplyRoundedRegion();
     void RecalcSize();
     bool DisplayContentEquals(
         const std::wstring& composing,
@@ -81,6 +107,10 @@ private:
     int HitTestCandidate(int x, int y) const;
     void RefreshTypingStats();
     void OpenSettings();
+    void DrawContent(
+        HDC hdc, uint8_t* pixels, int bitmap_width, int bitmap_height,
+        int content_offset);
+    bool UpdateLayeredWindowContent(const POINT& window_origin);
     LRESULT OnPaint();
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 };

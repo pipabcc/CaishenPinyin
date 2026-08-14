@@ -14,12 +14,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName", "Facai Pinyin\0"
-      VALUE "FileDescription", "Facai Pinyin TSF Text Service\0"
+      VALUE "CompanyName", "Caishen IME\0"
+      VALUE "FileDescription", "Caishen IME TSF Text Service\0"
       VALUE "FileVersion", SHURU_VERSION_STRING "\0"
       VALUE "InternalName", "ShuruIme.dll\0"
       VALUE "OriginalFilename", "ShuruIme.dll\0"
-      VALUE "ProductName", "Facai Pinyin\0"
+      VALUE "ProductName", "Caishen IME\0"
       VALUE "ProductVersion", SHURU_VERSION_STRING "\0"
     END
   END

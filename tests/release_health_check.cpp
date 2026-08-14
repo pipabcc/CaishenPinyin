@@ -138,14 +138,14 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
     const std::filesystem::path expected_user_dict =
-        isolated_user_data.directory() / L"FacaiPinyin" / L"data" /
+        isolated_user_data.directory() / L"CaishenPinyin" / L"data" /
         L"lexicon" / L"user_dict.txt";
     if (!SamePath(engine.user_dict_path(), expected_user_dict.wstring())) {
         std::fwprintf(stderr, L"health-check user dictionary is not isolated\n");
         return 1;
     }
     const std::filesystem::path custom_phrase_path =
-        isolated_user_data.directory() / L"FacaiPinyin" / L"data" /
+        isolated_user_data.directory() / L"CaishenPinyin" / L"data" /
         L"lexicon" / L"custom_phrases.txt";
     std::filesystem::create_directories(custom_phrase_path.parent_path());
     {

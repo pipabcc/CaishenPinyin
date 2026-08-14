@@ -24,6 +24,7 @@ set(SHURU_ENGINE_FEATURE_SOURCES
   src/engine/custom_phrase.cpp
   src/engine/pinyin_correction.cpp
   src/engine/special_input.cpp
+  src/engine/system_language_model.cpp
 )
 
 add_library(ShuruIme SHARED
@@ -73,6 +74,7 @@ target_link_libraries(ShuruIme PRIVATE
   advapi32
   bcrypt
   shell32
+  dwmapi
 )
 
 add_custom_target(copy_runtime_lexicon ALL
@@ -163,6 +165,15 @@ if(BUILD_TESTING)
   set_tests_properties(engine_phase1 PROPERTIES
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata"
   )
+
+  add_executable(system_language_model_test
+    tests/engine_playground/system_language_model_test.cpp
+    src/engine/system_language_model.cpp
+  )
+  target_include_directories(system_language_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(system_language_model_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  add_test(NAME system_language_model COMMAND system_language_model_test)
+  set_tests_properties(system_language_model PROPERTIES TIMEOUT 30)
 
   add_executable(p1_engine_test
     tests/engine_playground/p1_engine_test.cpp
@@ -272,7 +283,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(shared_status_ui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(shared_status_ui_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt shell32)
+  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt shell32 dwmapi)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
@@ -285,7 +296,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(candidate_window_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(candidate_window_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(candidate_window_test PRIVATE user32 gdi32 shell32)
+  target_link_libraries(candidate_window_test PRIVATE user32 gdi32 shell32 dwmapi)
   add_test(NAME candidate_window COMMAND candidate_window_test)
   set_tests_properties(candidate_window PROPERTIES TIMEOUT 30)
 

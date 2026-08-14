@@ -6,6 +6,7 @@
 #define SHURU_VERSION_STRING "0.4.4"
 
 // 对外产品名（语言栏 / 注册表显示）
-#define SHURU_PRODUCT_NAME_W L"发财拼音"
-#define SHURU_PRODUCT_NAME_A "Facai Pinyin"
+// 注意：此文件被 ShuruIme.rc 包含，不可使用非 ASCII 字符。
+// 中文产品名统一从 RuntimeConfig::display_name 获取（默认 L"财神输入法"）。
+#define SHURU_PRODUCT_NAME_A "Caishen IME"
 #define SHURU_IME_FILENAME_W L"ShuruIme.dll"

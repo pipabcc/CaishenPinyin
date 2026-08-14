@@ -39,9 +39,15 @@ int wmain(int argc, wchar_t** argv) {
             continue;
         }
         for (size_t i = 0; i < result.candidates.size(); ++i) {
-            std::cout << (i + 1) << ". " << WideToUtf8(result.candidates[i].text)
-                      << "  [" << result.candidates[i].pinyin << "]"
-                      << " f=" << result.candidates[i].frequency << '\n';
+            const auto& c = result.candidates[i];
+            std::cout << (i + 1) << ". " << WideToUtf8(c.text)
+                      << "  [" << c.pinyin << "]"
+                      << " f=" << c.frequency
+                      << " src=" << static_cast<int>(c.source)
+                      << " cov=" << c.covered_input_len
+                      << " seg=" << c.segment_count
+                      << " cost=" << c.match_cost
+                      << " rs=" << static_cast<long long>(c.ranking_score) << '\n';
         }
     }
     return 0;
