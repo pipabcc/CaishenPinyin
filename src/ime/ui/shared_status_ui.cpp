@@ -254,7 +254,8 @@ bool SharedStatusUi::Acquire(HINSTANCE instance, DWORD* owner_thread_id) {
     state->refs = 1;
     ++g_ui_ref;
     InstallHandlers_NoLock(thread_id, state);
-    // 第一个 StatusWindow 创建时安装托盘图标（每进程一个）。
+    // 每个进程的第一个 StatusWindow 尝试成为当前 Windows 会话的唯一
+    // 托盘图标所有者；跨进程互斥由 StatusWindow 负责。
     const bool first_window = (g_ui_ref == 1);
     const long refs = g_ui_ref;
     LeaveCriticalSection(&g_ui_cs);
@@ -377,12 +378,20 @@ void SharedStatusUi::SyncFrom(bool english_mode, bool shuangpin_mode) {
         snapshot.status->SetEnglishMode(english_mode);
         snapshot.status->SetShuangpinMode(shuangpin_mode);
         snapshot.status->SetKeyboardOpen(snapshot.soft && snapshot.soft->IsVisible());
-        // 托盘图标随输入模式同步更新
-        if (snapshot.status->HasTrayIcon()) {
-            const RuntimeConfig cfg = GetRuntimeConfig();
+        const RuntimeConfig cfg = GetRuntimeConfig();
+        // 非所有者不创建重复图标；原所有者退出后，下一次获得输入焦点时
+        // 会在这里接管 abandoned mutex 并恢复唯一图标。
+        if (!snapshot.status->HasTrayIcon()) {
+            snapshot.status->InstallTrayIcon(cfg.tray_text, english_mode);
+        } else {
             snapshot.status->UpdateTrayIcon(cfg.tray_text, english_mode);
         }
     }
+}
+
+bool SharedStatusUi::HasTrayIcon() {
+    const UiSnapshot snapshot = TakeCurrentThreadSnapshot();
+    return snapshot.status && snapshot.status->HasTrayIcon();
 }
 
 bool SharedStatusUi::IsSoftKeyboardVisible() {

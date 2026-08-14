@@ -206,6 +206,17 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"multi-character input segmentation failed\n");
         return 1;
     }
+    const auto double_word = engine.Query("yingw", 20);
+    const auto double_candidate = std::find_if(
+        double_word.candidates.begin(), double_word.candidates.end(),
+        [](const shuru::Candidate& candidate) {
+            return candidate.text == L"应我";
+        });
+    if (double_candidate == double_word.candidates.end() ||
+        double_candidate->input_segmentation != "ying'w") {
+        std::fwprintf(stderr, L"double-character input segmentation failed\n");
+        return 1;
+    }
 
     if (argc > 3 && wcscmp(argv[3], L"--registered") == 0) {
         wchar_t path[MAX_PATH] {};

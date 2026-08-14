@@ -10,6 +10,28 @@ namespace {
 
 const wchar_t kStatusClass[] = L"ShuruStatusWindowClass";
 const wchar_t kSoftClass[] = L"ShuruSoftKeyboardClass";
+#if defined(SHURU_TRAY_OWNER_MUTEX_TEST)
+const GUID kTrayIconGuid = {
+    0x52d5c920, 0x47c2, 0x4a1f,
+    {0x9d, 0x64, 0x7b, 0x85, 0x6a, 0x30, 0x2e, 0xfe}};
+#else
+const GUID kTrayIconGuid = {
+    0x52d5c920, 0x47c2, 0x4a1f,
+    {0x9d, 0x64, 0x7b, 0x85, 0x6a, 0x30, 0x2e, 0xf1}};
+#endif
+
+HANDLE CreateTrayOwnerMutex() {
+#if defined(SHURU_TRAY_OWNER_MUTEX_TEST)
+    wchar_t name[96] {};
+    swprintf_s(
+        name, L"Local\\CaishenPinyin.TrayIcon.Owner.Test.%lu",
+        GetCurrentProcessId());
+    return CreateMutexW(nullptr, FALSE, name);
+#else
+    return CreateMutexW(
+        nullptr, FALSE, L"Local\\CaishenPinyin.TrayIcon.Owner.v1");
+#endif
+}
 
 }  // namespace
 
@@ -62,8 +84,8 @@ void StatusWindow::RecreateFont() {
 }
 
 void StatusWindow::Destroy() {
+    UninstallTrayIcon();
     if (hwnd_) {
-        UninstallTrayIcon();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -77,6 +99,14 @@ void StatusWindow::Destroy() {
 void StatusWindow::AbandonAfterOwnerThreadExit() noexcept {
     // 线程退出时系统已经销毁该线程创建的窗口；这里只释放进程级 GDI 对象。
     hwnd_ = nullptr;
+    tray_installed_ = false;
+    if (tray_owner_mutex_) {
+        // 所有者线程退出后 mutex 已被系统标记为 abandoned；此处不能从
+        // 当前清理线程调用 ReleaseMutex，只关闭本进程遗留的句柄。
+        CloseHandle(tray_owner_mutex_);
+        tray_owner_mutex_ = nullptr;
+        tray_owner_thread_id_ = 0;
+    }
     if (font_) {
         DeleteObject(font_);
         font_ = nullptr;
@@ -410,31 +440,69 @@ HICON StatusWindow::CreateTextHIcon(const std::wstring& text, bool english_mode)
 
 bool StatusWindow::InstallTrayIcon(const std::wstring& tray_text, bool english_mode) {
     if (!hwnd_ || tray_installed_) return false;
+    if (!TryAcquireTrayOwnership()) return false;
     HICON icon = CreateTextHIcon(tray_text.empty() ? L"财" : tray_text, english_mode);
 
     NOTIFYICONDATAW nid {};
     nid.cbSize           = sizeof(nid);
     nid.hWnd             = hwnd_;
     nid.uID              = kTrayIconId;
-    nid.uFlags           = NIF_ICON | NIF_TIP | NIF_MESSAGE;
+    nid.uFlags           = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_GUID;
     nid.uCallbackMessage = kTrayIconCallbackMsg;
     nid.hIcon            = icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
+    nid.guidItem         = kTrayIconGuid;
     wcsncpy_s(nid.szTip, L"财神输入法", _TRUNCATE);
 
-    const bool ok = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    Shell_NotifyIconW(NIM_DELETE, &nid);
+    bool ok = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+#if defined(SHURU_TRAY_OWNER_MUTEX_TEST)
+    ok = true;
+#endif
     if (icon) DestroyIcon(icon);
     tray_installed_ = ok;
+    if (!ok) ReleaseTrayOwnership();
     return ok;
 }
 
 void StatusWindow::UninstallTrayIcon() {
-    if (!hwnd_ || !tray_installed_) return;
-    NOTIFYICONDATAW nid {};
-    nid.cbSize = sizeof(nid);
-    nid.hWnd   = hwnd_;
-    nid.uID    = kTrayIconId;
-    Shell_NotifyIconW(NIM_DELETE, &nid);
+    if (hwnd_ && tray_installed_) {
+        NOTIFYICONDATAW nid {};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd   = hwnd_;
+        nid.uID    = kTrayIconId;
+        nid.uFlags = NIF_GUID;
+        nid.guidItem = kTrayIconGuid;
+        if (!Shell_NotifyIconW(NIM_DELETE, &nid)) {
+            nid.uFlags = 0;
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+        }
+    }
     tray_installed_ = false;
+    ReleaseTrayOwnership();
+}
+
+bool StatusWindow::TryAcquireTrayOwnership() {
+    if (tray_owner_mutex_) return true;
+    HANDLE mutex = CreateTrayOwnerMutex();
+    if (!mutex) return false;
+    const DWORD wait = WaitForSingleObject(mutex, 0);
+    if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        return false;
+    }
+    tray_owner_mutex_ = mutex;
+    tray_owner_thread_id_ = GetCurrentThreadId();
+    return true;
+}
+
+void StatusWindow::ReleaseTrayOwnership() noexcept {
+    if (!tray_owner_mutex_) return;
+    if (tray_owner_thread_id_ == GetCurrentThreadId()) {
+        ReleaseMutex(tray_owner_mutex_);
+    }
+    CloseHandle(tray_owner_mutex_);
+    tray_owner_mutex_ = nullptr;
+    tray_owner_thread_id_ = 0;
 }
 
 void StatusWindow::UpdateTrayIcon(const std::wstring& tray_text, bool english_mode) {
@@ -445,9 +513,13 @@ void StatusWindow::UpdateTrayIcon(const std::wstring& tray_text, bool english_mo
     nid.cbSize = sizeof(nid);
     nid.hWnd   = hwnd_;
     nid.uID    = kTrayIconId;
-    nid.uFlags = NIF_ICON;
+    nid.uFlags = NIF_ICON | NIF_GUID;
     nid.hIcon  = icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
-    Shell_NotifyIconW(NIM_MODIFY, &nid);
+    nid.guidItem = kTrayIconGuid;
+    if (!Shell_NotifyIconW(NIM_MODIFY, &nid)) {
+        nid.uFlags = NIF_ICON;
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
     if (icon) DestroyIcon(icon);
 }
 

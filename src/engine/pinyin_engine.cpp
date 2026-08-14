@@ -1287,7 +1287,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             segmentation_lattices;
         for (auto& candidate : pool) {
             if (!candidate.input_segmentation.empty() ||
-                candidate.text.size() < 3 || candidate.covered_input_len == 0) continue;
+                candidate.text.size() < 2 || candidate.covered_input_len == 0) continue;
             const size_t covered = (std::min)(candidate.covered_input_len, query.size());
             auto found = segmentation_lattices.find(covered);
             if (found == segmentation_lattices.end()) {

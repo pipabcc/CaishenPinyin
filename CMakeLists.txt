@@ -297,7 +297,9 @@ if(BUILD_TESTING)
     src/ime/text_service.cpp
   )
   target_include_directories(shared_status_ui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_compile_definitions(shared_status_ui_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_definitions(shared_status_ui_test PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
+    SHURU_TRAY_OWNER_MUTEX_TEST=1)
   target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt shell32 dwmapi)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)

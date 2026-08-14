@@ -8,5 +8,10 @@
     <RootNamespace>ShuruSettings</RootNamespace>
     <AssemblyName>ShuruSettings</AssemblyName>
     <LangVersion>latest</LangVersion>
+    <ApplicationIcon>app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="app.ico"/>
+  </ItemGroup>
 </Project>

@@ -20,6 +20,7 @@ public:
     static void Hide();
 
     static void SyncFrom(bool english_mode, bool shuangpin_mode = false);
+    static bool HasTrayIcon();
     static bool IsSoftKeyboardVisible();
     static void ShowSoftKeyboard(const POINT& anchor);
     static void HideSoftKeyboard();

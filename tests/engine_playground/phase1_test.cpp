@@ -265,10 +265,25 @@ int wmain(int argc, wchar_t** argv) {
         const auto predicted = std::find_if(
             predicted_suffix.candidates.begin(), predicted_suffix.candidates.end(),
             [](const Candidate& candidate) { return candidate.text == L"好多次"; });
+        const auto segmented_double_partial = engine.Query("yingw", 20);
+        const auto double_partial = std::find_if(
+            segmented_double_partial.candidates.begin(),
+            segmented_double_partial.candidates.end(),
+            [](const Candidate& candidate) { return candidate.text == L"应我"; });
+        const auto segmented_double_exact = engine.Query("renzhen", 20);
+        const auto double_exact = std::find_if(
+            segmented_double_exact.candidates.begin(),
+            segmented_double_exact.candidates.end(),
+            [](const Candidate& candidate) { return candidate.text == L"认真"; });
         if (segmented == segmented_sentence.candidates.end() ||
             segmented->input_segmentation != "wo'men'zhi'dao" ||
             predicted == predicted_suffix.candidates.end() ||
-            predicted->input_segmentation != "hao'duo'c") {
+            predicted->input_segmentation != "hao'duo'c" ||
+            double_partial == segmented_double_partial.candidates.end() ||
+            double_partial->input_segmentation != "ying'w" ||
+            double_exact == segmented_double_exact.candidates.end() ||
+            double_exact->input_segmentation != "ren'zhen" ||
+            !xiang.candidates.front().input_segmentation.empty()) {
             std::cerr << "candidate input segmentation failed\n";
             return 25;
         }

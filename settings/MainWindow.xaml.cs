@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -23,6 +23,12 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        try
+        {
+            var iconUri = new Uri("pack://application:,,,/app.ico", UriKind.RelativeOrAbsolute);
+            Icon = new System.Windows.Media.Imaging.BitmapImage(iconUri);
+        }
+        catch { }
         ApplySettings(SettingsStore.Load());
         phrases_.AddRange(CustomPhraseStore.Load());
         RefreshPhraseGrid();
@@ -32,15 +38,41 @@ public partial class MainWindow : Window
     private void Window_Loaded(object sender, RoutedEventArgs e) =>
         NavigationList.Focus();
 
+    private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // 允许在非交互输入控件区域拖拽移动无标题栏窗口
+        if (e.LeftButton == MouseButtonState.Pressed &&
+            e.OriginalSource is not TextBox &&
+            e.OriginalSource is not Button &&
+            e.OriginalSource is not ComboBox &&
+            e.OriginalSource is not CheckBox &&
+            e.OriginalSource is not RadioButton &&
+            e.OriginalSource is not ListBoxItem &&
+            e.OriginalSource is not System.Windows.Controls.Primitives.Thumb)
+        {
+            try
+            {
+                DragMove();
+            }
+            catch
+            {
+                // 忽略非主窗口激活状态下的拖拽异常
+            }
+        }
+    }
+
     private void NavigationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (GeneralPage is null || InputPage is null || PhrasePage is null || DictionaryPage is null)
             return;
+
         var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, DictionaryPage };
         for (var index = 0; index < pages.Length; ++index)
+        {
             pages[index].Visibility = NavigationList.SelectedIndex == index
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+        }
     }
 
     private void ApplySettings(AppSettings settings)

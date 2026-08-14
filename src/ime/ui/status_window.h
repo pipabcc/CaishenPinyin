@@ -70,10 +70,14 @@ private:
     LRESULT OnTrayIconMsg(LPARAM lparam);
     bool LaunchSettings() const;
     static HICON CreateTextHIcon(const std::wstring& text, bool english_mode);
+    bool TryAcquireTrayOwnership();
+    void ReleaseTrayOwnership() noexcept;
     static constexpr UINT kOwnerThreadTaskMessage = WM_APP + 0x51;
     static constexpr UINT kTrayIconCallbackMsg   = WM_APP + 0x52;
     static constexpr UINT kTrayIconId = 1;
     bool tray_installed_ = false;
+    HANDLE tray_owner_mutex_ = nullptr;
+    DWORD tray_owner_thread_id_ = 0;
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 };
 

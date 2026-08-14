@@ -107,13 +107,13 @@ inline std::string RemoveSyllableSeparators(const std::string& input) {
     return out;
 }
 
-// 为三字及以上、与实际输入完整对齐的候选生成展示边界。前缀预测允许最后
+// 为两字及以上、与实际输入完整对齐的候选生成展示边界。前缀预测允许最后
 // 一个音节仍是部分拼写，但只展示用户已经键入的字母，绝不补出未输入后缀。
 inline std::string BuildCandidateInputSegmentationFromLattice(
     const std::string& typed,
     const std::vector<SyllablePath>& paths,
     const Candidate& candidate) {
-    if (!candidate.input_segmentation.empty() || candidate.text.size() < 3 ||
+    if (!candidate.input_segmentation.empty() || candidate.text.size() < 2 ||
         typed.empty() || candidate.pinyin.empty() ||
         !std::all_of(candidate.text.begin(), candidate.text.end(), [](wchar_t ch) {
             return ch >= L'\x4e00' && ch <= L'\x9fff';
