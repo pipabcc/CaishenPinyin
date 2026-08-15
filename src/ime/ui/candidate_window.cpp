@@ -258,6 +258,10 @@ void CandidateWindow::Destroy() {
         DeleteObject(font_meta_);
         font_meta_ = nullptr;
     }
+    if (font_utility_ != nullptr) {
+        DeleteObject(font_utility_);
+        font_utility_ = nullptr;
+    }
     visible_ = false;
     instance_ = nullptr;
 }
@@ -284,6 +288,13 @@ void CandidateWindow::EnsureFonts() {
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
             L"Microsoft YaHei UI");
+    }
+    if (font_utility_ == nullptr) {
+        font_utility_ = CreateFontW(
+            -Scale(kUtilityFontSize), 0, 0, 0, FW_NORMAL,
+            FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
     }
 }
 
@@ -397,7 +408,12 @@ bool CandidateWindow::DisplayContentEquals(
         return false;
     }
     for (size_t i = 0; i < candidates.size(); ++i) {
-        if (candidates_[i].text != candidates[i].text) return false;
+        if (candidates_[i].text != candidates[i].text ||
+            candidates_[i].full_content != candidates[i].full_content ||
+            candidates_[i].action != candidates[i].action ||
+            candidates_[i].action_data != candidates[i].action_data) {
+            return false;
+        }
     }
     return true;
 }
@@ -425,6 +441,28 @@ void CandidateWindow::SetContent(
     selected_ = normalized_selected;
     page_size_ = normalized_page_size;
     page_ = normalized_page;
+
+    const bool is_v_mode = (!composing.empty() && (composing[0] == L'v' || composing[0] == L'V') && composing.rfind(L"vvv", 0) != 0);
+    if (is_v_mode) {
+        const int max_scroll = (candidates.size() > static_cast<size_t>(kVerticalMaxVisible)) ? (static_cast<int>(candidates.size()) - kVerticalMaxVisible) : 0;
+        if (normalized_selected < static_cast<size_t>(scroll_offset_)) {
+            scroll_offset_ = static_cast<int>(normalized_selected);
+        } else if (normalized_selected >=
+                   static_cast<size_t>(scroll_offset_ + kVerticalMaxVisible)) {
+            scroll_offset_ = static_cast<int>(normalized_selected) -
+                kVerticalMaxVisible + 1;
+        }
+        scroll_offset_ = (std::max)(0, (std::min)(max_scroll, scroll_offset_));
+        if (hovered_row_ >= static_cast<int>(candidates.size())) {
+            hovered_row_ = -1;
+            hovered_delete_ = false;
+        }
+    } else {
+        scroll_offset_ = 0;
+        hovered_row_ = -1;
+        hovered_delete_ = false;
+    }
+
     layout_dirty_ = layout_dirty_ || layout_changed;
     paint_dirty_ = true;
     if (layout_dirty_) RecalcSize();
@@ -440,6 +478,24 @@ void CandidateWindow::SetSelectedIndex(size_t selected_index) {
         page_ = selected_ / page_size_;
     } else {
         page_ = 0;
+    }
+    const bool is_v_mode = !composing_.empty() &&
+        (composing_[0] == L'v' || composing_[0] == L'V') &&
+        composing_.rfind(L"vvv", 0) != 0;
+    if (is_v_mode) {
+        const int max_scroll = candidates_.size() >
+                static_cast<size_t>(kVerticalMaxVisible)
+            ? static_cast<int>(candidates_.size()) - kVerticalMaxVisible
+            : 0;
+        if (selected_ < static_cast<size_t>(scroll_offset_)) {
+            scroll_offset_ = static_cast<int>(selected_);
+        } else if (selected_ >=
+                   static_cast<size_t>(scroll_offset_ + kVerticalMaxVisible)) {
+            scroll_offset_ = static_cast<int>(selected_) -
+                kVerticalMaxVisible + 1;
+        }
+        scroll_offset_ = (std::max)(
+            0, (std::min)(max_scroll, scroll_offset_));
     }
     if (page_ != previous_page) {
         layout_dirty_ = true;
@@ -506,13 +562,26 @@ void CandidateWindow::RecalcSize() {
     EnsureFonts();
 
     if (hdc == nullptr || font_ == nullptr || font_comp_ == nullptr ||
-        font_meta_ == nullptr) {
+        font_meta_ == nullptr || font_utility_ == nullptr) {
         if (hdc != nullptr) {
             ReleaseDC(nullptr, hdc);
         }
         width_ = Scale(kMinWidth);
         height_ = Scale(kVerticalPadding * 2 + kLineHeight * 2 + kRowGap);
         layout_dirty_ = false;
+        return;
+    }
+
+    const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
+
+    if (is_v_mode) {
+        width_ = Scale(350);
+        const int top_bar_h = Scale(38);
+        const int row_h = Scale(kVerticalRowHeight);
+        const size_t visible_count = candidates_.empty() ? 1 : (std::min)(candidates_.size(), static_cast<size_t>(kVerticalMaxVisible));
+        height_ = top_bar_h + static_cast<int>(visible_count) * row_h + Scale(10);
+        layout_dirty_ = false;
+        ReleaseDC(nullptr, hdc);
         return;
     }
 
@@ -549,13 +618,26 @@ void CandidateWindow::RecalcSize() {
         Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
     height_ = vertical.window_height;
     layout_dirty_ = false;
-
 }
 
 int CandidateWindow::HitTestCandidate(int x, int y) const {
     const int shadow_margin = Scale(kShadowMargin);
     x -= shadow_margin;
     y -= shadow_margin;
+
+    const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
+    if (is_v_mode) {
+        const int top_bar_h = Scale(38);
+        const int row_h = Scale(kVerticalRowHeight);
+        if (y < top_bar_h || y >= height_) return -1;
+        const int row = (y - top_bar_h) / row_h;
+        const int idx = scroll_offset_ + row;
+        if (idx >= 0 && static_cast<size_t>(idx) < candidates_.size()) {
+            return idx;
+        }
+        return -1;
+    }
+
     const auto vertical = BuildCandidateWindowVerticalLayout(
         Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
     if (y < vertical.candidate_top || y >= vertical.candidate_bottom) {
@@ -581,10 +663,152 @@ void CandidateWindow::DrawContent(
     DeleteObject(bg);
 
     EnsureFonts();
-    if (font_ == nullptr || font_comp_ == nullptr || font_meta_ == nullptr) return;
+    if (font_ == nullptr || font_comp_ == nullptr || font_meta_ == nullptr ||
+        font_utility_ == nullptr) return;
     SetBkMode(hdc, TRANSPARENT);
 
-    // 组合拼音行（加大、无下划线）
+    const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
+
+    if (is_v_mode) {
+        // ================= 竖向瀑布流绘制 =================
+        const int top_bar_h = Scale(38);
+        const int row_h = Scale(kVerticalRowHeight);
+        const int padding = Scale(12);
+
+        // 1. 顶部标题
+        SelectObject(hdc, font_comp_);
+        SetTextColor(hdc, RGB(15, 23, 42));
+        std::wstring title = composing_.rfind(L"vv", 0) == 0 ? L"自定义短语" : L"复制记录";
+        RECT title_rc {padding, Scale(4), padding + Scale(120), top_bar_h};
+        DrawTextW(hdc, title.c_str(), -1, &title_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        // 2. 右侧可点击搜索框胶囊
+        std::wstring search_query;
+        if (composing_.rfind(L"vv", 0) == 0 && composing_.size() > 2) search_query = composing_.substr(2);
+        else if (composing_.rfind(L"v", 0) == 0 && composing_.size() > 1 && composing_[1] != L'v') search_query = composing_.substr(1);
+
+        const int box_w = Scale(145);
+        search_box_rect_ = RECT {width_ - padding - box_w, Scale(6), width_ - padding, top_bar_h - Scale(6)};
+
+        HPEN cap_pen = CreatePen(PS_SOLID, 1, RGB(226, 232, 240));
+        HBRUSH cap_brush = CreateSolidBrush(RGB(248, 250, 252));
+        HGDIOBJ old_pen = SelectObject(hdc, cap_pen);
+        HGDIOBJ old_brush = SelectObject(hdc, cap_brush);
+        RoundRect(hdc, search_box_rect_.left, search_box_rect_.top, search_box_rect_.right, search_box_rect_.bottom, Scale(6), Scale(6));
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(cap_brush);
+        DeleteObject(cap_pen);
+
+        SelectObject(hdc, font_meta_);
+        std::wstring search_text = search_query.empty() ? L"🔍 搜索..." : (L"🔍 " + search_query);
+        SetTextColor(hdc, search_query.empty() ? RGB(148, 163, 184) : RGB(30, 41, 59));
+        RECT text_rc = search_box_rect_;
+        text_rc.left += Scale(8);
+        text_rc.right -= search_query.empty() ? Scale(6) : Scale(20);
+        DrawTextW(hdc, search_text.c_str(), -1, &text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        if (!search_query.empty()) {
+            search_clear_rect_ = RECT {search_box_rect_.right - Scale(20), search_box_rect_.top, search_box_rect_.right - Scale(2), search_box_rect_.bottom};
+            SetTextColor(hdc, RGB(148, 163, 184));
+            DrawTextW(hdc, L"✕", -1, &search_clear_rect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            search_clear_rect_ = {};
+        }
+
+        // 3. 分隔线
+        HPEN sep = CreatePen(PS_SOLID, 1, RGB(241, 245, 249));
+        old_pen = SelectObject(hdc, sep);
+        MoveToEx(hdc, Scale(6), top_bar_h, nullptr);
+        LineTo(hdc, width_ - Scale(6), top_bar_h);
+        SelectObject(hdc, old_pen);
+        DeleteObject(sep);
+
+        // 4. 竖向候选列表
+        SelectObject(hdc, font_utility_);
+        if (candidates_.empty()) {
+            SetTextColor(hdc, RGB(148, 163, 184));
+            RECT empty_rc {padding, top_bar_h + Scale(16), width_ - padding, top_bar_h + Scale(50)};
+            DrawTextW(hdc, L"暂无记录", -1, &empty_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            const size_t start_idx = static_cast<size_t>(scroll_offset_);
+            const size_t end_idx = (std::min)(candidates_.size(), start_idx + static_cast<size_t>(kVerticalMaxVisible));
+
+            for (size_t i = start_idx; i < end_idx; ++i) {
+                const int row_y = top_bar_h + static_cast<int>(i - start_idx) * row_h + Scale(3);
+                const int right_bound = width_ - Scale(candidates_.size() > static_cast<size_t>(kVerticalMaxVisible) ? 12 : 6);
+                RECT row_rc {Scale(6), row_y, right_bound, row_y + row_h};
+
+                const bool is_hovered = (static_cast<int>(i) == hovered_row_);
+                const bool is_selected = (i == selected_);
+
+                if (is_selected || is_hovered) {
+                    GdiFlush();
+                    const std::vector<uint8_t> row_mask =
+                        BuildRoundedCardMask(
+                            bitmap_width, bitmap_height,
+                            content_offset + row_rc.left,
+                            content_offset + row_rc.top + Scale(1),
+                            row_rc.right - row_rc.left,
+                            row_rc.bottom - row_rc.top - Scale(2),
+                            Scale(6));
+                    BlendSolidColor(
+                        pixels, row_mask, bitmap_width, bitmap_height,
+                        is_selected
+                            ? RGB(238, 242, 255)
+                            : RGB(248, 250, 252));
+                }
+
+                // 绘制圆点 •
+                SetTextColor(hdc, is_selected ? RGB(79, 70, 229) : RGB(100, 116, 139));
+                RECT dot_rc {Scale(14), row_y, Scale(26), row_y + row_h};
+                DrawTextW(hdc, L"•", -1, &dot_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+                // 绘制文本
+                SetTextColor(hdc, is_selected ? RGB(30, 27, 75) : RGB(30, 41, 59));
+                RECT item_text_rc {Scale(26), row_y, row_rc.right - (is_hovered ? Scale(30) : Scale(8)), row_y + row_h};
+                DrawTextW(hdc, candidates_[i].text.c_str(), -1, &item_text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+                // 悬停显示垃圾桶 🗑
+                if (is_hovered) {
+                    SelectObject(hdc, font_meta_);
+                    SetTextColor(hdc, hovered_delete_ ? RGB(239, 68, 68) : RGB(148, 163, 184));
+                    RECT del_rc {row_rc.right - Scale(26), row_y, row_rc.right - Scale(4), row_y + row_h};
+                    DrawTextW(hdc, L"🗑", -1, &del_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    SelectObject(hdc, font_utility_);
+                }
+            }
+        }
+
+        // 5. 动态呼吸滚动条
+        if (candidates_.size() > static_cast<size_t>(kVerticalMaxVisible)) {
+            const int track_top = top_bar_h + Scale(6);
+            const int track_bottom = height_ - Scale(6);
+            const int track_h = track_bottom - track_top;
+            const int total_items = static_cast<int>(candidates_.size());
+            const int thumb_h = (std::max)(Scale(24), (track_h * kVerticalMaxVisible) / total_items);
+            const int max_scroll = total_items - kVerticalMaxVisible;
+            const int thumb_y = track_top + ((track_h - thumb_h) * scroll_offset_) / (max_scroll > 0 ? max_scroll : 1);
+            const int thumb_w = Scale(scrollbar_hovered_ || scrollbar_dragging_ ? 7 : 3);
+            const int thumb_x = width_ - Scale(3) - thumb_w;
+
+            RECT thumb_rc {thumb_x, thumb_y, thumb_x + thumb_w, thumb_y + thumb_h};
+            COLORREF thumb_color = (scrollbar_hovered_ || scrollbar_dragging_) ? RGB(148, 163, 184) : RGB(226, 232, 240);
+            HBRUSH thumb_brush = CreateSolidBrush(thumb_color);
+            HPEN thumb_pen = CreatePen(PS_SOLID, 1, thumb_color);
+            old_pen = SelectObject(hdc, thumb_pen);
+            old_brush = SelectObject(hdc, thumb_brush);
+            RoundRect(hdc, thumb_rc.left, thumb_rc.top, thumb_rc.right, thumb_rc.bottom, Scale(3), Scale(3));
+            SelectObject(hdc, old_brush);
+            SelectObject(hdc, old_pen);
+            DeleteObject(thumb_brush);
+            DeleteObject(thumb_pen);
+        }
+
+        return;
+    }
+
+    // ================= 普通横向拼音候选模式 =================
     const int horizontal_padding = Scale(kHorizontalPadding);
     const int line_height = Scale(kLineHeight);
     const auto vertical = BuildCandidateWindowVerticalLayout(
@@ -610,15 +834,14 @@ void CandidateWindow::DrawContent(
     }
     DrawTextW(hdc, comp_draw.c_str(), -1, &composing_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    // 字数与页码使用独立小号字体，和候选文字形成清晰的次要层级。
+
+    // 右侧内容（普通打字显示字数与页码）
     SelectObject(hdc, font_meta_);
     SetTextColor(hdc, RGB(90, 100, 115));
     RECT page_rect {header.page_left, vertical.composing_top,
                     header.page_right, vertical.composing_bottom};
     DrawTextW(hdc, header_right_text.c_str(), -1, &page_rect,
               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-
-    // 预览字母不加下划线
 
     // 分隔线
     HPEN sep = CreatePen(PS_SOLID, 1, RGB(230, 233, 238));
@@ -646,8 +869,6 @@ void CandidateWindow::DrawContent(
         if (i == selected_) {
             RECT hl {item_rc.left + Scale(2), item_rc.top + Scale(3),
                      item_rc.right - Scale(2), item_rc.bottom - Scale(3)};
-            // 与外层卡片共用 4x4 子像素覆盖算法。直接混合 DIB 像素，
-            // 避免 GDI RoundRect 在小圆角处产生阶梯锯齿。
             GdiFlush();
             const std::vector<uint8_t> highlight_mask = BuildRoundedCardMask(
                 bitmap_width, bitmap_height,
@@ -662,9 +883,9 @@ void CandidateWindow::DrawContent(
             SetTextColor(hdc, RGB(30, 30, 30));
         }
 
-        RECT text_rc {item_layout_[slot].text_left, y2,
-                      item_layout_[slot].hit_right, vertical.candidate_bottom};
-        DrawTextW(hdc, item.c_str(), -1, &text_rc,
+        RECT text_rc_item {item_layout_[slot].text_left, y2,
+                           item_layout_[slot].hit_right, vertical.candidate_bottom};
+        DrawTextW(hdc, item.c_str(), -1, &text_rc_item,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
@@ -804,6 +1025,10 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             DeleteObject(self->font_meta_);
             self->font_meta_ = nullptr;
         }
+        if (self->font_utility_ != nullptr) {
+            DeleteObject(self->font_utility_);
+            self->font_utility_ = nullptr;
+        }
         self->layout_dirty_ = true;
         self->paint_dirty_ = true;
         self->RecalcSize();
@@ -836,7 +1061,59 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             return 0;
         }
         break;
+    case WM_MOUSEWHEEL: {
+        const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
+        if (is_v_mode && self->candidates_.size() > static_cast<size_t>(kVerticalMaxVisible)) {
+            const short delta = static_cast<short>(HIWORD(wparam));
+            const int step = (delta > 0 ? -3 : 3);
+            const int max_scroll = static_cast<int>(self->candidates_.size()) - kVerticalMaxVisible;
+            self->scroll_offset_ = (std::max)(0, (std::min)(max_scroll, self->scroll_offset_ + step));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        break;
+    }
     case WM_LBUTTONDOWN: {
+        const int shadow_margin = self->Scale(kShadowMargin);
+        const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
+        const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
+        const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
+
+        if (is_v_mode) {
+            // 1. 检查是否点击搜索框清空按钮
+            if (self->search_clear_rect_.right > 0 &&
+                x >= self->search_clear_rect_.left && x <= self->search_clear_rect_.right &&
+                y >= self->search_clear_rect_.top && y <= self->search_clear_rect_.bottom) {
+                if (self->on_search_cleared_) self->on_search_cleared_();
+                return 0;
+            }
+
+            // 2. 检查是否点击搜索框
+            if (x >= self->search_box_rect_.left && x <= self->search_box_rect_.right &&
+                y >= self->search_box_rect_.top && y <= self->search_box_rect_.bottom) {
+                if (self->on_search_clicked_) self->on_search_clicked_();
+                return 0;
+            }
+
+            // 3. 检查是否点击滚动条区域
+            if (x >= self->width_ - self->Scale(12) && self->candidates_.size() > static_cast<size_t>(kVerticalMaxVisible)) {
+                self->scrollbar_dragging_ = true;
+                self->drag_start_y_ = y;
+                self->drag_start_scroll_ = self->scroll_offset_;
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            // 4. 检查是否点击垃圾桶
+            if (self->hovered_delete_ && self->hovered_row_ >= 0) {
+                if (self->on_delete_item_) {
+                    self->on_delete_item_(static_cast<size_t>(self->hovered_row_));
+                }
+                return 0;
+            }
+        }
+
         // 按下即捕获；位移超过系统拖动阈值判定为拖动，否则抬起时按点击选词。
         self->mouse_down_ = true;
         self->dragging_ = false;
@@ -849,6 +1126,63 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         return 0;
     }
     case WM_MOUSEMOVE: {
+        const int shadow_margin = self->Scale(kShadowMargin);
+        const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
+        const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
+        const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
+
+        if (is_v_mode) {
+            bool need_redraw = false;
+
+            // 滚动条拖拽处理
+            if (self->scrollbar_dragging_) {
+                const int top_bar_h = self->Scale(38);
+                const int track_h = self->height_ - top_bar_h - self->Scale(12);
+                const int total_items = static_cast<int>(self->candidates_.size());
+                const int max_scroll = total_items - kVerticalMaxVisible;
+                if (track_h > 0 && max_scroll > 0) {
+                    const int dy = y - self->drag_start_y_;
+                    const int scroll_delta = (dy * max_scroll) / track_h;
+                    const int new_scroll = (std::max)(0, (std::min)(max_scroll, self->drag_start_scroll_ + scroll_delta));
+                    if (new_scroll != self->scroll_offset_) {
+                        self->scroll_offset_ = new_scroll;
+                        need_redraw = true;
+                    }
+                }
+            } else {
+                const bool scroll_hover = (x >= self->width_ - self->Scale(12) && x <= self->width_);
+                if (scroll_hover != self->scrollbar_hovered_) {
+                    self->scrollbar_hovered_ = scroll_hover;
+                    need_redraw = true;
+                }
+
+                const int top_bar_h = self->Scale(38);
+                const int row_h = self->Scale(kVerticalRowHeight);
+                int row = -1;
+                bool del_hover = false;
+                if (y >= top_bar_h && y < self->height_ && x >= 0 && x < self->width_ - self->Scale(12)) {
+                    const int local_row = (y - top_bar_h) / row_h;
+                    const int idx = self->scroll_offset_ + local_row;
+                    if (idx >= 0 && static_cast<size_t>(idx) < self->candidates_.size()) {
+                        row = idx;
+                        if (x >= self->width_ - self->Scale(38)) {
+                            del_hover = true;
+                        }
+                    }
+                }
+
+                if (row != self->hovered_row_ || del_hover != self->hovered_delete_) {
+                    self->hovered_row_ = row;
+                    self->hovered_delete_ = del_hover;
+                    need_redraw = true;
+                }
+            }
+
+            if (need_redraw) {
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+
         if (!self->mouse_down_) {
             break;
         }
@@ -872,8 +1206,16 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     case WM_CAPTURECHANGED:
         self->mouse_down_ = false;
         self->dragging_ = false;
+        self->scrollbar_dragging_ = false;
         break;
     case WM_LBUTTONUP: {
+        if (self->scrollbar_dragging_) {
+            self->scrollbar_dragging_ = false;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
         const bool was_dragging = self->dragging_;
         const bool was_down = self->mouse_down_;
         self->mouse_down_ = false;

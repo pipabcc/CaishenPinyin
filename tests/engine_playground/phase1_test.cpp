@@ -618,7 +618,7 @@ int wmain(int argc, wchar_t** argv) {
             return 18;
         }
 
-        const auto calculator = engine.Query("v1+2*3", 9);
+        const auto calculator = engine.Query("vvv1+2*3", 9);
         if (calculator.candidates.size() != 1 ||
             calculator.candidates.front().text != L"7" ||
             calculator.candidates.front().learnable) {

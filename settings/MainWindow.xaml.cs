@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -19,6 +21,9 @@ public partial class MainWindow : Window
         "CaishenPinyin", "data", "lexicon", "user_dict.txt");
 
     private readonly List<CustomPhrase> phrases_ = new();
+    private CancellationTokenSource? clipboardQueryCancellation_;
+    private int clipboardQueryGeneration_;
+    private string? registeredDllPath_;
 
     public MainWindow()
     {
@@ -41,6 +46,7 @@ public partial class MainWindow : Window
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         // 允许在非交互输入控件区域拖拽移动无标题栏窗口
+        if (StatusText.IsMouseOver) return;
         if (e.LeftButton == MouseButtonState.Pressed &&
             e.OriginalSource is not TextBox &&
             e.OriginalSource is not Button &&
@@ -61,17 +67,22 @@ public partial class MainWindow : Window
         }
     }
 
-    private void NavigationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void NavigationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (GeneralPage is null || InputPage is null || PhrasePage is null || DictionaryPage is null)
+        if (GeneralPage is null || InputPage is null || PhrasePage is null || ClipboardPage is null || DictionaryPage is null)
             return;
 
-        var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, DictionaryPage };
+        var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, ClipboardPage, DictionaryPage };
         for (var index = 0; index < pages.Length; ++index)
         {
             pages[index].Visibility = NavigationList.SelectedIndex == index
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+        }
+
+        if (NavigationList.SelectedIndex == 3)
+        {
+            await RefreshClipboardGridAsync();
         }
     }
 
@@ -204,6 +215,12 @@ public partial class MainWindow : Window
     private void PhraseSearchBox_TextChanged(object sender, TextChangedEventArgs e) =>
         RefreshPhraseGrid();
 
+    private void PhraseSearchButton_Click(object sender, RoutedEventArgs e)
+    {
+        PhraseSearchBox.Focus();
+        RefreshPhraseGrid();
+    }
+
     private void RefreshPhraseGrid()
     {
         if (PhraseGrid is null) return;
@@ -269,8 +286,11 @@ public partial class MainWindow : Window
             StatusText.Text = "请先选择一条要删除的自定义短语。";
             return;
         }
-        if (MessageBox.Show(this, $"确定删除“{selected.Phrase}”？", "删除自定义短语",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        if (!ConfirmDialog.Show(
+                this,
+                "删除自定义短语",
+                $"确定删除“{selected.Phrase}”？",
+                "确认删除"))
             return;
         phrases_.Remove(selected);
         SavePhrases("自定义短语已删除。切换输入法后生效。");
@@ -331,8 +351,11 @@ public partial class MainWindow : Window
     private void ClearPhrases_Click(object sender, RoutedEventArgs e)
     {
         if (phrases_.Count == 0) return;
-        if (MessageBox.Show(this, "确定清空全部自定义短语？此操作不可撤销。", "清空自定义短语",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        if (!ConfirmDialog.Show(
+                this,
+                "清空自定义短语",
+                "确定永久清空全部自定义短语？此操作不可撤销。",
+                "确认清空"))
             return;
         phrases_.Clear();
         SavePhrases("自定义短语已清空。切换输入法后生效。");
@@ -358,6 +381,7 @@ public partial class MainWindow : Window
     private void RefreshStatus()
     {
         var dll = FindRegisteredDll();
+        registeredDllPath_ = dll;
         var lexicon = ResolveLexiconDirectory(dll);
         LexiconPathBox.Text = lexicon;
         PackageText.Text = ReadPackageStatus(lexicon);
@@ -370,6 +394,22 @@ public partial class MainWindow : Window
             : File.Exists(dll)
                 ? $"输入法已安装：{dll}"
                 : $"注册指向不存在的文件：{dll}";
+    }
+
+    private void StatusText_MouseLeftButtonUp(
+        object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;
+        var directory = string.IsNullOrWhiteSpace(registeredDllPath_)
+            ? null
+            : Path.GetDirectoryName(registeredDllPath_);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            ShowOperationError(new DirectoryNotFoundException(
+                "未找到当前输入法安装文件夹。"));
+            return;
+        }
+        OpenFolder(directory);
     }
 
     private static string ReadPackageStatus(string directory)
@@ -492,8 +532,11 @@ public partial class MainWindow : Window
 
     private void ClearUserDictionary_Click(object sender, RoutedEventArgs e)
     {
-        if (MessageBox.Show(this, "确定永久清空全部自动学习词？此操作不可撤销。", "清空自动学习词",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+        if (!ConfirmDialog.Show(
+                this,
+                "清空自动学习词",
+                "确定永久清空全部自动学习词？此操作不可撤销。",
+                "确认清空"))
             return;
         try
         {
@@ -534,9 +577,260 @@ public partial class MainWindow : Window
         });
     }
 
+    private bool _isUpdatingClipboardUi = false;
+    private async Task RefreshClipboardGridAsync(int debounceMilliseconds = 0)
+    {
+        if (ClipboardGrid is null || ClipboardEnabledBox is null || ClipboardSearchBox is null || ClipboardCountText is null)
+            return;
+
+        var cancellation = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(
+            ref clipboardQueryCancellation_, cancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+        var generation = Interlocked.Increment(ref clipboardQueryGeneration_);
+        var query = ClipboardSearchBox.Text?.Trim() ?? string.Empty;
+
+        try
+        {
+            if (debounceMilliseconds > 0)
+            {
+                await Task.Delay(debounceMilliseconds, cancellation.Token);
+            }
+
+            var result = await Task.Run(() =>
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+                var config = ClipboardStore.LoadConfig();
+                var count = ClipboardStore.CountHistory(query);
+                var rows = count == 0
+                    ? new List<ClipboardRecord>()
+                    : ClipboardStore.QueryHistory(query, 5000, 0);
+                return (config, count, rows);
+            }, cancellation.Token);
+
+            if (generation != clipboardQueryGeneration_ ||
+                cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _isUpdatingClipboardUi = true;
+            ClipboardEnabledBox.IsChecked = result.config.Enabled;
+            ClipboardGrid.ItemsSource = result.rows;
+            ClipboardCountText.Text = result.count > result.rows.Count
+                ? $"共 {result.count:N0} 条记录，当前显示前 {result.rows.Count:N0} 条"
+                : $"共 {result.count:N0} 条记录";
+        }
+        catch (OperationCanceledException)
+        {
+            // 新搜索已经替代当前搜索。
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log("MainWindow.RefreshClipboardGrid", ex);
+            if (StatusText is not null)
+                StatusText.Text = "剪贴板记录加载失败，请查看错误日志。";
+        }
+        finally
+        {
+            if (generation == clipboardQueryGeneration_)
+                _isUpdatingClipboardUi = false;
+        }
+    }
+
+    private void ClipboardEnabledBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingClipboardUi || ClipboardEnabledBox is null || StatusText is null) return;
+
+        try
+        {
+            var config = ClipboardStore.LoadConfig();
+            config.Enabled = ClipboardEnabledBox.IsChecked == true;
+            ClipboardStore.SaveConfig(config);
+            StatusText.Text = config.Enabled ? "剪贴板记录功能已开启。" : "剪贴板记录功能已关闭。";
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log("MainWindow.SaveClipboardConfig", ex);
+            ShowOperationError(ex);
+        }
+    }
+
+    private async void ClipboardSearchBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        await RefreshClipboardGridAsync(150);
+    }
+
+    private async void ClipboardSearchButton_Click(object sender, RoutedEventArgs e)
+    {
+        ClipboardSearchBox.Focus();
+        await RefreshClipboardGridAsync();
+    }
+
+    private void RowCopy_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement elem && elem.DataContext is ClipboardRecord record)
+        {
+            try
+            {
+                if (record.IsImage)
+                {
+                    if (!File.Exists(record.ImagePath))
+                        throw new FileNotFoundException(
+                            "剪贴板图片文件不存在", record.ImagePath);
+                    ClipboardImageService.SetClipboardImage(record.ImagePath);
+                }
+                else
+                    ClipboardImageService.SetClipboardText(record.Content);
+                StatusText.Text = "已将记录复制到系统剪贴板。";
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError(ex);
+            }
+        }
+    }
+
+    private async void RowOpenOrEdit_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement elem && elem.DataContext is ClipboardRecord record)
+        {
+            if (record.Type != ClipboardItemType.Text)
+            {
+                try
+                {
+                    OpenClipboardRecord(record);
+                    StatusText.Text = record.Type == ClipboardItemType.Image
+                        ? "已打开剪贴板图片。"
+                        : "已打开剪贴板文件。";
+                }
+                catch (Exception ex)
+                {
+                    ShowOperationError(ex);
+                }
+                return;
+            }
+
+            var dlg = new EditClipboardDialog(record.Content) { Owner = this };
+            if (dlg.ShowDialog() == true)
+            {
+                ClipboardStore.UpdateRecordContent(record.Id, dlg.EditedContent);
+                await RefreshClipboardGridAsync();
+                StatusText.Text = "剪贴板记录已修改并保存。";
+            }
+        }
+    }
+
+    private static void OpenClipboardRecord(ClipboardRecord record)
+    {
+        var target = record.Type == ClipboardItemType.Image
+            ? record.ImagePath
+            : record.Content
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(path => path.Trim())
+                .FirstOrDefault(path => File.Exists(path) || Directory.Exists(path));
+        if (string.IsNullOrWhiteSpace(target) ||
+            (!File.Exists(target) && !Directory.Exists(target)))
+        {
+            throw new FileNotFoundException(
+                "剪贴板记录对应的图片或文件不存在。", target);
+        }
+
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = target,
+            UseShellExecute = true
+        });
+    }
+
+    private async void RowDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement elem && elem.DataContext is ClipboardRecord record)
+        {
+            ClipboardStore.DeleteRecord(record.Id);
+            await RefreshClipboardGridAsync();
+            StatusText.Text = "已删除该条剪贴板记录。";
+        }
+    }
+
+    private async void DeleteClipboardItem_Click(object sender, RoutedEventArgs e)
+    {
+        var selected = ClipboardGrid.SelectedItems
+            .OfType<ClipboardRecord>()
+            .ToList();
+        if (selected.Count == 0)
+        {
+            StatusText.Text = "请先选择要删除的记录。";
+            return;
+        }
+
+        if (!ConfirmDialog.Show(
+                this,
+                "删除剪贴板记录",
+                $"确定永久删除选中的 {selected.Count:N0} 条记录？此操作不可撤销。",
+                "确认删除"))
+            return;
+
+        var deleted = ClipboardStore.DeleteRecords(
+            selected.Select(record => record.Id));
+        await RefreshClipboardGridAsync();
+        StatusText.Text = $"已删除 {deleted:N0} 条剪贴板记录。";
+    }
+
+    private async void ClearClipboard_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ConfirmDialog.Show(
+                this,
+                "清空剪贴板",
+                "确定永久清空全部剪贴板历史记录？此操作不可撤销。",
+                "确认清空"))
+            return;
+
+        try
+        {
+            ClipboardStore.ClearHistory();
+            await RefreshClipboardGridAsync();
+            StatusText.Text = "剪贴板记录已全部清空。";
+        }
+        catch (Exception ex) { ShowOperationError(ex); }
+    }
+
     private void ShowOperationError(Exception ex) => MessageBox.Show(
         this, "操作失败：" + ex.Message, "财神输入法",
         MessageBoxButton.OK, MessageBoxImage.Error);
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
+
+    internal async Task RunClipboardPageSmokeTestAsync()
+    {
+        if (TryFindResource("ModernTextButtonStyle") is null)
+            throw new InvalidOperationException("缺少 ModernTextButtonStyle");
+        if (PhraseSearchButton is null)
+            throw new InvalidOperationException("自定义短语搜索图标未加载");
+        if (StatusText.Cursor != Cursors.Hand)
+            throw new InvalidOperationException("安装路径未提供可点击反馈");
+        NavigationList.SelectedIndex = 3;
+        await RefreshClipboardGridAsync();
+        if (ClipboardGrid.ItemsSource is null)
+            throw new InvalidOperationException("剪贴板页面未完成数据绑定");
+        if (ClipboardGrid.SelectionMode != DataGridSelectionMode.Extended)
+            throw new InvalidOperationException("剪贴板列表未启用扩展多选");
+        if (new ClipboardRecord { Type = ClipboardItemType.Image }.TypeDisplayName != "图片")
+            throw new InvalidOperationException("剪贴板类型未本地化");
+        if (ClipboardGrid.Columns.Count != 3)
+            throw new InvalidOperationException("剪贴板列表仍包含独立操作列");
+        if (new ClipboardRecord { Type = ClipboardItemType.Text }.OpenOrEditLabel != "编辑" ||
+            new ClipboardRecord { Type = ClipboardItemType.Image }.OpenOrEditLabel != "打开" ||
+            new ClipboardRecord { Type = ClipboardItemType.File }.OpenOrEditLabel != "打开")
+            throw new InvalidOperationException("剪贴板行操作名称不正确");
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        clipboardQueryCancellation_?.Cancel();
+        clipboardQueryCancellation_?.Dispose();
+        clipboardQueryCancellation_ = null;
+        base.OnClosed(e);
+    }
 }

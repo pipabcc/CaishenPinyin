@@ -1,6 +1,7 @@
 #include "text_service.h"
 
 #include "engine/special_input.h"
+#include "../engine/clipboard_helper.h"
 #include "ui/shared_status_ui.h"
 #include "ui/ime_ui_logic.h"
 #include "../engine/shared_engine.h"
@@ -15,7 +16,9 @@
 #include "../common/logger.h"
 #include "../common/runtime_config.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cwchar>
 
 namespace shuru {
@@ -27,20 +30,27 @@ bool IsShiftKey(WPARAM wparam) {
 }
 
 // Ctrl/Alt/Win 按下时把快捷键交给应用（Ctrl+A/C/V 等），IME 不吞键。
-// 统一使用 GetKeyState（与当前按键消息同步的状态）而非 GetAsyncKeyState：
-// 快速击键时物理状态可能已变化，宿主的 Test 回调与真实回调会得到不同判定，
-// 导致按键被应用与 IME 双方同时放过或同时吞掉。
+// 检查当前是否处于系统快捷键组合中（Ctrl/Alt/Win）。
+// 必须同时结合 GetKeyState 与 GetAsyncKeyState 进行双重验证：
+// 避免刚使用 Win+Space 切换输入法或 Alt+Tab 切换窗口后，线程消息队列中
+// 残留已松开的 Win/Alt 历史键态，导致首次击键的首个字母被误判为快捷键而直接上屏漏字。
 bool HasShortcutModifier() {
-    return (GetKeyState(VK_CONTROL) & 0x8000) != 0 ||
-           (GetKeyState(VK_MENU) & 0x8000) != 0 ||
-           (GetKeyState(VK_LWIN) & 0x8000) != 0 ||
-           (GetKeyState(VK_RWIN) & 0x8000) != 0;
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                      (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt  = (GetKeyState(VK_MENU) & 0x8000) != 0 &&
+                      (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool lwin = (GetKeyState(VK_LWIN) & 0x8000) != 0 &&
+                      (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0;
+    const bool rwin = (GetKeyState(VK_RWIN) & 0x8000) != 0 &&
+                      (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+    return ctrl || alt || lwin || rwin;
 }
 
 bool IsCtrlOnlyDown() {
-    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-    const bool win = (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0;
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
+                      (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt  = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const bool win  = (GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0;
     return ctrl && !alt && !win;
 }
 
@@ -106,6 +116,29 @@ bool IsPasswordWindow(HWND window) {
         }
     }
     return false;
+}
+
+HWND ContextWindow(ITfContext* context) {
+    if (context != nullptr) {
+        ITfContextView* view = nullptr;
+        if (SUCCEEDED(context->GetActiveView(&view)) && view != nullptr) {
+            HWND window = nullptr;
+            view->GetWnd(&window);
+            view->Release();
+            if (window != nullptr) return window;
+        }
+    }
+    return GetForegroundWindow();
+}
+
+bool IsStableClipboardRecordId(const std::wstring& record_id) {
+    return !record_id.empty() && std::all_of(
+        record_id.begin(), record_id.end(), [](wchar_t ch) {
+            return (ch >= L'a' && ch <= L'z') ||
+                   (ch >= L'A' && ch <= L'Z') ||
+                   (ch >= L'0' && ch <= L'9') ||
+                   ch == L'-' || ch == L'_';
+        });
 }
 
 bool ReadDefaultEnglishMode() {
@@ -229,6 +262,14 @@ HRESULT TextService::InitEngine() {
 }
 
 void TextService::EnsureUiWindows() {
+#if !defined(SHURU_TEST_DISABLE_EXTERNAL_HELPERS)
+    if (!clipboard_monitor_checked_) {
+        clipboard_monitor_checked_ = true;
+        if (!EnsureClipboardMonitorExecutable(g_module)) {
+            SHURU_LOG_WARN("clipboard monitor launch failed");
+        }
+    }
+#endif
     if (!candidate_window_.Create(g_module)) {
         SHURU_LOG_WARN("candidate window create failed");
     } else {
@@ -239,6 +280,46 @@ void TextService::EnsureUiWindows() {
             // 拖动后的位置只对当前组合会话生效；组合结束时清除，恢复跟随光标。
             candidate_pos_overridden_ = true;
             candidate_override_pos_ = pos;
+        });
+        candidate_window_.SetSearchHandler([this]() {
+            const wchar_t* arguments = composing_pinyin_.rfind("vv", 0) == 0
+                ? L"-quick phrases"
+                : L"-quick";
+            if (!LaunchSettingsExecutable(
+                    candidate_window_.GetHwnd(), g_module, arguments)) {
+                SHURU_LOG_WARN("quick search window launch failed");
+            }
+        });
+        candidate_window_.SetClearSearchHandler([this]() {
+            bool changed = false;
+            if (composing_pinyin_.rfind("vv", 0) == 0 && composing_pinyin_.size() > 2) {
+                composing_pinyin_ = "vv";
+                changed = true;
+            } else if (composing_pinyin_.rfind("v", 0) == 0 && composing_pinyin_.size() > 1 && composing_pinyin_[1] != 'v') {
+                composing_pinyin_ = "v";
+                changed = true;
+            }
+            if (changed) {
+                if (edit_context_ != nullptr) {
+                    (void)SetCompositionString(
+                        edit_context_, PinyinToWide(composing_pinyin_));
+                }
+                RefreshCandidates();
+                UpdateCandidateWindow(edit_context_);
+            }
+        });
+        candidate_window_.SetDeleteHandler([this](size_t index) {
+            if (index < current_result_.candidates.size()) {
+                const auto& cand = current_result_.candidates[index];
+                if (composing_pinyin_.rfind("vv", 0) == 0) {
+                    DeleteCustomPhraseCandidate(cand.full_content.empty() ? cand.text : cand.full_content);
+                } else if (composing_pinyin_.rfind("v", 0) == 0) {
+                    DeleteClipboardCandidate(
+                        cand.full_content.empty() ? cand.text : cand.full_content,
+                        cand.action_data);
+                }
+                RefreshCandidates();
+            }
         });
     }
     if (!status_ui_acquired_) {
@@ -568,6 +649,75 @@ void TextService::ShowAssociation(ITfContext* /*context*/) {
 }
 
 bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidate) {
+    auto finish_external_paste = [&](const char* operation) {
+        const HRESULT end_result = EndComposition();
+        if (FAILED(end_result)) {
+            SHURU_LOG_WARN(
+                "%s composition cleanup failed: 0x%08X",
+                operation, end_result);
+        }
+        ClearCompositionState();
+        candidate_window_.Hide();
+        return true;
+    };
+
+    if (candidate.action == CandidateAction::PasteClipboardRecord) {
+        if (!IsStableClipboardRecordId(candidate.action_data)) {
+            SHURU_LOG_WARN("clipboard candidate has invalid record id");
+            return false;
+        }
+        const HWND target_window = ContextWindow(context);
+        if (target_window == nullptr) return false;
+        const auto raw_window = reinterpret_cast<std::intptr_t>(target_window);
+        const std::wstring arguments = L"-paste-record " +
+            candidate.action_data + L" -target-hwnd " +
+            std::to_wstring(raw_window);
+        if (!LaunchSettingsExecutable(
+                target_window, g_module, arguments.c_str())) {
+            SHURU_LOG_WARN("clipboard record paste helper launch failed");
+            return false;
+        }
+        return finish_external_paste("clipboard record paste");
+    }
+
+    if (!candidate.full_content.empty()) {
+        const std::wstring& committed = CandidateCommitText(candidate);
+        if (ShouldPasteTextExternally(committed.size())) {
+            std::wstring request_token;
+            if (!CreateTextPasteRequest(committed, &request_token)) {
+                SHURU_LOG_WARN("large text paste request creation failed");
+                return false;
+            }
+            const HWND target_window = ContextWindow(context);
+            if (target_window == nullptr) {
+                DeleteTextPasteRequest(request_token);
+                return false;
+            }
+            const auto raw_window = reinterpret_cast<std::intptr_t>(target_window);
+            const std::wstring arguments = L"-paste-text-request " +
+                request_token + L" -target-hwnd " +
+                std::to_wstring(raw_window);
+            if (!LaunchSettingsExecutable(
+                    target_window, g_module, arguments.c_str())) {
+                DeleteTextPasteRequest(request_token);
+                SHURU_LOG_WARN("large text paste helper launch failed");
+                return false;
+            }
+            return finish_external_paste("large text paste");
+        }
+        const HRESULT hr = CommitText(context, committed);
+        if (FAILED(hr)) return false;
+        if (!IsPasswordContext(context)) {
+            last_committed_word_ = committed;
+        }
+        composing_pinyin_.clear();
+        candidate_state_ = {};
+        current_result_ = {};
+        ClearCompositionState();
+        candidate_window_.Hide();
+        return true;
+    }
+
     const CandidateCommitPlan plan = PlanCandidateCommit(composing_pinyin_, candidate);
     if (!plan.has_coverage) return false;
     const HRESULT hr = CommitText(context, plan.committed);
@@ -594,7 +744,22 @@ void TextService::OnCandidateSelected(size_t index) {
         SHURU_LOG_WARN("mouse candidate commit failed or zero coverage");
 }
 
-bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const {
+bool TextService::ShortcutModifierForKey(
+    WPARAM wparam, LPARAM lparam, bool test_callback) {
+    const DWORD now = GetTickCount();
+    if (!test_callback) {
+        bool cached_decision = false;
+        if (shortcut_modifier_cache_.Consume(
+                wparam, lparam, now, &cached_decision)) {
+            return cached_decision;
+        }
+        return HasShortcutModifier();
+    }
+    return HasShortcutModifier();
+}
+
+bool TextService::IsKeyEaten(
+    ITfContext* context, WPARAM wparam, bool shortcut_modifier) const {
     if (IsPasswordContext(context)) {
         return false;
     }
@@ -612,7 +777,7 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const {
         return true;
     }
     // Ctrl+A / Ctrl+C / Alt+* / Win+* 等快捷键一律不拦截
-    if (HasShortcutModifier()) {
+    if (shortcut_modifier) {
         return false;
     }
     if (!composing_pinyin_.empty()) {
@@ -620,6 +785,13 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const {
         const bool shift = IsShiftDownForKeyMessage();
         if (calculator && DecideCalculatorKey(
                 wparam, shift, (GetKeyState(VK_NUMLOCK) & 1) != 0).handled) {
+            return true;
+        }
+        char filter_digit = 0;
+        if (IsVerticalUtilityMode(composing_pinyin_) &&
+            TryGetVerticalUtilityFilterDigit(
+                wparam, (GetKeyState(VK_NUMLOCK) & 1) != 0,
+                &filter_digit)) {
             return true;
         }
         if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam)) ||
@@ -658,21 +830,38 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
     }
     if (IsPasswordContext(pic)) {
         shift_tap_.Reset();
+        shortcut_modifier_cache_.Clear();
         *pfEaten = FALSE;
         return S_OK;
     }
+    const bool shortcut_modifier = ShortcutModifierForKey(
+        wParam, lParam, true);
     if (IsShiftKey(wParam)) {
         // 单独按 Shift：预备在 KeyUp 切换中/英；与其它键组合则取消
         // bit30=1 表示按键重复，不重新武装
         const bool repeated = (lParam & (1 << 30)) != 0;
         *pfEaten = shift_tap_.Begin(
-            !composing_pinyin_.empty(), HasShortcutModifier(), repeated) ? TRUE : FALSE;
+            !composing_pinyin_.empty(), shortcut_modifier, repeated) ? TRUE : FALSE;
+        if (*pfEaten) {
+            shortcut_modifier_cache_.Store(
+                wParam, lParam, shortcut_modifier, GetTickCount());
+        } else {
+            shortcut_modifier_cache_.Clear();
+        }
         return S_OK;
     }
     // Shift 按住期间到达的任何其它键（Shift+字母等）都取消「单独 Shift」语义；
     // 未武装时取消是无害的空操作，因此无需查询物理键态。
     shift_tap_.CancelAction();
-    *pfEaten = IsKeyEaten(pic, wParam) ? TRUE : FALSE;
+    *pfEaten = IsKeyEaten(pic, wParam, shortcut_modifier) ? TRUE : FALSE;
+    if (*pfEaten) {
+        // TSF 仅在测试回调声明吃键时保证继续调用 OnKeyDown。只缓存这类
+        // 成对回调，避免 Ctrl+A 被宿主接管后把陈旧的 Ctrl 状态带给下一次 A。
+        shortcut_modifier_cache_.Store(
+            wParam, lParam, shortcut_modifier, GetTickCount());
+    } else {
+        shortcut_modifier_cache_.Clear();
+    }
     return S_OK;
 }
 
@@ -681,8 +870,8 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*l
         return E_INVALIDARG;
     }
     if (IsShiftKey(wParam)) {
-        // 只报告是否吞键；切换动作一律推迟到真实 OnKeyUp，避免宿主的
-        // 探测性 Test 调用误触发中英切换。
+        // 这里只请求真实 KeyUp 回调；切换动作一律推迟到真实回调，避免
+        // 宿主的探测性 Test 调用误触发中英切换。
         const ShiftTapRelease release = shift_tap_.TestKeyUp(IsPasswordContext(pic));
         *pfEaten = release.eaten ? TRUE : FALSE;
         return S_OK;
@@ -739,6 +928,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     if (IsPasswordContext(context)) {
         shift_tap_.Reset();
+        shortcut_modifier_cache_.Clear();
         if (!composing_pinyin_.empty()) {
             const HRESULT hr = EndComposition();
             if (SUCCEEDED(hr)) {
@@ -751,18 +941,22 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
+    const bool shortcut_modifier = ShortcutModifierForKey(
+        wparam, lparam, false);
+
     // Shift 本身不在 KeyDown 切换；部分宿主跳过 OnTestKeyDown 直接派发
     // OnKeyDown，这里兜底武装状态机（与 Test 路径同一时刻状态，结果幂等）。
     if (IsShiftKey(wparam)) {
         const bool repeated = (lparam & (1 << 30)) != 0;
-        shift_tap_.Begin(!composing_pinyin_.empty(), HasShortcutModifier(), repeated);
+        shift_tap_.Begin(
+            !composing_pinyin_.empty(), shortcut_modifier, repeated);
         *eaten = shift_tap_.ShouldEatKeyUp();
         return true;
     }
     shift_tap_.CancelAction();
 
     // Ctrl+A/C/V 等：绝不当拼音字母处理
-    if (HasShortcutModifier()) {
+    if (shortcut_modifier) {
         if (wparam == VK_SPACE && IsCtrlOnlyDown()) {
             // 落到下方中英切换
         } else {
@@ -950,9 +1144,32 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
+    // v/vv 使用不带数字序号的竖向列表，数字归入筛选文本；候选仍可通过
+    // 方向键、回车或鼠标选择。
+    char filter_digit = 0;
+    const bool num_lock = (GetKeyState(VK_NUMLOCK) & 1) != 0;
+    if (IsVerticalUtilityMode(composing_pinyin_) &&
+        TryGetVerticalUtilityFilterDigit(
+            wparam, num_lock, &filter_digit)) {
+        composing_pinyin_.push_back(filter_digit);
+        candidate_state_.selected = 0;
+        candidate_state_.page = 0;
+        const HRESULT hr = SetCompositionString(
+            context, PinyinToWide(composing_pinyin_));
+        if (FAILED(hr)) {
+            RefreshCandidates();
+            SHURU_LOG_WARN("SetCompositionString rejected v-mode digit: 0x%08X", hr);
+            *eaten = true;
+            return true;
+        }
+        RefreshCandidates();
+        UpdateCandidateWindow(context);
+        *eaten = true;
+        return true;
+    }
+
     // NumPad 从不选词。NumLock 关闭时数字键保留导航语义；运算键始终
     // 以 ASCII 提交。组合中统一提交原始拼音 + 键值，策略清晰且不学习。
-    const bool num_lock = (GetKeyState(VK_NUMLOCK) & 1) != 0;
     const NumpadDecision numpad = DecideNumpadKey(wparam, num_lock, composing_pinyin_);
     if (numpad.handled) {
         const HRESULT hr = CommitText(context, numpad.text);
@@ -1017,6 +1234,11 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     // 计算器 Enter 上屏结果；其它组合仍上屏原文。单独 Shift 始终走原文路径。
     if (wparam == VK_RETURN && !composing_pinyin_.empty()) {
         if (IsCalculatorInput(composing_pinyin_) && !current_result_.candidates.empty()) {
+            const size_t index = candidate_state_.selected < current_result_.candidates.size()
+                ? candidate_state_.selected : 0;
+            *eaten = CommitCandidate(context, current_result_.candidates[index]);
+        } else if (IsVerticalUtilityMode(composing_pinyin_) &&
+                   !current_result_.candidates.empty()) {
             const size_t index = candidate_state_.selected < current_result_.candidates.size()
                 ? candidate_state_.selected : 0;
             *eaten = CommitCandidate(context, current_result_.candidates[index]);
@@ -1093,6 +1315,42 @@ void TextService::RefreshCandidates() {
 
     std::wstring comp = PinyinToWide(composing_pinyin_);
     candidate_display_fallback_ = comp;
+    const size_t candidate_count = static_cast<size_t>(
+        GetRuntimeConfig().candidate_count);
+
+    // 剪贴板和自定义短语不依赖主词库。即使引擎仍在后台初始化，也要立即
+    // 展示候选，避免 v/vv 被首次加载过程阻塞。
+    const bool vertical_utility_mode = IsVerticalUtilityMode(composing_pinyin_);
+    const bool custom_phrase_mode = vertical_utility_mode &&
+        composing_pinyin_.size() >= 2 &&
+        (composing_pinyin_[1] == 'v' || composing_pinyin_[1] == 'V');
+    if (custom_phrase_mode) {
+        candidate_window_.StopReadyPolling();
+        const std::string query = composing_pinyin_.size() > 2
+            ? composing_pinyin_.substr(2) : std::string{};
+        current_result_.candidates = GetCustomPhraseCandidates(
+            query, candidate_count * 10);
+        candidate_state_.total = current_result_.candidates.size();
+        candidate_state_.page_size = candidate_count;
+        candidate_state_.Clamp();
+        candidate_display_fallback_ = comp;
+        SyncCandidateWindowCandidates();
+        return;
+    }
+    if (vertical_utility_mode) {
+        candidate_window_.StopReadyPolling();
+        const std::string query = composing_pinyin_.size() > 1
+            ? composing_pinyin_.substr(1) : std::string{};
+        current_result_.candidates = GetClipboardCandidates(
+            query, candidate_count * 10);
+        candidate_state_.total = current_result_.candidates.size();
+        candidate_state_.page_size = candidate_count;
+        candidate_state_.Clamp();
+        candidate_display_fallback_ = comp;
+        SyncCandidateWindowCandidates();
+        return;
+    }
+
     if (engine_ == nullptr) {
         InitEngine();
     }
@@ -1139,7 +1397,6 @@ void TextService::RefreshCandidates() {
     options.context = last_committed_word_;
     engine_->SetQueryOptions(options);
     shuangpin_mode_ = runtime.shuangpin_xiaohe;
-    const size_t candidate_count = static_cast<size_t>(runtime.candidate_count);
     current_result_ = engine_->Query(composing_pinyin_, candidate_count * 10, options);
     candidate_state_.total = current_result_.candidates.size();
     candidate_state_.page_size = candidate_count;

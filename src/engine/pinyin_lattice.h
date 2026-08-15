@@ -41,15 +41,8 @@ inline std::vector<SyllablePath> BuildSyllableLattice(
             for (std::size_t len = 1; len <= 6 && begin + len <= segment.size(); ++len) {
                 const std::string piece = segment.substr(begin, len);
                 const bool exact = Syllables().count(piece) != 0;
-                bool partial = false;
-                if (begin + len == segment.size()) {
-                    for (const auto& syllable : Syllables()) {
-                        if (syllable.size() > piece.size() && syllable.compare(0, piece.size(), piece) == 0) {
-                            partial = true;
-                            break;
-                        }
-                    }
-                }
+                const bool partial = begin + len == segment.size() &&
+                    SyllablePrefixes().count(piece) != 0;
                 if (!exact && !partial) continue;
                 for (const auto& prefix : at[begin]) {
                     if (exact) {

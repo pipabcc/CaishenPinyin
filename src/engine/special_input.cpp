@@ -187,19 +187,20 @@ bool ParseMixedInput(
 }
 
 bool IsCalculatorInput(const std::string& raw_input) noexcept {
-    return !raw_input.empty() && raw_input.front() == 'v';
+    return raw_input.size() >= 3 &&
+           raw_input[0] == 'v' && raw_input[1] == 'v' && raw_input[2] == 'v';
 }
 
 bool TryEvaluateCalculator(
     const std::string& raw_input,
     std::wstring* formatted_result) noexcept {
     if (formatted_result == nullptr || !IsCalculatorInput(raw_input) ||
-        raw_input.size() <= 1) {
+        raw_input.size() <= 3) {
         return false;
     }
     try {
         double value = 0.0;
-        CalculatorParser parser(raw_input.substr(1));
+        CalculatorParser parser(raw_input.substr(3));
         if (!parser.Parse(&value)) return false;
         *formatted_result = FormatCalculatorResult(value);
         return !formatted_result->empty();

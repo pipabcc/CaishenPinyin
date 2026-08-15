@@ -1,4 +1,5 @@
 #include "engine/pinyin_correction.h"
+#include "engine/pinyin_lattice.h"
 #include "engine/special_input.h"
 
 #include <algorithm>
@@ -38,6 +39,29 @@ const shuru::PinyinCorrection* FindCorrection(
 int main() {
     using namespace shuru;
 
+    const auto& syllables = pinyin_data::Syllables();
+    const auto& syllable_prefixes = pinyin_data::SyllablePrefixes();
+    CHECK(!syllable_prefixes.empty());
+    for (const auto& syllable : syllables) {
+        for (std::size_t length = 1; length < syllable.size(); ++length) {
+            CHECK(syllable_prefixes.count(syllable.substr(0, length)) != 0);
+        }
+    }
+    for (const auto& prefix : syllable_prefixes) {
+        CHECK(std::any_of(
+            syllables.begin(), syllables.end(), [&](const std::string& syllable) {
+                return syllable.size() > prefix.size() &&
+                    syllable.compare(0, prefix.size(), prefix) == 0;
+            }));
+    }
+    CHECK(syllable_prefixes.count("zz") == 0);
+    const auto partial_lattice = pinyin_data::BuildSyllableLattice("zh");
+    CHECK(std::any_of(
+        partial_lattice.begin(), partial_lattice.end(), [](const auto& path) {
+            return !path.complete && path.covered == 2 &&
+                path.edges.size() == 1 && path.edges.front().partial;
+        }));
+
     std::vector<MixedInputSegment> segments;
     CHECK(ParseMixedInput("duolaAmeng", &segments));
     CHECK(segments.size() == 3);
@@ -47,14 +71,14 @@ int main() {
     CHECK(!ParseMixedInput("duolameng", &segments));
 
     std::wstring value;
-    CHECK(TryEvaluateCalculator("v1+2*3", &value) && value == L"7");
-    CHECK(TryEvaluateCalculator("v(1+2)*3", &value) && value == L"9");
-    CHECK(TryEvaluateCalculator("v-7/2", &value) && value == L"-3.5");
-    CHECK(TryEvaluateCalculator("v.5+.25", &value) && value == L"0.75");
-    CHECK(!TryEvaluateCalculator("v1/0", &value));
-    CHECK(!TryEvaluateCalculator("v1+", &value));
-    CHECK(!TryEvaluateCalculator("v1  +2", &value));
-    CHECK(!TryEvaluateCalculator("v" + std::string(65, '1'), &value));
+    CHECK(TryEvaluateCalculator("vvv1+2*3", &value) && value == L"7");
+    CHECK(TryEvaluateCalculator("vvv(1+2)*3", &value) && value == L"9");
+    CHECK(TryEvaluateCalculator("vvv-7/2", &value) && value == L"-3.5");
+    CHECK(TryEvaluateCalculator("vvv.5+.25", &value) && value == L"0.75");
+    CHECK(!TryEvaluateCalculator("vvv1/0", &value));
+    CHECK(!TryEvaluateCalculator("vvv1+", &value));
+    CHECK(!TryEvaluateCalculator("vvv1  +2", &value));
+    CHECK(!TryEvaluateCalculator("vvv" + std::string(65, '1'), &value));
 
     SYSTEMTIME fixed {};
     fixed.wYear = 2026;

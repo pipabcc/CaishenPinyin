@@ -52,6 +52,7 @@ struct ShiftTapState {
     void CancelAction() noexcept { armed = false; }
     bool ShouldEatKeyUp() const noexcept { return keydown_eaten; }
     bool HasPendingKey() const noexcept { return armed || keydown_eaten; }
+    bool ShouldRequestKeyUpCallback() const noexcept { return HasPendingKey(); }
     ShiftTapRelease TestKeyUp(bool sensitive_context) noexcept;
     ShiftTapRelease KeyUp(bool has_composition, bool sensitive_context) noexcept;
     ShiftTapRelease Release(bool has_composition, bool sensitive_context) noexcept;

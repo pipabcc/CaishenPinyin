@@ -36,6 +36,7 @@ public:
     bool IsVisible() const { return visible_; }
     SIZE WindowSize() const;
     POINT ScreenPosition() const;
+    HWND GetHwnd() const noexcept { return hwnd_; }
 
     void SetContent(
         const std::wstring& composing,
@@ -48,6 +49,9 @@ public:
     void SetTypingStats(const TypingStatsSnapshot& snapshot);
     void SetSelectionHandler(std::function<void(size_t)> handler) { on_select_ = std::move(handler); }
     void SetDragHandler(std::function<void(POINT)> handler) { on_drag_ = std::move(handler); }
+    void SetSearchHandler(std::function<void()> handler) { on_search_clicked_ = std::move(handler); }
+    void SetClearSearchHandler(std::function<void()> handler) { on_search_cleared_ = std::move(handler); }
+    void SetDeleteHandler(std::function<void(size_t)> handler) { on_delete_item_ = std::move(handler); }
 
     // 引擎就绪轮询：poll 返回 true 继续轮询，false 停止。
     void StartReadyPolling(std::function<bool()> poll);
@@ -64,6 +68,9 @@ private:
     static constexpr int kShadowBlurPasses = 3;
     static constexpr int kMinWidth = 280;
     static constexpr int kMaxWidth = 1440;
+    static constexpr int kVerticalRowHeight = 32;
+    static constexpr int kVerticalMaxVisible = 10;
+    static constexpr int kUtilityFontSize = 13;
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
 
@@ -72,6 +79,7 @@ private:
     HFONT font_ = nullptr;
     HFONT font_comp_ = nullptr;
     HFONT font_meta_ = nullptr;
+    HFONT font_utility_ = nullptr;
     bool visible_ = false;
     bool english_mode_ = false;
     bool mouse_down_ = false;
@@ -81,6 +89,17 @@ private:
     bool ready_poll_active_ = false;
     int width_ = kMinWidth;
     int height_ = kLineHeight * 2 + kVerticalPadding * 2 + kRowGap;
+
+    // 竖向与滚动条交互状态
+    int hovered_row_ = -1;
+    bool hovered_delete_ = false;
+    bool scrollbar_hovered_ = false;
+    bool scrollbar_dragging_ = false;
+    int scroll_offset_ = 0;
+    int drag_start_y_ = 0;
+    int drag_start_scroll_ = 0;
+    RECT search_box_rect_ {};
+    RECT search_clear_rect_ {};
 
     std::wstring composing_;
     TypingStatsSnapshot typing_stats_;
@@ -93,6 +112,9 @@ private:
     bool paint_dirty_ = true;
     std::function<void(size_t)> on_select_;
     std::function<void(POINT)> on_drag_;
+    std::function<void()> on_search_clicked_;
+    std::function<void()> on_search_cleared_;
+    std::function<void(size_t)> on_delete_item_;
     std::function<bool()> ready_poll_;
 
     int Scale(int value) const;

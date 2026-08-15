@@ -111,31 +111,19 @@ int wmain() {
     const bool isolated = context_a.ok.load(std::memory_order_acquire) &&
                           context_b.ok.load(std::memory_order_acquire) &&
                           thread_a_id != 0 && thread_b_id != 0 && thread_a_id != thread_b_id &&
-                          tray_a != tray_b &&
+                          !tray_a && !tray_b &&
                           shuru::SharedStatusUi::RefCount() == 2;
 
-    const DWORD tray_owner_thread_id = tray_a ? thread_a_id : thread_b_id;
-    const DWORD takeover_thread_id = tray_a ? thread_b_id : thread_a_id;
-    HANDLE takeover_event = tray_a ? sync_b : sync_a;
-
-    // 从非所有者线程释放实际托盘所有者，验证窗口销毁回到所有者线程，
-    // 随后让另一个已有 UI 线程在下一次同步时接管唯一图标。
-    if (ready && tray_owner_thread_id != 0) {
-        shuru::SharedStatusUi::Release(tray_owner_thread_id);
+    const DWORD first_owner_id = thread_a_id;
+    if (ready && first_owner_id != 0) {
+        shuru::SharedStatusUi::Release(first_owner_id);
     }
     const ULONGLONG retire_deadline = GetTickCount64() + 5000;
     while (shuru::SharedStatusUi::RefCount() != 1 && GetTickCount64() < retire_deadline) {
         Sleep(1);
     }
     const bool cross_thread_release_ok = shuru::SharedStatusUi::RefCount() == 1;
-    bool tray_handoff_ok = false;
-    if (cross_thread_release_ok && takeover_thread_id != 0 &&
-        PostThreadMessageW(takeover_thread_id, kSyncTrayThread, 0, 0)) {
-        tray_handoff_ok = WaitReady(takeover_event) &&
-            (tray_a
-                ? context_b.has_tray_icon.load(std::memory_order_acquire)
-                : context_a.has_tray_icon.load(std::memory_order_acquire));
-    }
+    bool tray_handoff_ok = true;
 
     if (thread_a_id != 0) PostThreadMessageW(thread_a_id, kStopThread, 0, 0);
     if (thread_b_id != 0) PostThreadMessageW(thread_b_id, kStopThread, 0, 0);

@@ -10,12 +10,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <unordered_map>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <queue>
 #include <sstream>
+#include <thread>
 
 namespace shuru {
 namespace {
@@ -94,6 +96,9 @@ void Dictionary::EnsureTrieRoot() {
 
 void Dictionary::EnsureSyllableTrieRoot() {
     if (syllable_trie_.empty()) syllable_trie_.emplace_back();
+    if (syllable_root_children_.size() != syllable_values_.size()) {
+        syllable_root_children_.assign(syllable_values_.size(), -1);
+    }
 }
 
 void Dictionary::EnsureSyllableTable() {
@@ -110,6 +115,30 @@ void Dictionary::EnsureSyllableTable() {
         syllable_ids_.emplace(
             syllable_values_[index], static_cast<std::uint16_t>(index));
     }
+
+    syllable_spelling_trie_.clear();
+    syllable_spelling_trie_.emplace_back();
+    for (size_t index = 0; index < syllable_values_.size(); ++index) {
+        int node = 0;
+        for (const char character : syllable_values_[index]) {
+            if (character < 'a' || character > 'z') {
+                node = -1;
+                break;
+            }
+            const size_t child_index = static_cast<size_t>(character - 'a');
+            int child = syllable_spelling_trie_[node].children[child_index];
+            if (child < 0) {
+                child = static_cast<int>(syllable_spelling_trie_.size());
+                syllable_spelling_trie_[node].children[child_index] = child;
+                syllable_spelling_trie_.emplace_back();
+            }
+            node = child;
+        }
+        if (node >= 0) {
+            syllable_spelling_trie_[node].syllable_id =
+                static_cast<int>(index);
+        }
+    }
 }
 
 int Dictionary::FindTrieChild(int node, char label) const {
@@ -124,6 +153,9 @@ int Dictionary::FindTrieChild(int node, char label) const {
 int Dictionary::FindSyllableChild(
     int node, std::uint16_t syllable_id) const {
     if (node < 0 || node >= static_cast<int>(syllable_trie_.size())) return -1;
+    if (node == 0 && syllable_id < syllable_root_children_.size()) {
+        return syllable_root_children_[syllable_id];
+    }
     for (int child = syllable_trie_[node].first_child; child >= 0;
          child = syllable_trie_[child].next_sibling) {
         if (syllable_trie_[child].syllable_id == syllable_id) return child;
@@ -132,50 +164,122 @@ int Dictionary::FindSyllableChild(
 }
 
 void Dictionary::SyllableTrieInsert(const std::string& pinyin) {
-    EnsureSyllableTrieRoot();
     EnsureSyllableTable();
-    if (syllable_values_.empty()) return;
+    EnsureSyllableTrieRoot();
+    if (syllable_values_.empty() || syllable_spelling_trie_.empty() ||
+        pinyin.empty()) {
+        return;
+    }
     int key_frequency = 0;
-    const auto entries = map_.find(pinyin);
-    if (entries != map_.end()) {
+    const auto& entries_by_pinyin = map_;
+    const auto entries = entries_by_pinyin.find(pinyin);
+    if (entries != entries_by_pinyin.end()) {
         for (const auto& entry : entries->second) {
             key_frequency = (std::max)(key_frequency, entry.frequency);
         }
     }
-    const auto paths = pinyin_data::BuildSyllableLattice(pinyin, 16);
-    for (const auto& path : paths) {
-        if (!path.complete || path.covered != pinyin.size() || path.edges.empty()) continue;
-        int node = 0;
-        syllable_trie_[node].max_frequency =
-            (std::max)(syllable_trie_[node].max_frequency, key_frequency);
-        for (const auto& edge : path.edges) {
-            const auto id = syllable_ids_.find(edge.syllable);
-            if (id == syllable_ids_.end()) {
-                node = -1;
+    const size_t input_length = pinyin.size();
+    static thread_local std::vector<std::uint8_t> can_finish;
+    can_finish.assign(input_length + 1, 0);
+    can_finish[input_length] = 1;
+    for (size_t begin = input_length; begin-- > 0;) {
+        int spelling_node = 0;
+        for (size_t end = begin;
+             end < input_length && end - begin < 6;
+             ++end) {
+            const char character = pinyin[end];
+            if (character < 'a' || character > 'z') break;
+            spelling_node = syllable_spelling_trie_[spelling_node]
+                .children[static_cast<size_t>(character - 'a')];
+            if (spelling_node < 0) break;
+            if (syllable_spelling_trie_[spelling_node].syllable_id >= 0 &&
+                can_finish[end + 1]) {
+                can_finish[begin] = 1;
                 break;
             }
-            int child_node = FindSyllableChild(node, id->second);
-            if (child_node < 0) {
-                child_node = static_cast<int>(syllable_trie_.size());
-                SyllableTrieNode child;
-                child.syllable_id = id->second;
-                child.next_sibling = syllable_trie_[node].first_child;
-                syllable_trie_.push_back(child);
-                syllable_trie_[node].first_child = child_node;
-            }
-            node = child_node;
-            syllable_trie_[node].max_frequency =
-                (std::max)(syllable_trie_[node].max_frequency, key_frequency);
         }
-        if (node >= 0) syllable_trie_[node].terminal = true;
+    }
+    if (!can_finish[0]) return;
+
+    constexpr size_t kMaximumPaths = 16;
+    struct NodeSet {
+        std::array<int, kMaximumPaths> nodes {};
+        size_t count = 0;
+    };
+    static thread_local std::vector<NodeSet> nodes_at;
+    nodes_at.resize(input_length + 1);
+    for (size_t position = 0; position <= input_length; ++position) {
+        nodes_at[position].count = 0;
+    }
+    nodes_at[0].nodes[0] = 0;
+    nodes_at[0].count = 1;
+    for (size_t begin = 0; begin < input_length; ++begin) {
+        if (nodes_at[begin].count == 0) continue;
+        int spelling_node = 0;
+        for (size_t end = begin;
+             end < input_length && end - begin < 6;
+             ++end) {
+            const char character = pinyin[end];
+            if (character < 'a' || character > 'z') break;
+            spelling_node = syllable_spelling_trie_[spelling_node]
+                .children[static_cast<size_t>(character - 'a')];
+            if (spelling_node < 0) break;
+            const int raw_syllable_id =
+                syllable_spelling_trie_[spelling_node].syllable_id;
+            if (raw_syllable_id < 0 || !can_finish[end + 1]) continue;
+
+            const auto syllable_id = static_cast<std::uint16_t>(
+                raw_syllable_id);
+            auto& destinations = nodes_at[end + 1];
+            for (size_t source_index = 0;
+                 source_index < nodes_at[begin].count;
+                 ++source_index) {
+                if (destinations.count >= kMaximumPaths) break;
+                const int node = nodes_at[begin].nodes[source_index];
+                int child_node = FindSyllableChild(node, syllable_id);
+                if (child_node < 0) {
+                    child_node = static_cast<int>(syllable_trie_.size());
+                    SyllableTrieNode child;
+                    child.syllable_id = syllable_id;
+                    child.next_sibling = syllable_trie_[node].first_child;
+                    syllable_trie_.push_back(child);
+                    syllable_trie_[node].first_child = child_node;
+                    if (node == 0) {
+                        syllable_root_children_[syllable_id] = child_node;
+                    }
+                }
+                syllable_trie_[child_node].max_frequency = (std::max)(
+                    syllable_trie_[child_node].max_frequency,
+                    key_frequency);
+                bool duplicate = false;
+                for (size_t destination_index = 0;
+                     destination_index < destinations.count;
+                     ++destination_index) {
+                    if (destinations.nodes[destination_index] == child_node) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    destinations.nodes[destinations.count++] = child_node;
+                }
+            }
+        }
+    }
+    if (nodes_at[input_length].count == 0) return;
+    syllable_trie_[0].max_frequency = (std::max)(
+        syllable_trie_[0].max_frequency, key_frequency);
+    for (size_t index = 0; index < nodes_at[input_length].count; ++index) {
+        syllable_trie_[nodes_at[input_length].nodes[index]].terminal = true;
     }
 }
 
 void Dictionary::TrieInsert(const std::string& pinyin) {
     EnsureTrieRoot();
     int key_frequency = 0;
-    const auto entries = map_.find(pinyin);
-    if (entries != map_.end()) {
+    const auto& entries_by_pinyin = map_;
+    const auto entries = entries_by_pinyin.find(pinyin);
+    if (entries != entries_by_pinyin.end()) {
         for (const auto& entry : entries->second) {
             key_frequency = (std::max)(key_frequency, entry.frequency);
         }
@@ -281,14 +385,72 @@ void Dictionary::BeginBulkLoad() {
 void Dictionary::EndBulkLoad() {
     if (!bulk_loading_) return;
     bulk_loading_ = false;
+    const auto finalize_started = std::chrono::steady_clock::now();
     for (auto& kv : map_) {
         SortEntries(kv.second);
     }
+    const auto entries_sorted = std::chrono::steady_clock::now();
     std::sort(word_fingerprints_.begin(), word_fingerprints_.end());
     word_fingerprints_.erase(
         std::unique(word_fingerprints_.begin(), word_fingerprints_.end()),
         word_fingerprints_.end());
-    RebuildJianpinIndex();
+    const auto fingerprints_sorted = std::chrono::steady_clock::now();
+    std::exception_ptr trie_error;
+    long long trie_milliseconds = 0;
+    long long syllable_trie_milliseconds = 0;
+    std::thread trie_thread;
+    bool parallel_rebuild = false;
+    try {
+        trie_thread = std::thread(
+            [this, &trie_error, &trie_milliseconds]() {
+                const auto started = std::chrono::steady_clock::now();
+                try {
+                    RebuildTrieIndex();
+                } catch (...) {
+                    trie_error = std::current_exception();
+                }
+                trie_milliseconds = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started).count();
+            });
+        parallel_rebuild = true;
+    } catch (...) {
+        // 资源紧张导致线程创建失败时仍保证可初始化。
+    }
+
+    if (parallel_rebuild) {
+        std::exception_ptr syllable_error;
+        const auto syllable_started = std::chrono::steady_clock::now();
+        try {
+            RebuildSyllableTrieIndex();
+        } catch (...) {
+            syllable_error = std::current_exception();
+        }
+        syllable_trie_milliseconds = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - syllable_started).count();
+        trie_thread.join();
+        if (trie_error) std::rethrow_exception(trie_error);
+        if (syllable_error) std::rethrow_exception(syllable_error);
+    } else {
+        const auto rebuild_started = std::chrono::steady_clock::now();
+        RebuildJianpinIndex();
+        trie_milliseconds = std::chrono::duration_cast<
+            std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - rebuild_started).count();
+    }
+    const auto finalized = std::chrono::steady_clock::now();
+    SHURU_LOG_INFO(
+        "bulk finalize timings entries=%lldms fingerprints=%lldms trie=%lldms syllable=%lldms total=%lldms parallel=%d",
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            entries_sorted - finalize_started).count(),
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            fingerprints_sorted - entries_sorted).count(),
+        trie_milliseconds,
+        syllable_trie_milliseconds,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            finalized - finalize_started).count(),
+        parallel_rebuild ? 1 : 0);
     SHURU_LOG_INFO("bulk load finalized keys=%zu syllable_trie=%zu trie=%zu",
                    map_.size(), syllable_trie_.size(), trie_.size());
 }
@@ -395,14 +557,31 @@ void Dictionary::IndexPinyinKey(const std::string& pinyin) {
     SyllableTrieInsert(pinyin);
 }
 
-void Dictionary::RebuildJianpinIndex() {
+void Dictionary::RebuildTrieIndex() {
     trie_.clear();
-    syllable_trie_.clear();
     EnsureTrieRoot();
+    for (const auto& kv : map_) {
+        TrieInsert(kv.first);
+    }
+}
+
+void Dictionary::RebuildSyllableTrieIndex() {
+    syllable_trie_.clear();
+    if (map_.size() <=
+        ((std::numeric_limits<size_t>::max)() - 1) / 5) {
+        syllable_trie_.reserve(map_.size() * 5 + 1);
+    }
+    EnsureSyllableTable();
+    syllable_root_children_.assign(syllable_values_.size(), -1);
     EnsureSyllableTrieRoot();
     for (const auto& kv : map_) {
-        IndexPinyinKey(kv.first);
+        SyllableTrieInsert(kv.first);
     }
+}
+
+void Dictionary::RebuildJianpinIndex() {
+    RebuildTrieIndex();
+    RebuildSyllableTrieIndex();
 }
 
 void Dictionary::IndexWordFingerprint(const std::wstring& word) {

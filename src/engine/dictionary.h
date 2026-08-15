@@ -98,12 +98,21 @@ private:
         bool terminal = false;
     };
 
+    struct SyllableSpellingNode {
+        std::array<int, 26> children {};
+        int syllable_id = -1;
+
+        SyllableSpellingNode() { children.fill(-1); }
+    };
+
     std::unordered_map<std::string, std::vector<Entry>> map_;
     std::map<std::pair<std::string, std::wstring>, UserDictionaryEntry> user_entries_;
     std::vector<TrieNode> trie_;  // trie_[0] = root
     std::vector<SyllableTrieNode> syllable_trie_;  // syllable_trie_[0] = root
     std::vector<std::string> syllable_values_;
     std::unordered_map<std::string, std::uint16_t> syllable_ids_;
+    std::vector<SyllableSpellingNode> syllable_spelling_trie_;
+    std::vector<int> syllable_root_children_;
     std::vector<std::array<std::uint64_t, 2>> word_fingerprints_;
     mutable bool dirty_ = false;
     bool bulk_loading_ = false;
@@ -120,6 +129,8 @@ private:
         int node, const std::string& prefix, size_t limit,
         std::vector<std::string>* out_keys) const;
 
+    void RebuildTrieIndex();
+    void RebuildSyllableTrieIndex();
     void RebuildJianpinIndex();
     void RebuildWordFingerprints();
     void IndexWordFingerprint(const std::wstring& word);

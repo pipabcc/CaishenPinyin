@@ -1,7 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><UseWPF>true</UseWPF></PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\settings\SettingsStore.cs" Link="SettingsStore.cs" />
     <Compile Include="..\..\settings\CustomPhraseStore.cs" Link="CustomPhraseStore.cs" />
+    <Compile Include="..\..\settings\ClipboardStore.cs" Link="ClipboardStore.cs" />
+    <Compile Include="..\..\settings\ClipboardDatabase.cs" Link="ClipboardDatabase.cs" />
+    <Compile Include="..\..\settings\ClipboardImageService.cs" Link="ClipboardImageService.cs" />
+    <Compile Include="..\..\settings\ClipboardMonitor.cs" Link="ClipboardMonitor.cs" />
+    <Compile Include="..\..\settings\TextPasteRequestStore.cs" Link="TextPasteRequestStore.cs" />
+    <Compile Include="..\..\settings\CrashLogger.cs" Link="CrashLogger.cs" />
   </ItemGroup>
 </Project>

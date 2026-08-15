@@ -24,6 +24,61 @@ inline std::size_t CandidateQueryLimit(
         : regular_budget;
 }
 
+struct ShortcutModifierDecisionCache {
+    WPARAM key = 0;
+    LPARAM key_data = 0;
+    DWORD tick = 0;
+    bool decision = false;
+    bool valid = false;
+
+    void Store(
+        WPARAM value_key, LPARAM value_key_data, bool value_decision,
+        DWORD value_tick) noexcept {
+        key = value_key;
+        key_data = value_key_data;
+        decision = value_decision;
+        tick = value_tick;
+        valid = true;
+    }
+
+    bool Consume(
+        WPARAM value_key, LPARAM value_key_data, DWORD value_tick,
+        bool* value_decision, DWORD maximum_age_ms = 1000) noexcept {
+        const bool matches = valid && key == value_key &&
+            key_data == value_key_data &&
+            value_tick - tick <= maximum_age_ms;
+        valid = false;
+        if (!matches || value_decision == nullptr) return false;
+        *value_decision = decision;
+        return true;
+    }
+
+    void Clear() noexcept { valid = false; }
+};
+
+inline bool IsVerticalUtilityMode(const std::string& composing) noexcept {
+    if (composing.empty() ||
+        (composing.front() != 'v' && composing.front() != 'V')) {
+        return false;
+    }
+    // vvv 是计算器入口，必须继续进入拼音引擎的特殊输入分支。
+    return composing.size() < 3 || composing.compare(0, 3, "vvv") != 0;
+}
+
+inline bool TryGetVerticalUtilityFilterDigit(
+    WPARAM key, bool num_lock, char* digit) noexcept {
+    if (digit == nullptr) return false;
+    if (key >= '0' && key <= '9') {
+        *digit = static_cast<char>(key);
+        return true;
+    }
+    if (num_lock && key >= VK_NUMPAD0 && key <= VK_NUMPAD9) {
+        *digit = static_cast<char>('0' + key - VK_NUMPAD0);
+        return true;
+    }
+    return false;
+}
+
 
 struct CandidateCommitPlan {
     std::wstring committed;
@@ -35,13 +90,20 @@ struct CandidateCommitPlan {
     bool has_coverage = false;
 };
 
+inline const std::wstring& CandidateCommitText(
+    const Candidate& candidate) noexcept {
+    return candidate.full_content.empty()
+        ? candidate.text
+        : candidate.full_content;
+}
+
 inline CandidateCommitPlan PlanCandidateCommit(
     const std::string& composing, const Candidate& candidate) {
     CandidateCommitPlan plan;
     const std::size_t covered = (std::min)(candidate.covered_input_len, composing.size());
     plan.has_coverage = covered != 0;
     if (!plan.has_coverage) return plan;
-    plan.committed = candidate.text;
+    plan.committed = CandidateCommitText(candidate);
     plan.remaining = composing.substr(covered);
     plan.learned_input = composing.substr(0, covered);
     plan.learned_pinyin = candidate.pinyin;
@@ -272,7 +334,7 @@ inline std::vector<std::wstring> SettingsExecutableCandidates(
     return paths;
 }
 
-inline bool LaunchSettingsExecutable(HWND owner, HINSTANCE module) {
+inline bool LaunchSettingsExecutable(HWND owner, HINSTANCE module, const wchar_t* params = nullptr) {
     wchar_t module_path[MAX_PATH] = {};
     if (module == nullptr ||
         GetModuleFileNameW(module, module_path, ARRAYSIZE(module_path)) == 0) {
@@ -285,10 +347,25 @@ inline bool LaunchSettingsExecutable(HWND owner, HINSTANCE module) {
             continue;
         }
         const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(
-            owner, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+            owner, L"open", path.c_str(), params, nullptr, SW_SHOWNORMAL));
         if (result > 32) return true;
     }
     return false;
+}
+
+inline bool IsClipboardMonitorRunning() noexcept {
+    HANDLE mutex = OpenMutexW(
+        SYNCHRONIZE, FALSE, L"Local\\CaishenPinyinClipboardMonitorV2");
+    if (mutex != nullptr) {
+        CloseHandle(mutex);
+        return true;
+    }
+    return GetLastError() == ERROR_ACCESS_DENIED;
+}
+
+inline bool EnsureClipboardMonitorExecutable(HINSTANCE module) {
+    return IsClipboardMonitorRunning() ||
+        LaunchSettingsExecutable(nullptr, module, L"-clipboard-monitor");
 }
 
 inline std::wstring FormatUnsignedWithSeparators(std::uint64_t value) {

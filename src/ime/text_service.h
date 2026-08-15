@@ -78,6 +78,7 @@ private:
     bool english_mode_ = false;
     bool shuangpin_mode_ = false;  // 小鹤双拼
     ShiftTapState shift_tap_;
+    ShortcutModifierDecisionCache shortcut_modifier_cache_;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
     DWORD owner_thread_id_ = 0;
     bool key_sink_advised_ = false;
@@ -107,6 +108,7 @@ private:
     TypingStatsStore typing_stats_;
     bool status_ui_acquired_ = false;
     DWORD status_ui_thread_id_ = 0;
+    bool clipboard_monitor_checked_ = false;
 
     HRESULT InitEngine();
     void EnsureUiWindows();
@@ -142,7 +144,10 @@ private:
     HRESULT CommitText(ITfContext* context, const std::wstring& text);
     HRESULT SetCompositionString(ITfContext* context, const std::wstring& text);
 
-    bool IsKeyEaten(ITfContext* context, WPARAM wparam) const;
+    bool ShortcutModifierForKey(
+        WPARAM wparam, LPARAM lparam, bool test_callback);
+    bool IsKeyEaten(
+        ITfContext* context, WPARAM wparam, bool shortcut_modifier) const;
     bool IsPasswordContext(ITfContext* context) const;
     static bool IsAsciiPrintable(WPARAM wparam);
 };

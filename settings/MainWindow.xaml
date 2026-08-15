@@ -62,6 +62,7 @@
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="常规设置"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="输入方案"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="自定义短语"/>
+              <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="剪贴板"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="词库与隐私"/>
             </ListBox>
 
@@ -247,8 +248,24 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                   </Grid.ColumnDefinitions>
-                  <TextBox x:Name="PhraseSearchBox" MaxWidth="360" HorizontalAlignment="Left" Width="320"
-                           ToolTip="搜索输入码或短语" TextChanged="PhraseSearchBox_TextChanged"/>
+                  <Grid Width="320" MaxWidth="360" HorizontalAlignment="Left">
+                    <TextBox x:Name="PhraseSearchBox" Padding="12,0,40,0"
+                             VerticalContentAlignment="Center"
+                             ToolTip="搜索输入码或短语"
+                             TextChanged="PhraseSearchBox_TextChanged"/>
+                    <Button x:Name="PhraseSearchButton"
+                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Style="{StaticResource IconButtonStyle}"
+                            IsTabStop="False" ToolTip="搜索"
+                            Click="PhraseSearchButton_Click">
+                      <Viewbox Width="15" Height="15">
+                        <Path Data="M 6.5,1 A 5.5,5.5 0 1 1 6.5,12 A 5.5,5.5 0 1 1 6.5,1 M 10.5,10.5 L 15,15"
+                              Stroke="{StaticResource TextSecondaryBrush}"
+                              StrokeThickness="1.6" StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round" Fill="Transparent"/>
+                      </Viewbox>
+                    </Button>
+                  </Grid>
                   <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <Button Content="添加短语" Style="{StaticResource PrimaryButtonStyle}" Click="AddPhrase_Click"/>
                     <Button Content="编辑" Margin="10,0,0,0" Click="EditPhrase_Click"/>
@@ -268,11 +285,13 @@
                               MouseDoubleClick="PhraseGrid_MouseDoubleClick">
                       <DataGrid.Columns>
                         <DataGridTextColumn Header="输入码" Binding="{Binding Code}" Width="150"
-                                            ElementStyle="{StaticResource CenteredDataGridTextStyle}"/>
+                                            ElementStyle="{StaticResource CenteredDataGridTextStyle}"
+                                            HeaderStyle="{StaticResource CenteredDataGridColumnHeaderStyle}"/>
                         <DataGridTextColumn Header="候选位置" Binding="{Binding Position}" Width="110"
-                                            ElementStyle="{StaticResource CenteredDataGridTextStyle}"/>
+                                            ElementStyle="{StaticResource CenteredDataGridTextStyle}"
+                                            HeaderStyle="{StaticResource CenteredDataGridColumnHeaderStyle}"/>
                         <DataGridTextColumn Header="短语内容" Binding="{Binding Phrase}" Width="*"
-                                            ElementStyle="{StaticResource CenteredDataGridTextStyle}"/>
+                                            ElementStyle="{StaticResource DataGridTextStyle}"/>
                       </DataGrid.Columns>
                     </DataGrid>
                     <Grid Grid.Row="1" Margin="18,14" Background="#FFFFFF">
@@ -292,7 +311,137 @@
                 </Border>
               </Grid>
 
-              <!-- 4. 词库与隐私页面 -->
+              <!-- 4. 剪贴板管理页面 -->
+              <Grid x:Name="ClipboardPage" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="0,0,0,20">
+                  <TextBlock Text="剪贴板" Style="{StaticResource PageTitleStyle}"/>
+                  <TextBlock Text="管理历史剪贴板记录、图文数据与自动记录开关。" Style="{StaticResource PageDescriptionStyle}"/>
+                </StackPanel>
+
+                <!-- 主卡片容器 -->
+                <Border Grid.Row="1" Style="{StaticResource SectionStyle}" Padding="20">
+                  <Grid>
+                    <Grid.RowDefinitions>
+                      <!-- 开关与搜索 -->
+                      <RowDefinition Height="Auto"/>
+                      <!-- 记录列表 -->
+                      <RowDefinition Height="*"/>
+                      <!-- 底部操作按钮 -->
+                      <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,16">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <CheckBox x:Name="ClipboardEnabledBox" Content="启用剪贴板记录"
+                                IsChecked="True" VerticalAlignment="Center"
+                                Checked="ClipboardEnabledBox_Changed" Unchecked="ClipboardEnabledBox_Changed"/>
+                      <Grid Grid.Column="1" Margin="24,0,0,0">
+                        <TextBox x:Name="ClipboardSearchBox"
+                                 Height="36" Padding="12,0,40,0"
+                                 VerticalContentAlignment="Center"
+                                 ToolTip="搜索剪贴板记录"
+                                 TextChanged="ClipboardSearchBox_TextChanged"/>
+                        <Button HorizontalAlignment="Right" VerticalAlignment="Center"
+                                Style="{StaticResource IconButtonStyle}"
+                                IsTabStop="False" ToolTip="搜索"
+                                Click="ClipboardSearchButton_Click">
+                          <Viewbox Width="15" Height="15">
+                            <Path Data="M 6.5,1 A 5.5,5.5 0 1 1 6.5,12 A 5.5,5.5 0 1 1 6.5,1 M 10.5,10.5 L 15,15"
+                                  Stroke="{StaticResource TextSecondaryBrush}"
+                                  StrokeThickness="1.6" StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round" Fill="Transparent"/>
+                          </Viewbox>
+                        </Button>
+                      </Grid>
+                    </Grid>
+
+                    <DataGrid x:Name="ClipboardGrid" Grid.Row="1"
+                              AutoGenerateColumns="False" CanUserAddRows="False"
+                              IsReadOnly="True" SelectionMode="Extended"
+                              SelectionUnit="FullRow"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              BorderThickness="1" BorderBrush="{StaticResource BorderBrush}"
+                              Background="#FFFFFF" RowHeight="38"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                      <DataGrid.Columns>
+                        <DataGridTextColumn Header="类型" Binding="{Binding TypeDisplayName}" Width="65"
+                                            ElementStyle="{StaticResource CenteredDataGridTextStyle}"
+                                            HeaderStyle="{StaticResource CenteredDataGridColumnHeaderStyle}"/>
+                        <DataGridTextColumn Header="内容摘要" Binding="{Binding DisplayTitle}" Width="*"
+                                            ElementStyle="{StaticResource DataGridTextStyle}"/>
+                        <DataGridTemplateColumn Header="复制时间" Width="190">
+                          <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                              <Grid>
+                                <TextBlock x:Name="TimeText" Text="{Binding FormattedTime}"
+                                           VerticalAlignment="Center"/>
+                                <StackPanel x:Name="RowActions" Orientation="Horizontal"
+                                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                                            Visibility="Collapsed">
+                                  <Button Content="复制" Width="44" Height="24" Padding="0" FontSize="12"
+                                          Style="{StaticResource ModernTextButtonStyle}"
+                                          Click="RowCopy_Click" ToolTip="复制到系统剪贴板"/>
+                                  <Button Content="{Binding OpenOrEditLabel}" Width="44" Height="24"
+                                          Padding="0" FontSize="12" Margin="6,0,0,0"
+                                          Style="{StaticResource ModernTextButtonStyle}"
+                                          Click="RowOpenOrEdit_Click" ToolTip="编辑文本或打开图片、文件"/>
+                                  <Button Content="删除" Width="44" Height="24" Padding="0" FontSize="12"
+                                          Margin="6,0,0,0" Style="{StaticResource DangerTextButtonStyle}"
+                                          Click="RowDelete_Click" ToolTip="删除此记录"/>
+                                </StackPanel>
+                              </Grid>
+                              <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType={x:Type DataGridRow}}}"
+                                             Value="True">
+                                  <Setter TargetName="TimeText" Property="Visibility" Value="Collapsed"/>
+                                  <Setter TargetName="RowActions" Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType={x:Type DataGridRow}}}"
+                                             Value="True">
+                                  <Setter TargetName="TimeText" Property="Visibility" Value="Collapsed"/>
+                                  <Setter TargetName="RowActions" Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding IsKeyboardFocusWithin, RelativeSource={RelativeSource AncestorType={x:Type DataGridRow}}}"
+                                             Value="True">
+                                  <Setter TargetName="TimeText" Property="Visibility" Value="Collapsed"/>
+                                  <Setter TargetName="RowActions" Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                              </DataTemplate.Triggers>
+                            </DataTemplate>
+                          </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                      </DataGrid.Columns>
+                    </DataGrid>
+
+                    <!-- 底部操作栏 -->
+                    <Grid Grid.Row="2" Margin="0,16,0,0">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                      </Grid.ColumnDefinitions>
+                      <TextBlock x:Name="ClipboardCountText" Foreground="{StaticResource TextSecondaryBrush}"
+                                 VerticalAlignment="Center" FontSize="13"/>
+                      <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Content="删除选中" Click="DeleteClipboardItem_Click"/>
+                        <Button Content="清空记录" Margin="10,0,0,0" Style="{StaticResource DangerButtonStyle}" Click="ClearClipboard_Click"/>
+                      </StackPanel>
+                    </Grid>
+                  </Grid>
+                </Border>
+              </Grid>
+
+              <!-- 5. 词库与隐私页面 -->
               <Grid x:Name="DictionaryPage" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto"/>
@@ -355,10 +504,12 @@
                   <ColumnDefinition Width="*"/>
                   <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="StatusText" Foreground="{StaticResource TextSecondaryBrush}"
+                <TextBlock x:Name="StatusText" Foreground="{StaticResource PrimaryBrush}"
                            FontSize="12" AutomationProperties.LiveSetting="Polite"
                            TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                           VerticalAlignment="Center"/>
+                           VerticalAlignment="Center" Cursor="Hand"
+                           ToolTip="打开输入法安装文件夹"
+                           MouseLeftButtonUp="StatusText_MouseLeftButtonUp"/>
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                   <Button Content="关闭" Width="88" Click="Close_Click"/>
                   <Button Content="保存设置" Width="110" Margin="12,0,0,0"

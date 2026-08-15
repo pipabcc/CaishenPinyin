@@ -11,6 +11,9 @@ if(NOT WIN32)
   message(FATAL_ERROR "Shuru Pinyin IME only supports Windows.")
 endif()
 if(MSVC)
+  # TSF DLL 会被任意宿主进程加载；静态链接 C++ 运行库，避免新版 STL
+  # 在目标机器上错误解析到旧版 VC++ Redist。
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   add_compile_options(/utf-8 /W4)
   if(CMAKE_GENERATOR MATCHES "Ninja")
     # cl.exe 以 UTF-8 输出中文 /showIncludes 前缀，而 CMake 在部分中文
@@ -28,6 +31,10 @@ set(SHURU_ENGINE_FEATURE_SOURCES
   src/engine/system_lexeme_prior.cpp
 )
 
+set(SHURU_CLIPBOARD_SOURCES
+  src/engine/clipboard_helper.cpp
+)
+
 add_library(ShuruIme SHARED
   src/common/logger.cpp
   src/common/runtime_config.cpp
@@ -38,6 +45,7 @@ add_library(ShuruIme SHARED
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
   ${SHURU_ENGINE_FEATURE_SOURCES}
+  ${SHURU_CLIPBOARD_SOURCES}
   src/engine/shared_engine.cpp
   src/ime/globals.cpp
   src/ime/class_factory.cpp
@@ -82,6 +90,7 @@ target_link_libraries(ShuruIme PRIVATE
   bcrypt
   shell32
   dwmapi
+  winsqlite3
 )
 
 add_custom_target(copy_runtime_lexicon ALL
@@ -292,6 +301,7 @@ if(BUILD_TESTING)
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
     ${SHURU_ENGINE_FEATURE_SOURCES}
+    ${SHURU_CLIPBOARD_SOURCES}
     src/engine/shared_engine.cpp
     src/ime/globals.cpp
     src/ime/edit_sessions.cpp
@@ -306,11 +316,25 @@ if(BUILD_TESTING)
   target_include_directories(shared_status_ui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(shared_status_ui_test PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-    SHURU_TRAY_OWNER_MUTEX_TEST=1)
-  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt shell32 dwmapi)
+    SHURU_TRAY_OWNER_MUTEX_TEST=1
+    SHURU_TEST_DISABLE_EXTERNAL_HELPERS=1)
+  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 advapi32 bcrypt shell32 dwmapi winsqlite3)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
+
+  add_executable(clipboard_helper_test
+    tests/engine_playground/clipboard_helper_test.cpp
+    src/common/logger.cpp
+    src/common/runtime_config.cpp
+    src/engine/custom_phrase.cpp
+    ${SHURU_CLIPBOARD_SOURCES}
+  )
+  target_include_directories(clipboard_helper_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(clipboard_helper_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(clipboard_helper_test PRIVATE ole32 advapi32 winsqlite3)
+  add_test(NAME clipboard_helper COMMAND clipboard_helper_test)
+  set_tests_properties(clipboard_helper PROPERTIES TIMEOUT 30)
 
   add_executable(candidate_window_test
     tests/engine_playground/candidate_window_test.cpp
@@ -394,5 +418,12 @@ if(BUILD_TESTING)
               ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_logic/SettingsLogic.csproj
               --configuration Release)
     set_tests_properties(settings_logic PROPERTIES TIMEOUT 60)
+    add_test(NAME settings_ui_smoke
+      COMMAND ${DOTNET_EXECUTABLE} run --project
+              ${CMAKE_CURRENT_SOURCE_DIR}/settings/ShuruSettings.csproj
+              --configuration Release -- -self-test)
+    set_tests_properties(settings_ui_smoke PROPERTIES
+      TIMEOUT 30
+      ENVIRONMENT "CAISHEN_CLIPBOARD_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-settings-ui/clipboard")
   endif()
 endif()

@@ -106,11 +106,14 @@ bool ShiftTapState::Begin(
     return keydown_eaten;
 }
 
-ShiftTapRelease ShiftTapState::TestKeyUp(bool /*sensitive_context*/) noexcept {
-    // 纯查询：宿主可能探测性地多次调用 OnTestKeyUp，也可能不再跟进真实
-    // OnKeyUp。这里绝不改动状态、绝不产生切换动作，动作只在 KeyUp 发生，
-    // 否则会在部分应用中被"测试"调用误切中英文模式。
-    return {ShiftTapAction::None, ShouldEatKeyUp()};
+ShiftTapRelease ShiftTapState::TestKeyUp(bool sensitive_context) noexcept {
+    // 无组合时 Shift 的 KeyDown 必须继续交给宿主，但 TestKeyUp 仍需返回 true，
+    // 才能让严格遵循 TSF 流程的宿主继续调用真实 OnKeyUp。真实回调再按
+    // keydown_eaten 决定是否吞键，因此应用不会收到缺少 KeyUp 的 Shift。
+    return {
+        ShiftTapAction::None,
+        !sensitive_context && ShouldRequestKeyUpCallback(),
+    };
 }
 
 ShiftTapRelease ShiftTapState::KeyUp(

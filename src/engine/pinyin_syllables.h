@@ -424,6 +424,20 @@ inline const std::unordered_set<std::string>& Syllables() {
     return kSyllables;
 }
 
+inline const std::unordered_set<std::string>& SyllablePrefixes() {
+    static const std::unordered_set<std::string> kPrefixes = [] {
+        std::unordered_set<std::string> prefixes;
+        prefixes.reserve(Syllables().size() * 3);
+        for (const auto& syllable : Syllables()) {
+            for (std::size_t length = 1; length < syllable.size(); ++length) {
+                prefixes.insert(syllable.substr(0, length));
+            }
+        }
+        return prefixes;
+    }();
+    return kPrefixes;
+}
+
 // 最长音节 6；自左向右贪心切分。
 inline std::vector<std::string> SegmentPinyin(const std::string& pinyin) {
     std::vector<std::string> parts;

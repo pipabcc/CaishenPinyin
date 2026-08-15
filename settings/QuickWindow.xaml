@@ -1,0 +1,152 @@
+<Window x:Class="ShuruSettings.QuickWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="记录窗口" Width="340" Height="540"
+        WindowStartupLocation="Manual" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" Topmost="True" ShowInTaskbar="False"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        Loaded="Window_Loaded" Deactivated="Window_Deactivated">
+
+  <Window.Resources>
+    <!-- 浅色质感颜色与笔刷，与设置页面右侧完全一致 -->
+    <SolidColorBrush x:Key="QuickBgBrush" Color="#F7F9FC"/>
+    <SolidColorBrush x:Key="CardBgBrush" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#E5E9F0"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#1E293B"/>
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#64748B"/>
+    <SolidColorBrush x:Key="AccentBrush" Color="#2F6BFF"/>
+    <SolidColorBrush x:Key="HoverBgBrush" Color="#EDF2F9"/>
+    <SolidColorBrush x:Key="DeleteRedBrush" Color="#EF4444"/>
+
+    <!-- 列表项样式：鼠标悬停显示垃圾桶按钮 -->
+    <Style x:Key="QuickItemContainerStyle" TargetType="ListBoxItem">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Margin" Value="0,1,0,1"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="ItemBorder" CornerRadius="6" Background="Transparent"
+                    Padding="10,8" Margin="0,1">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource HoverBgBrush}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+
+  <Grid Margin="12">
+    <!-- 主卡片容器：浅色圆角阴影 -->
+    <Border CornerRadius="10" Background="{StaticResource QuickBgBrush}"
+            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+      <Border.Effect>
+        <DropShadowEffect Color="#0F172A" BlurRadius="20" Opacity="0.18" ShadowDepth="4" Direction="270"/>
+      </Border.Effect>
+
+      <Grid>
+        <Grid.RowDefinitions>
+          <!-- 标题栏 -->
+          <RowDefinition Height="40"/>
+          <!-- 搜索栏 -->
+          <RowDefinition Height="44"/>
+          <!-- 列表内容区 -->
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 标题栏 (可拖动) -->
+        <Grid Grid.Row="0" Margin="14,6,8,0" MouseLeftButtonDown="TitleBar_MouseDown">
+          <TextBlock x:Name="TitleBlock" Text="复制记录"
+                     Foreground="{StaticResource TextPrimaryBrush}"
+                     FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+            <!-- 最小化按钮 -->
+            <Button Width="26" Height="26" Style="{StaticResource ModernTextButtonStyle}"
+                    Foreground="{StaticResource TextMutedBrush}" Content="一" FontSize="11"
+                    Click="Minimize_Click" ToolTip="最小化"/>
+            <!-- 关闭按钮 -->
+            <Button Width="26" Height="26" Style="{StaticResource ModernTextButtonStyle}"
+                    Foreground="{StaticResource TextMutedBrush}" Content="✕" FontSize="12"
+                    Click="Close_Click" ToolTip="关闭"/>
+          </StackPanel>
+        </Grid>
+
+        <!-- 搜索输入框 -->
+        <Grid Grid.Row="1" Margin="14,4,14,6">
+          <Border CornerRadius="6" Background="{StaticResource CardBgBrush}"
+                  BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
+            <Grid>
+              <TextBox x:Name="SearchBox" Background="Transparent" BorderThickness="0"
+                       Foreground="{StaticResource TextPrimaryBrush}" FontSize="13"
+                       Padding="10,6" VerticalAlignment="Center"
+                       TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown"/>
+              <TextBlock x:Name="SearchPlaceholder" Text="搜索记录内容..."
+                         Foreground="{StaticResource TextMutedBrush}" FontSize="13"
+                         Margin="12,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
+            </Grid>
+          </Border>
+        </Grid>
+
+        <!-- 记录列表 -->
+        <Grid Grid.Row="2" Margin="6,2,6,10">
+          <ListBox x:Name="RecordListBox" Background="Transparent" BorderThickness="0"
+                   ItemContainerStyle="{StaticResource QuickItemContainerStyle}"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                   ScrollViewer.VerticalScrollBarVisibility="Auto"
+                   PreviewKeyDown="RecordListBox_PreviewKeyDown">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid x:Name="ItemGrid" Background="Transparent"
+                      MouseLeftButtonUp="Item_Click" Cursor="Hand">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+
+                  <!-- 圆点图标 • -->
+                  <TextBlock Grid.Column="0" Text="•" Foreground="{StaticResource TextPrimaryBrush}"
+                             FontSize="16" FontWeight="Bold" Margin="0,0,8,0" VerticalAlignment="Center"/>
+
+                  <!-- 文本标题 -->
+                  <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}"
+                             Foreground="{StaticResource TextPrimaryBrush}"
+                             FontSize="13" TextTrimming="CharacterEllipsis"
+                             VerticalAlignment="Center" ToolTip="{Binding Content}"/>
+
+                  <!-- 垃圾桶删除按钮（鼠标悬停时显现） -->
+                  <Button x:Name="DeleteBtn" Grid.Column="2" Width="24" Height="24"
+                          Background="Transparent" BorderThickness="0"
+                          Foreground="{StaticResource TextMutedBrush}"
+                          Content="🗑" FontSize="13" Margin="4,0,0,0"
+                          VerticalAlignment="Center" Cursor="Hand"
+                          Visibility="Collapsed"
+                          Click="DeleteItem_Click" ToolTip="删除记录"/>
+                </Grid>
+                <DataTemplate.Triggers>
+                  <Trigger Property="IsMouseOver" Value="True">
+                    <Setter TargetName="DeleteBtn" Property="Visibility" Value="Visible"/>
+                  </Trigger>
+                </DataTemplate.Triggers>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+
+          <!-- 空记录提示 -->
+          <TextBlock x:Name="EmptyHint" Text="暂无记录"
+                     Foreground="{StaticResource TextMutedBrush}" FontSize="13"
+                     HorizontalAlignment="Center" VerticalAlignment="Center"
+                     Visibility="Collapsed"/>
+        </Grid>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

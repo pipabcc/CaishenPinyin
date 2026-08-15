@@ -438,30 +438,24 @@ HICON StatusWindow::CreateTextHIcon(const std::wstring& text, bool english_mode)
     return icon;
 }
 
-bool StatusWindow::InstallTrayIcon(const std::wstring& tray_text, bool english_mode) {
-    if (!hwnd_ || tray_installed_) return false;
-    if (!TryAcquireTrayOwnership()) return false;
-    HICON icon = CreateTextHIcon(tray_text.empty() ? L"财" : tray_text, english_mode);
-
-    NOTIFYICONDATAW nid {};
-    nid.cbSize           = sizeof(nid);
-    nid.hWnd             = hwnd_;
-    nid.uID              = kTrayIconId;
-    nid.uFlags           = NIF_ICON | NIF_TIP | NIF_MESSAGE | NIF_GUID;
-    nid.uCallbackMessage = kTrayIconCallbackMsg;
-    nid.hIcon            = icon ? icon : LoadIconW(nullptr, IDI_APPLICATION);
-    nid.guidItem         = kTrayIconGuid;
-    wcsncpy_s(nid.szTip, L"财神输入法", _TRUNCATE);
-
-    Shell_NotifyIconW(NIM_DELETE, &nid);
-    bool ok = Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
-#if defined(SHURU_TRAY_OWNER_MUTEX_TEST)
-    ok = true;
-#endif
-    if (icon) DestroyIcon(icon);
-    tray_installed_ = ok;
-    if (!ok) ReleaseTrayOwnership();
-    return ok;
+bool StatusWindow::InstallTrayIcon(const std::wstring& /*tray_text*/, bool /*english_mode*/) {
+    // 依用户需求：托盘区不再显示打开设置页面的通知图标。
+    // 确保清理此前可能已存在的系统托盘通知图标，并不再添加新图标。
+    if (hwnd_) {
+        NOTIFYICONDATAW nid {};
+        nid.cbSize   = sizeof(nid);
+        nid.hWnd     = hwnd_;
+        nid.uID      = kTrayIconId;
+        nid.uFlags   = NIF_GUID;
+        nid.guidItem = kTrayIconGuid;
+        if (!Shell_NotifyIconW(NIM_DELETE, &nid)) {
+            nid.uFlags = 0;
+            Shell_NotifyIconW(NIM_DELETE, &nid);
+        }
+    }
+    tray_installed_ = false;
+    ReleaseTrayOwnership();
+    return true;
 }
 
 void StatusWindow::UninstallTrayIcon() {

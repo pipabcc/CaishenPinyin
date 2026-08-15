@@ -68,6 +68,9 @@ int main() {
     CHECK(shift_release.eaten && shift_release.action == ShiftTapAction::CommitRawComposition);
     CHECK(!shift_tap.HasPendingKey());
     CHECK(!shift_tap.Begin(false, false, false));
+    const ShiftTapRelease idle_test_key_up = shift_tap.TestKeyUp(false);
+    CHECK(idle_test_key_up.eaten &&
+          idle_test_key_up.action == ShiftTapAction::None);
     shift_release = shift_tap.Release(false, false);
     CHECK(!shift_release.eaten && shift_release.action == ShiftTapAction::ToggleEnglishMode);
     CHECK(shift_tap.Begin(true, false, false));
@@ -89,10 +92,66 @@ int main() {
     CHECK(key_up.eaten && key_up.action == ShiftTapAction::CommitRawComposition);
     CHECK(!shift_callbacks.HasPendingKey());
 
+    // 严格 TSF 宿主：无组合时 TestKeyDown 放行 Shift，TestKeyUp 必须请求
+    // 真实回调；真实 KeyUp 切换模式但仍放行给宿主。
+    ShiftTapState strict_host_shift;
+    CHECK(!strict_host_shift.Begin(false, false, false));
+    const ShiftTapRelease strict_test_key_up =
+        strict_host_shift.TestKeyUp(false);
+    CHECK(strict_test_key_up.eaten);
+    const ShiftTapRelease strict_key_up =
+        strict_host_shift.KeyUp(false, false);
+    CHECK(strict_key_up.action == ShiftTapAction::ToggleEnglishMode &&
+          !strict_key_up.eaten && !strict_host_shift.HasPendingKey());
+
+    ShiftTapState shifted_shortcut;
+    CHECK(!shifted_shortcut.Begin(false, false, false));
+    shifted_shortcut.CancelAction();
+    CHECK(!shifted_shortcut.TestKeyUp(false).eaten &&
+          shifted_shortcut.KeyUp(false, false).action == ShiftTapAction::None);
+
+    ShortcutModifierDecisionCache shortcut_cache;
+    bool shortcut_decision = false;
+    shortcut_cache.Store('Z', 0x1234, true, 100);
+    CHECK(shortcut_cache.Consume(
+        'Z', 0x1234, 150, &shortcut_decision));
+    CHECK(shortcut_decision && !shortcut_cache.valid);
+    CHECK(!shortcut_cache.Consume(
+        'Z', 0x1234, 151, &shortcut_decision));
+    shortcut_cache.Store('A', 1, true, 200);
+    CHECK(!shortcut_cache.Consume('B', 1, 201, &shortcut_decision));
+    CHECK(!shortcut_cache.Consume('A', 1, 202, &shortcut_decision));
+    shortcut_cache.Store('A', 1, true, 1000);
+    CHECK(!shortcut_cache.Consume('A', 1, 2001, &shortcut_decision));
+    shortcut_cache.Store('A', 1, true, 2100);
+    shortcut_cache.Clear();
+    CHECK(!shortcut_cache.Consume('A', 1, 2101, &shortcut_decision));
+    shortcut_cache.Store('A', 1, false, 0xFFFFFFF0u);
+    CHECK(shortcut_cache.Consume('A', 1, 5, &shortcut_decision));
+    CHECK(!shortcut_decision);
+
+    CHECK(IsVerticalUtilityMode("v"));
+    CHECK(IsVerticalUtilityMode("v123"));
+    CHECK(IsVerticalUtilityMode("vv"));
+    CHECK(!IsVerticalUtilityMode("vvv"));
+    CHECK(!IsVerticalUtilityMode("vvv1+2"));
+    CHECK(IsVerticalUtilityMode("Vabc"));
+    CHECK(!IsVerticalUtilityMode(""));
+    CHECK(!IsVerticalUtilityMode("lv"));
+    char filter_digit = 0;
+    CHECK(TryGetVerticalUtilityFilterDigit('0', false, &filter_digit));
+    CHECK(filter_digit == '0');
+    CHECK(TryGetVerticalUtilityFilterDigit(
+        VK_NUMPAD9, true, &filter_digit));
+    CHECK(filter_digit == '9');
+    CHECK(!TryGetVerticalUtilityFilterDigit(
+        VK_NUMPAD9, false, &filter_digit));
+    CHECK(!TryGetVerticalUtilityFilterDigit('A', true, &filter_digit));
+
     InputScope sensitive[] = {IS_DEFAULT, IS_PASSWORD};
-    InputScope normal[] = {IS_EMAIL_SMTPEMAILADDRESS};
+    InputScope normal[] = {IS_EMAIL_SMTPEMAILADDRESS, IS_SEARCH, IS_URL};
     CHECK(ClassifyInputScopes(sensitive, 2) == InputScopePrivacy::Sensitive);
-    CHECK(ClassifyInputScopes(normal, 1) == InputScopePrivacy::Normal);
+    CHECK(ClassifyInputScopes(normal, 3) == InputScopePrivacy::Normal);
     CHECK(ClassifyInputScopes(nullptr, 0) == InputScopePrivacy::Unknown);
 
     CandidatePageState candidates;
@@ -143,6 +202,17 @@ int main() {
     const auto predicted_plan = PlanCandidateCommit("duan", predicted);
     CHECK(predicted_plan.learned_input == "duan");
     CHECK(predicted_plan.learned_pinyin == "duanjian");
+
+    Candidate clipboard_candidate;
+    clipboard_candidate.text = L"第一行...";
+    clipboard_candidate.full_content = L"第一行\r\n第二行";
+    clipboard_candidate.covered_input_len = 1;
+    const auto clipboard_plan = PlanCandidateCommit(
+        "v", clipboard_candidate);
+    CHECK(clipboard_plan.has_coverage && clipboard_plan.remaining.empty());
+    CHECK(clipboard_plan.committed == L"第一行\r\n第二行");
+    CHECK(CandidateCommitText(clipboard_candidate) ==
+          clipboard_candidate.full_content);
 
     const auto row = BuildCandidateRowLayout(
         std::vector<int>(9, 48), 0, 13, 4, 8, 16);

@@ -22,8 +22,17 @@ enum class CandidateSource : std::uint8_t {
     MixedSentence = 12,
 };
 
+enum class CandidateAction : std::uint8_t {
+    CommitText = 0,
+    PasteClipboardRecord = 1,
+};
+
 struct Candidate {
     std::wstring text;
+    std::wstring full_content;
+    // 非文本候选通过动作和稳定记录 ID 交给设置辅助进程执行。
+    CandidateAction action = CandidateAction::CommitText;
+    std::wstring action_data;
     std::string pinyin;
     int frequency = 0;
     int match_cost = 0;       // 0=精确；越大表示越弱的模糊恢复

@@ -141,8 +141,94 @@ int wmain(int argc, wchar_t** argv) {
         return 13;
     }
 
+    size_t clicked_index = static_cast<size_t>(-1);
+    window.SetSelectionHandler([&clicked_index](size_t index) {
+        clicked_index = index;
+    });
+    window.SetContent(L"v", candidates, 17, 0, 9);
+    const SIZE vertical_size = window.WindowSize();
+    const int expected_vertical_height =
+        MulDiv(38, static_cast<int>(dpi), 96) +
+        10 * MulDiv(32, static_cast<int>(dpi), 96) +
+        MulDiv(10, static_cast<int>(dpi), 96);
+    if (vertical_size.cy != expected_vertical_height) {
+        std::fwprintf(stderr,
+            L"vertical candidate height=%d expected=%d\n",
+            vertical_size.cy, expected_vertical_height);
+        return 14;
+    }
+    window.Show(POINT {40, 40});
+
+    const int first_row_x = shadow_margin + MulDiv(30, static_cast<int>(dpi), 96);
+    const int first_row_y = shadow_margin + MulDiv(38 + 16, static_cast<int>(dpi), 96);
+    const LPARAM first_row = MAKELPARAM(first_row_x, first_row_y);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, first_row);
+    SendMessageW(handle, WM_LBUTTONUP, 0, first_row);
+    if (clicked_index != 8) {
+        std::fwprintf(stderr,
+            L"vertical selection did not reveal index 17, first=%zu\n",
+            clicked_index);
+        return 15;
+    }
+
+    clicked_index = static_cast<size_t>(-1);
+    window.SetContent(L"vv", candidates, 0, 0, 9);
+    SendMessageW(
+        handle, WM_MOUSEWHEEL,
+        MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), 0);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, first_row);
+    SendMessageW(handle, WM_LBUTTONUP, 0, first_row);
+    if (clicked_index != 3) {
+        std::fwprintf(stderr,
+            L"vertical mouse wheel offset=%zu expected=3\n", clicked_index);
+        return 16;
+    }
+
+    clicked_index = static_cast<size_t>(-1);
+    window.SetSelectedIndex(17);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, first_row);
+    SendMessageW(handle, WM_LBUTTONUP, 0, first_row);
+    if (clicked_index != 8) {
+        std::fwprintf(stderr,
+            L"vertical selected item did not scroll into view, first=%zu\n",
+            clicked_index);
+        return 17;
+    }
+
+    int search_clicks = 0;
+    int clear_clicks = 0;
+    window.SetSearchHandler([&search_clicks]() { ++search_clicks; });
+    window.SetClearSearchHandler([&clear_clicks]() { ++clear_clicks; });
+    window.SetContent(L"vfilter", candidates, 0, 0, 9);
+    window.Show(POINT {40, 40});
+    const SIZE search_size = window.WindowSize();
+    const int search_right = search_size.cx -
+        MulDiv(12, static_cast<int>(dpi), 96);
+    const int search_left = search_right -
+        MulDiv(145, static_cast<int>(dpi), 96);
+    const int search_y = shadow_margin +
+        MulDiv(19, static_cast<int>(dpi), 96);
+    SendMessageW(
+        handle, WM_LBUTTONDOWN, MK_LBUTTON,
+        MAKELPARAM(
+            shadow_margin + search_left +
+                MulDiv(10, static_cast<int>(dpi), 96),
+            search_y));
+    SendMessageW(
+        handle, WM_LBUTTONDOWN, MK_LBUTTON,
+        MAKELPARAM(
+            shadow_margin + search_right -
+                MulDiv(8, static_cast<int>(dpi), 96),
+            search_y));
+    if (search_clicks != 1 || clear_clicks != 1) {
+        std::fwprintf(stderr,
+            L"vertical search actions search=%d clear=%d\n",
+            search_clicks, clear_clicks);
+        return 18;
+    }
+
     window.Hide();
     window.Destroy();
-    std::wprintf(L"candidate layered shadow and stable first frame passed\n");
+    std::wprintf(L"candidate layered shadow, first frame, and v/vv scrolling passed\n");
     return 0;
 }
