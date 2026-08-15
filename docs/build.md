@@ -42,7 +42,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Re
 - `artifacts\release\ShuruSettings.exe`、`ShuruSettings.dll`、`.deps.json`、`.runtimeconfig.json`
 - `artifacts\release\data\lexicon\*` 与 `release-manifest.json`
 
-可选参数：`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required`、`-NoPackage`。正式发布必须使用 `-SigningPolicy Required`；只需本地编译测试时可使用 `-NoPackage`。
+完整墨奇模型单文件超过 GitHub 普通 Git 上限，不直接提交。可用
+`-GrammarPath <rime-moqi-zh.gram>` 指定；脚本校验固定 SHA-256 后暂存到运行词库。
+发布词库同时包含必需的 `system_ngram.bin`，完整模型被删除或加载失败时自动回退。
+其他参数：`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required`、
+`-NoPackage`。正式发布必须使用 `-SigningPolicy Required`；本地编译测试可使用
+`-NoPackage`。
 
 中文 Windows 下，CMakeLists 已显式配置 Ninja 识别 MSVC 的 UTF-8 中文
 `/showIncludes` 前缀，避免增量构建遗漏头文件依赖。
@@ -63,7 +68,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.5-lexeme-r2-20260814 `
+  -Version 2.0.1 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 

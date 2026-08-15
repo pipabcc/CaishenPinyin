@@ -1,0 +1,148 @@
+{
+  "upstream": "https://github.com/gaboolic/rime-frost",
+  "commit": "2aedeea96c1468c1caa17cea01864419a11a4b26",
+  "baseEntries": 677441,
+  "characterEntries": 8247,
+  "sources": [
+    {
+      "path": "cn_dicts/8105.dict.yaml",
+      "sha256": "5A6BB545D07140406208728AEED70706E84279DAEEE132F10B069CD6387A042A",
+      "data_rows": 8529,
+      "accepted": 8247,
+      "invalid": 282,
+      "duplicates": 0
+    },
+    {
+      "path": "cn_dicts/base.dict.yaml",
+      "sha256": "449901A9C01F1BC9B0C5BE1E98B764506DA1E0930FE4F021CACBD4C08157BBEA",
+      "data_rows": 365754,
+      "accepted": 365742,
+      "invalid": 12,
+      "duplicates": 0
+    },
+    {
+      "path": "cn_dicts/ext.dict.yaml",
+      "sha256": "44B78E4FEB8A3B302298844061626AA4E2194901B8ED4EE6ACEC84261B6AA90D",
+      "data_rows": 235580,
+      "accepted": 235545,
+      "invalid": 35,
+      "duplicates": 5
+    },
+    {
+      "path": "cn_dicts/others.dict.yaml",
+      "sha256": "68E4CEE36CDF77A05E2ABD308CB88B84A4E40038DE53D56ECCCC1D357509013A",
+      "data_rows": 568,
+      "accepted": 553,
+      "invalid": 15,
+      "duplicates": 108
+    },
+    {
+      "path": "cn_dicts/corrections.dict.yaml",
+      "sha256": "18161A6286A8751DA2CAE0777EAFBA3B8B4957DBACBE31CE2B3BFAC90478CC2A",
+      "data_rows": 159,
+      "accepted": 153,
+      "invalid": 6,
+      "duplicates": 60
+    },
+    {
+      "path": "cn_dicts_cell/exthot.dict.yaml",
+      "sha256": "D5F8BDA70BB621F82ED85E4E8DBE8386C81EFFB856FF82EBB5C708D18AE993C1",
+      "data_rows": 2080,
+      "accepted": 2079,
+      "invalid": 1,
+      "duplicates": 0
+    },
+    {
+      "path": "cn_dicts_cell/idiom.dict.yaml",
+      "sha256": "341D777D4FD077DDB534E47F8BA27A8DD80D085FD0B847548A97A6666D644113",
+      "data_rows": 48714,
+      "accepted": 48621,
+      "invalid": 93,
+      "duplicates": 8
+    },
+    {
+      "path": "cn_dicts_cell/name.dict.yaml",
+      "sha256": "A02EE62DD39CFDB5D2BDA137C0DF8586EEFCED6E1016A773A2EEA8E28BE1CF5F",
+      "data_rows": 1354,
+      "accepted": 1331,
+      "invalid": 23,
+      "duplicates": 3
+    },
+    {
+      "path": "cn_dicts_cell/name2.dict.yaml",
+      "sha256": "556CF9FA06032A6B41FB0727EED1E93DD739A6FDE6C48A4D90B00A9A9272E5B4",
+      "data_rows": 18360,
+      "accepted": 18357,
+      "invalid": 3,
+      "duplicates": 6
+    },
+    {
+      "path": "cn_dicts_cell/place.dict.yaml",
+      "sha256": "38DD1C72C4119F47A607FC542C528B54EAD9C819CFBD5F7F508F8B4BE1AAE88B",
+      "data_rows": 6396,
+      "accepted": 6372,
+      "invalid": 24,
+      "duplicates": 1124
+    },
+    {
+      "path": "custom_dict.txt",
+      "sha256": "64A1BA0893A36C79BC7906562FD81F2E5CE0F2C8E15DCA7578C56BD44CD079DA",
+      "data_rows": 19,
+      "accepted": 19,
+      "invalid": 0,
+      "duplicates": 17
+    }
+  ],
+  "invalidExamples": [
+    "cn_dicts/8105.dict.yaml:77: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:177: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:195: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:257: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:381: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:382: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:494: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:516: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:542: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:563: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:570: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:607: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:656: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:685: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:710: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:736: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:819: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:838: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:893: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:894: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:896: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:942: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:944: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:978: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1076: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1077: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1133: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1134: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1150: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1151: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1244: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1245: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1246: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1247: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1310: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1351: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1392: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1412: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1454: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1492: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1493: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1500: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1554: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1555: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1607: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1633: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1755: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1756: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1757: unsupported word/pinyin/weight",
+    "cn_dicts/8105.dict.yaml:1758: unsupported word/pinyin/weight"
+  ]
+}

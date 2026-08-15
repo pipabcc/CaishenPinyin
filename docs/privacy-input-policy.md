@@ -7,7 +7,7 @@
 - 用户词目录和文件使用受保护 DACL，仅当前用户完全控制。ACL 加固失败时禁用学习写入，但输入和系统词查询继续工作。
 - 日志不写原始输入/候选。Info/Debug 还要求同时启用诊断和内容日志。
 
-`HKCU\Software\FacaiPinyin` DWORD 配置：
+`%LOCALAPPDATA%\CaishenPinyin\settings.ini` 配置：
 
 | 名称 | 默认 | 说明 |
 |---|---:|---|

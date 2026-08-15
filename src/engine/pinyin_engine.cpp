@@ -100,29 +100,45 @@ bool IsSyllableAligned(const Candidate& candidate) {
 }
 
 int SourcePriority(
-    const Candidate& candidate, bool prefer_single_edit_correction = false) {
+    const Candidate& candidate, bool prefer_correction = false) {
     switch (candidate.source) {
     case CandidateSource::Dynamic: return 0;
     case CandidateSource::Exact: return 1;
-    case CandidateSource::WordGraph: return 2;
+    case CandidateSource::WordGraph: return prefer_correction ? 3 : 2;
     case CandidateSource::MixedSentence:
-        return prefer_single_edit_correction ? 6 : 3;
+        return prefer_correction ? 6 : 3;
     // 键前缀/补全预测优先于纠错：zhengc 下「正常」（键前缀）不应被
     // 纠错变体「政策」无条件压制，纠错是编辑距离兜底手段。
     case CandidateSource::Prefix: return 4;
-    // 单次编辑的纠错可信度高于碎片化混拼；多次编辑仍作为兜底。
+    // 有精确词典证据的低编辑次数纠错高于临时词图；其余纠错仍作为兜底。
     case CandidateSource::Correction:
-        return prefer_single_edit_correction && candidate.correction_edit_cost > 1
-            ? 7 : 5;
-    case CandidateSource::Jianpin: return prefer_single_edit_correction ? 8 : 6;
-    case CandidateSource::Mixed: return prefer_single_edit_correction ? 9 : 7;
-    case CandidateSource::Fuzzy: return prefer_single_edit_correction ? 10 : 8;
-    case CandidateSource::English: return prefer_single_edit_correction ? 11 : 9;
-    case CandidateSource::LiteralMixed: return prefer_single_edit_correction ? 12 : 10;
+        if (prefer_correction) return 2;
+        return prefer_correction ? 7 : 5;
+    case CandidateSource::Jianpin: return prefer_correction ? 8 : 6;
+    case CandidateSource::Mixed: return prefer_correction ? 9 : 7;
+    case CandidateSource::Fuzzy: return prefer_correction ? 10 : 8;
+    case CandidateSource::English: return prefer_correction ? 11 : 9;
+    case CandidateSource::LiteralMixed: return prefer_correction ? 12 : 10;
     case CandidateSource::CustomPhrase: return 0;
-    case CandidateSource::Raw: return prefer_single_edit_correction ? 13 : 11;
+    case CandidateSource::Raw: return prefer_correction ? 13 : 11;
     }
     return 12;
+}
+
+double CorrectionQuality(const Candidate& candidate) {
+    constexpr double kEditPenalty = 60.0;
+    constexpr double kKeyboardPenalty = 10.0;
+    constexpr double kLanguageEvidenceWeight = 50.0;
+    // 同样的编辑距离下，完整词条比把整段输入压缩成一个高频单字具有更强
+    // 证据。该加成只在纠错来源内部比较，不影响正确拼写和普通单字排序。
+    const double multi_character_evidence = candidate.text.size() >= 2
+        ? 140.0
+        : 0.0;
+    return candidate.ranking_score + multi_character_evidence +
+        candidate.language_score * kLanguageEvidenceWeight -
+        static_cast<double>(candidate.correction_edit_cost) * kEditPenalty -
+        static_cast<double>(candidate.correction_ranking_cost) *
+            kKeyboardPenalty;
 }
 
 }  // namespace
@@ -291,13 +307,14 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     const bool base_ok = loaded_dictionary.LoadFromFile(base, false);
     // 完整单字库（含多音字）
     const std::wstring chars = lexicon_dir + L"\\char_dict.txt";
+    bool char_ok = false;
     if (FileExists(chars)) {
-        const bool char_ok = loaded_dictionary.LoadFromFile(chars, false);
+        char_ok = loaded_dictionary.LoadFromFile(chars, false);
         SHURU_LOG_INFO("char_dict load %s", char_ok ? "ok" : "fail");
     } else {
         SHURU_LOG_WARN("char_dict.txt missing, fallback derive-only");
     }
-    if (base_ok) {
+    if (base_ok && !char_ok) {
         loaded_dictionary.DeriveSingleCharacters();
     }
     loaded_dictionary.EndBulkLoad();
@@ -309,17 +326,42 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     } else {
         SHURU_LOG_WARN("en_dict.txt missing");
     }
-    const std::wstring language_model_path = lexicon_dir + L"\\system_ngram.bin";
-    if (FileExists(language_model_path)) {
-        const bool model_ok = loaded_lexicon->language_model.LoadFromFile(
-            language_model_path);
+    const std::wstring grammar_path = lexicon_dir + L"\\rime-moqi-zh.gram";
+    const std::wstring compact_grammar_path =
+        lexicon_dir + L"\\zh-moqi.gram";
+    const std::wstring legacy_language_model_path =
+        lexicon_dir + L"\\system_ngram.bin";
+    bool language_model_ok = false;
+    if (FileExists(grammar_path)) {
+        language_model_ok = loaded_lexicon->language_model.LoadFromFile(
+            grammar_path);
         SHURU_LOG_INFO(
-            "system language model load %s bigrams=%zu trigrams=%zu",
-            model_ok ? "ok" : "fail",
+            "Rime grammar load %s units=%zu mapped_bytes=%zu",
+            language_model_ok ? "ok" : "fail",
+            loaded_lexicon->language_model.grammar_unit_count(),
+            loaded_lexicon->language_model.mapped_bytes());
+    }
+    if (!language_model_ok && FileExists(legacy_language_model_path)) {
+        language_model_ok = loaded_lexicon->language_model.LoadFromFile(
+            legacy_language_model_path);
+        SHURU_LOG_INFO(
+            "legacy system language model load %s bigrams=%zu trigrams=%zu",
+            language_model_ok ? "ok" : "fail",
             loaded_lexicon->language_model.bigram_size(),
             loaded_lexicon->language_model.trigram_size());
-    } else {
-        SHURU_LOG_WARN("system_ngram.bin missing, mixed sentence ranking degraded");
+    }
+    if (!language_model_ok && FileExists(compact_grammar_path)) {
+        language_model_ok = loaded_lexicon->language_model.LoadFromFile(
+            compact_grammar_path);
+        SHURU_LOG_INFO(
+            "compact Rime grammar compatibility load %s units=%zu mapped_bytes=%zu",
+            language_model_ok ? "ok" : "fail",
+            loaded_lexicon->language_model.grammar_unit_count(),
+            loaded_lexicon->language_model.mapped_bytes());
+    }
+    if (!language_model_ok) {
+        SHURU_LOG_WARN(
+            "system language model unavailable, sentence ranking degraded");
     }
     const std::wstring lexeme_prior_path =
         lexicon_dir + L"\\system_lexeme_prior.bin";
@@ -637,19 +679,70 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     const std::string compact = pinyin_data::RemoveSyllableSeparators(query);
     const auto lattice = pinyin_data::BuildSyllableLattice(query);
     const bool single_complete_syllable = schema == InputSchema::Quanpin &&
+        query.find('\'') == std::string::npos &&
         pinyin_data::Syllables().count(compact) != 0;
-
+    const bool has_complete_syllable_path = std::any_of(
+        lattice.begin(), lattice.end(), [&](const auto& path) {
+            return path.covered == query.size() && path.complete &&
+                !path.edges.empty();
+        });
+    const bool has_partial_tail = !has_complete_syllable_path && std::any_of(
+        lattice.begin(), lattice.end(), [&](const auto& path) {
+            return path.covered == query.size() && !path.complete &&
+                !path.edges.empty() && path.edges.back().partial;
+        });
     std::vector<Candidate> pool;
-    bool prefer_single_edit_correction = false;
+    std::unordered_map<std::wstring, double> language_score_cache;
+    language_score_cache.reserve(512);
+    auto append_language_score = [&](const std::wstring& prefix,
+                                     const std::wstring& next,
+                                     bool is_rear = false) {
+        std::wstring key;
+        key.reserve(prefix.size() + next.size() + 2);
+        key.append(prefix);
+        key.push_back(L'\0');
+        key.append(next);
+        key.push_back(is_rear ? L'\1' : L'\2');
+        const auto cached = language_score_cache.find(key);
+        if (cached != language_score_cache.end()) return cached->second;
+        const double value = lexicon->language_model.AppendScore(
+            prefix, next, is_rear);
+        if (language_score_cache.size() < 4096) {
+            language_score_cache.emplace(std::move(key), value);
+        }
+        return value;
+    };
+    auto sequence_language_score = [&](const auto& segments,
+                                       const auto& select_word,
+                                       bool is_rear) {
+        double total = 0.0;
+        std::wstring prefix = context;
+        for (size_t index = 0; index < segments.size(); ++index) {
+            const std::wstring& word = select_word(segments[index]);
+            total += append_language_score(
+                prefix, word, is_rear && index + 1 == segments.size());
+            prefix += word;
+        }
+        return total;
+    };
+    bool prefer_correction = false;
     auto score = [&](Candidate& c) {
         apply_lexeme_prior(c);
         const double coverage = query.empty() ? 0.0 : double(c.covered_input_len) / double(query.size());
+        if (!c.language_score_ready) {
+            c.language_score = append_language_score(
+                context, c.text, c.covered_input_len >= query.size());
+            c.language_score_ready = true;
+        }
+        const double frequency_score = c.path_log_frequency_ready
+            ? c.path_log_frequency
+            : std::log1p(ranking_frequency(c));
         // 上文搭配加成：刚上屏「发财」后，baofu 的「暴富」应压过更高频的「报复」。
         const double context_bonus = context.empty()
             ? 0.0
             : double((std::min)(3, bigram_count(context, c.text))) * 90.0;
         c.ranking_score = coverage * 10000.0 - double(c.segment_count > 0 ? c.segment_count - 1 : 0) * 55.0
-            + std::log1p(ranking_frequency(c)) * 28.0
+            + frequency_score * 28.0
             - double(c.match_cost) * 0.20 + double((std::min)(90, c.learning_score)) * 2.0
             + (c.from_user && c.learning_score > 0 ? 400.0 : 0.0)
             + context_bonus + c.language_score * 1.5;
@@ -661,13 +754,20 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         const bool full_a = a.covered_input_len >= query.size();
         const bool full_b = b.covered_input_len >= query.size();
         if (full_a != full_b) return full_a;
-        const int source_a = SourcePriority(a, prefer_single_edit_correction);
-        const int source_b = SourcePriority(b, prefer_single_edit_correction);
+        const int source_a = SourcePriority(a, prefer_correction);
+        const int source_b = SourcePriority(b, prefer_correction);
         if (source_a != source_b) return source_a < source_b;
         if (a.source == CandidateSource::Correction &&
-            b.source == CandidateSource::Correction &&
-            a.segment_count != b.segment_count) {
-            return a.segment_count < b.segment_count;
+            b.source == CandidateSource::Correction) {
+            // 编辑次数是罚分而非硬优先级。长句中更少编辑可能形成合法却
+            // 无意义的词串，词频与 Grammar 综合得分应能将自然句子排在前面。
+            const double quality_a = CorrectionQuality(a);
+            const double quality_b = CorrectionQuality(b);
+            if (quality_a != quality_b) return quality_a > quality_b;
+            if (a.correction_edit_cost != b.correction_edit_cost)
+                return a.correction_edit_cost < b.correction_edit_cost;
+            if (a.correction_ranking_cost != b.correction_ranking_cost)
+                return a.correction_ranking_cost < b.correction_ranking_cost;
         }
         if (a.ranking_score != b.ranking_score) return a.ranking_score > b.ranking_score;
         if (a.covered_input_len != b.covered_input_len) return a.covered_input_len > b.covered_input_len;
@@ -689,6 +789,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     };
     std::string correction_display_segmentation;
     int active_correction_edit_cost = 0;
+    int active_correction_ranking_cost = 0;
     auto add = [&](std::vector<Candidate> items, size_t covered, int cost, size_t segments = 1,
                    bool enforce_spelling_boundaries = true,
                    CandidateSource source = CandidateSource::Exact) {
@@ -703,6 +804,10 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             if (source == CandidateSource::Correction &&
                 c.correction_edit_cost == 0) {
                 c.correction_edit_cost = active_correction_edit_cost;
+            }
+            if (source == CandidateSource::Correction &&
+                c.correction_ranking_cost == 0) {
+                c.correction_ranking_cost = active_correction_ranking_cost;
             }
             if (source == CandidateSource::Correction &&
                 c.input_segmentation.empty() && !correction_display_segmentation.empty()) {
@@ -761,15 +866,28 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         const double clamped = (std::max)(0.0, (std::min)(20.0, joint));
         return static_cast<int>(std::llround(std::expm1(clamped)));
     };
-    struct Path { std::wstring text; std::wstring last_word; double log_freq=0.0; int learning=0; size_t segments=0; bool from_user=false; };
+    struct Path {
+        std::wstring text;
+        std::wstring last_word;
+        std::vector<std::wstring> words;
+        double log_freq = 0.0;
+        int learning = 0;
+        size_t segments = 0;
+        bool from_user = false;
+    };
     auto add_word_graph = [&](const std::string& graph_query,
                               CandidateSource source,
                               int full_cost,
-                              bool enforce_boundaries) {
+                              bool enforce_boundaries,
+                              size_t beam_width_override = 0) {
+        const size_t path_beam_width = beam_width_override != 0
+            ? beam_width_override
+            : (source == CandidateSource::Correction ? size_t {32}
+                                                       : size_t {128});
         const auto graph_lattice = pinyin_data::BuildSyllableLattice(graph_query);
         std::vector<std::vector<Path>> paths(graph_query.size() + 1);
         // 空路径以会话上文为「前词」，使 bigram 对句首词也生效。
-        paths[0].push_back({std::wstring(), context, 0.0, 0, 0, false});
+        paths[0].push_back({std::wstring(), context});
         std::vector<size_t> legal_ends;
         std::vector<bool> is_legal_end(graph_query.size() + 1, false);
         for (const auto& lattice_path : graph_lattice) {
@@ -813,7 +931,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                         return left_frequency > right_frequency;
                     return left.text < right.text;
                 });
-                if (edges.size() > 4) edges.resize(4);
+                if (edges.size() > 8) edges.resize(8);
                 for (const auto& prefix : paths[begin]) {
                     for (const auto& edge : edges) {
                         // 用户搭配折算进对数频率：一次计数约等于频率 ×12，
@@ -822,24 +940,29 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                         const double bigram_boost = pair_count > 0
                             ? 2.5 * double((std::min)(3, pair_count))
                             : 0.0;
-                        paths[endpos].push_back({
-                            prefix.text + edge.text,
-                            edge.text,
-                            prefix.log_freq + std::log1p(ranking_frequency(edge)) + bigram_boost,
-                            prefix.learning + edge.learning_score,
-                            prefix.segments + 1,
-                            prefix.from_user || edge.from_user,
-                        });
+                        Path next = prefix;
+                        next.text += edge.text;
+                        next.last_word = edge.text;
+                        next.words.push_back(edge.text);
+                        next.log_freq +=
+                            std::log1p(ranking_frequency(edge)) + bigram_boost;
+                        next.learning += edge.learning_score;
+                        ++next.segments;
+                        next.from_user = next.from_user || edge.from_user;
+                        paths[endpos].push_back(std::move(next));
                     }
                 }
                 auto& bucket = paths[endpos];
                 std::sort(bucket.begin(), bucket.end(), [](const Path& left, const Path& right) {
                     if (left.segments != right.segments) return left.segments < right.segments;
                     if (left.learning != right.learning) return left.learning > right.learning;
-                    if (left.log_freq != right.log_freq) return left.log_freq > right.log_freq;
+                    if (left.log_freq != right.log_freq)
+                        return left.log_freq > right.log_freq;
                     return left.text < right.text;
                 });
-                if (bucket.size() > 128) bucket.resize(128);
+                if (bucket.size() > path_beam_width) {
+                    bucket.resize(path_beam_width);
+                }
             }
         }
         size_t covered = graph_query.size();
@@ -914,6 +1037,20 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                         candidate.frequency = joint_frequency(
                             path.log_freq + std::log1p(double((std::max)(0, tail_word.frequency))),
                             segments);
+                        candidate.path_log_frequency =
+                            path.log_freq +
+                            std::log1p(double((std::max)(0, tail_word.frequency))) -
+                            kSegmentLogTotal * static_cast<double>(segments - 1);
+                        candidate.path_log_frequency_ready = true;
+                        auto words = path.words;
+                        words.push_back(tail_word.text);
+                        candidate.language_score = sequence_language_score(
+                            words,
+                            [](const std::wstring& word) -> const std::wstring& {
+                                return word;
+                            },
+                            true);
+                        candidate.language_score_ready = true;
                         candidate.learning_score = (std::min)(90, path.learning + tail_word.learning);
                         // 组合是引擎生造的预测，不继承「用户选过这个词」的
                         // from_user 加成，否则含高频学习字的任意组合都会置顶。
@@ -925,6 +1062,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 }
             }
         }
+        // 词图组合只是精确词、前缀词和混拼之外的一类召回来源。即使 UI 为
+        // 十页候选请求 90 项，也不应让 184 MB Grammar 对 128 条近似组合逐一
+        // 产生随机缺页；16 条词图组合足以参与最终多来源排序，其余名额仍由
+        // 精确词、前缀词和混拼候选补充。
+        const size_t path_output_limit = source == CandidateSource::Correction
+            ? size_t {1}
+            : (std::min)(path_beam_width, size_t {16});
+        size_t emitted_paths = 0;
         for (const auto& path : paths[covered]) {
             if (path.text.empty()) continue;
             Candidate candidate;
@@ -932,6 +1077,18 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             candidate.pinyin = pinyin_data::RemoveSyllableSeparators(
                 graph_query.substr(0, covered));
             candidate.frequency = joint_frequency(path.log_freq, path.segments);
+            candidate.path_log_frequency = path.segments <= 1
+                ? path.log_freq
+                : path.log_freq - kSegmentLogTotal *
+                    static_cast<double>(path.segments - 1);
+            candidate.path_log_frequency_ready = true;
+            candidate.language_score = sequence_language_score(
+                path.words,
+                [](const std::wstring& word) -> const std::wstring& {
+                    return word;
+                },
+                covered == graph_query.size());
+            candidate.language_score_ready = true;
             candidate.learning_score = (std::min)(90, path.learning);
             // 多段组合不继承 from_user：+400 加成只属于用户真正选过的整词。
             candidate.from_user = path.from_user && path.segments <= 1;
@@ -939,18 +1096,91 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             add({candidate}, source == CandidateSource::Correction ? query.size() : covered,
                 complete ? full_cost : full_cost + 25, path.segments,
                 enforce_boundaries, source);
+            if (++emitted_paths >= path_output_limit) break;
         }
         return covered == graph_query.size() && !paths[covered].empty();
     };
 
-    add_word_graph(query, CandidateSource::WordGraph, 10, true);
+    const bool has_authoritative_exact = std::any_of(
+        pool.begin(), pool.end(), [&](const Candidate& candidate) {
+            return candidate.covered_input_len == query.size() &&
+                candidate.source == CandidateSource::Exact &&
+                candidate.pinyin == compact;
+        });
+    std::vector<PinyinCorrection> precomputed_corrections;
+    bool has_strong_exact_correction_evidence = false;
+    bool has_strong_transposition_evidence = false;
+    bool has_long_transposition_pattern = false;
+    if (schema == InputSchema::Quanpin && !has_authoritative_exact &&
+        query.find('\'') == std::string::npos && compact.size() >= 4) {
+        PinyinCorrectionLimits limits;
+        limits.max_total_cost = compact.size() <= 5 ? 2 : 4;
+        limits.max_states_per_position = 32;
+        // 短输入的双编辑候选需要交给词典证据二次筛选；保留较宽的拼写
+        // 结果集不会扩大最终候选或词图束，只增加有界的哈希精确查询。
+        limits.max_results = compact.size() <= 5 ? 512 : 16;
+        for (auto correction : GeneratePinyinCorrections(compact, limits)) {
+            // 尾部仍是合法音节前缀时，不把“补几个字母”当纠错，否则输入
+            // zhengc 的过程中会被直接改成 zhengce。等长替换仍可恢复
+            // gongzup -> gongzuo 这类明确的末键手滑。
+            if (has_partial_tail && correction.pinyin.size() != compact.size())
+                continue;
+            if (correction.pinyin.size() < compact.size() &&
+                compact.compare(0, correction.pinyin.size(),
+                                correction.pinyin) == 0) {
+                continue;
+            }
+            if (correction.cost <= 2) {
+                const auto user_exact = user_lexicon->dictionary.LookupExact(
+                    correction.pinyin);
+                const auto system_exact = lexicon->dictionary.LookupExact(
+                    correction.pinyin);
+                const bool has_multi_character_exact =
+                    std::any_of(user_exact.begin(), user_exact.end(),
+                        [](const Candidate& candidate) {
+                            return candidate.text.size() >= 2;
+                        }) ||
+                    std::any_of(system_exact.begin(), system_exact.end(),
+                        [](const Candidate& candidate) {
+                            return candidate.text.size() >= 2;
+                        });
+                // 一次远键替换很容易把合法的尾部声母误解成另一个生僻词；
+                // 相邻键/换位，或两次一致的编辑，才足以提前跳过宽束词图。
+                has_strong_exact_correction_evidence =
+                    has_strong_exact_correction_evidence ||
+                    (has_multi_character_exact &&
+                     correction.cost == 1 && correction.ranking_cost <= 2);
+                has_strong_transposition_evidence =
+                    has_strong_transposition_evidence ||
+                    (has_multi_character_exact && correction.cost == 1 &&
+                     correction.ranking_cost == 1);
+            }
+            has_long_transposition_pattern =
+                has_long_transposition_pattern ||
+                (compact.size() >= 8 && correction.cost >= 2 &&
+                 correction.ranking_cost == correction.cost);
+            precomputed_corrections.push_back(std::move(correction));
+        }
+    }
+
+    // 高置信纠错已经命中完整词条时，原始错拼的词图只会制造低质量组合，
+    // 并显著增加每键延迟；组合句纠错没有整词证据，仍保留原始词图参与比较。
+    const bool has_fast_correction_path =
+        has_strong_exact_correction_evidence || has_long_transposition_pattern;
+    const bool skip_original_word_graph = has_fast_correction_path &&
+        (!has_complete_syllable_path || has_strong_transposition_evidence);
+    if (!skip_original_word_graph) {
+        add_word_graph(
+            query, CandidateSource::WordGraph, 10, true,
+            has_strong_exact_correction_evidence ? size_t{32} : size_t{0});
+    }
 
     // 全拼与声母简写可在一句话中任意交错。词典的音节 Trie 只沿当前输入
     // 能匹配的分支前进；这里再以输入位置为节点组合多个词，避免旧
     // LookupMixed 对整张词典扫描且只能命中一个词的限制。
-    bool has_complete_mixed_path = false;
-    int best_complete_mixed_cost = (std::numeric_limits<int>::max)();
     if (schema == InputSchema::Quanpin && !has_literal_candidate &&
+        !has_strong_transposition_evidence &&
+        !has_long_transposition_pattern &&
         query.find('\'') == std::string::npos && compact.size() >= 4 &&
         compact.size() <= 48) {
         struct MixedPath {
@@ -965,14 +1195,18 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             size_t syllables = 0;
             size_t abbreviated = 0;
             size_t omitted_letters = 0;
+            size_t last_omitted_letters = 0;
+            size_t last_abbreviated_syllables = 0;
             double language_score = 0.0;
             bool from_user = false;
+            bool complete = false;
         };
         constexpr size_t kMixedBeamWidth = 64;
         std::vector<std::vector<MixedPath>> mixed_paths(compact.size() + 1);
         mixed_paths[0].push_back({std::wstring(), context});
 
         constexpr double kOmittedLetterCost = 0.50;
+        constexpr double kTrailingOmittedLetterCost = 0.65;
         constexpr double kAbbreviatedWordCost = 1.50;
         auto mixed_path_quality = [&](const MixedPath& path) {
             const double segment_cost = path.words <= 1
@@ -981,6 +1215,9 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             return path.log_frequency - segment_cost +
                 static_cast<double>((std::min)(90, path.learning)) / 14.0 -
                 kOmittedLetterCost * static_cast<double>(path.omitted_letters) -
+                (path.complete && path.last_abbreviated_syllables == 1
+                    ? kTrailingOmittedLetterCost *
+                    static_cast<double>(path.last_omitted_letters) : 0.0) -
                 kAbbreviatedWordCost * static_cast<double>(path.abbreviated) +
                 path.language_score * 0.32;
         };
@@ -1045,9 +1282,6 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     const double learned_pair_boost = pair_count > 0
                         ? 2.5 * double((std::min)(3, pair_count))
                         : 0.0;
-                    const double system_language_boost =
-                        lexicon->language_model.AppendScore(
-                            prefix.text, match.candidate.text);
                     next.text += match.candidate.text;
                     next.last_word = match.candidate.text;
                     next.full_pinyin += match.candidate.pinyin;
@@ -1058,23 +1292,26 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     next.segmented_input += match.segmented_input;
                     next.learn_segments.push_back({
                         match.candidate.pinyin, match.candidate.text});
-                    // 反推单字会继承其所在长词的峰值词频，可能达到千万级；
-                    // 该值适合保证单字可见，不适合直接当作整句语言概率。
-                    // 混拼长句中的单字仍要封顶；否则“下/力”等超高单字先验
-                    // 会压过“学校/美女”这类完整词边，破坏既有长句模型。
+                    // 短词先验会把一个字在所有长词中的上下文频次汇总起来，适合
+                    // 单字候选排序，却会让大量常见字在长句词图中同时触顶。长句
+                    // 的单字边使用 8105 单字表的独立字频，保留“去/其/七”等差异；
+                    // 多字词仍使用融合先验。
                     const double mixed_frequency = match.candidate.text.size() == 1
-                        ? (std::min)(600000.0, ranking_frequency(match.candidate))
+                        ? static_cast<double>((std::max)(0, match.candidate.frequency))
                         : ranking_frequency(match.candidate);
                     next.log_frequency += std::log1p(
                         (std::max)(0.0, mixed_frequency)) +
                         learned_pair_boost;
-                    next.language_score += system_language_boost;
                     next.learning += match.candidate.learning_score;
                     ++next.words;
                     next.syllables += match.syllable_count;
                     next.abbreviated += match.abbreviated_syllables;
                     next.omitted_letters += match.omitted_letters;
+                    next.last_omitted_letters = match.omitted_letters;
+                    next.last_abbreviated_syllables =
+                        match.abbreviated_syllables;
                     next.from_user = next.from_user || match.candidate.from_user;
+                    next.complete = end == compact.size();
                     mixed_paths[end].push_back(std::move(next));
                 }
                 auto& destination = mixed_paths[end];
@@ -1086,11 +1323,19 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
 
         auto& complete_paths = mixed_paths.back();
+        for (auto& path : complete_paths) {
+            path.language_score = sequence_language_score(
+                path.learn_segments,
+                [](const auto& segment) -> const std::wstring& {
+                    return segment.second;
+                },
+                true);
+        }
         std::sort(complete_paths.begin(), complete_paths.end(), mixed_path_better);
         if (complete_paths.size() > kMixedBeamWidth)
             complete_paths.resize(kMixedBeamWidth);
         const size_t mixed_candidate_quota = (std::min)(
-            size_t {32}, (std::max)(size_t {4}, limit / 2));
+            size_t {32}, (std::max)(size_t {12}, limit));
         size_t added_mixed_candidates = 0;
         for (const auto& path : complete_paths) {
             if (path.text.empty() || path.abbreviated == 0) continue;
@@ -1100,74 +1345,148 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             candidate.input_segmentation = path.segmented_input;
             candidate.learn_segments = path.learn_segments;
             candidate.frequency = joint_frequency(path.log_frequency, path.words);
+            constexpr double kFinalTrailingOmittedLetterCost = 1.05;
+            candidate.path_log_frequency = path.words <= 1
+                ? path.log_frequency
+                : path.log_frequency - kSegmentLogTotal *
+                    static_cast<double>(path.words - 1);
+            if (path.last_abbreviated_syllables == 1) {
+                candidate.path_log_frequency -= kFinalTrailingOmittedLetterCost *
+                    static_cast<double>(path.last_omitted_letters);
+            }
+            candidate.path_log_frequency_ready = true;
             candidate.language_score = path.language_score;
+            candidate.language_score_ready = true;
             candidate.learning_score = (std::min)(90, path.learning);
             candidate.from_user = path.from_user && path.words <= 1;
             const int mixed_cost = 25 +
                 static_cast<int>(path.abbreviated) * 4 +
                 static_cast<int>(path.omitted_letters) * 9;
-            best_complete_mixed_cost = (std::min)(best_complete_mixed_cost, mixed_cost);
             add({candidate}, query.size(), mixed_cost, path.words,
                 false, CandidateSource::MixedSentence);
-            has_complete_mixed_path = true;
             if (++added_mixed_candidates >= mixed_candidate_quota) break;
         }
     }
 
-    const bool has_complete_exact_path = std::any_of(pool.begin(), pool.end(), [&](const Candidate& candidate) {
-        return candidate.covered_input_len == query.size() &&
-            (candidate.source == CandidateSource::Exact ||
-             candidate.source == CandidateSource::WordGraph);
-    });
-    constexpr int kWeakMixedSentenceCost = 80;
-    const bool should_try_correction = !has_complete_mixed_path ||
-        best_complete_mixed_cost >= kWeakMixedSentenceCost;
-    if (schema == InputSchema::Quanpin && !has_complete_exact_path &&
-        should_try_correction &&
-        query.find('\'') == std::string::npos && compact.size() >= 5) {
-        PinyinCorrectionLimits correction_limits;
-        if (has_complete_mixed_path) correction_limits.max_total_cost = 1;
-        // 最终只展示至多四个纠错候选。保留两倍候选供词频排序即可，
-        // 避免为默认 24 个拼写变体逐一重复构建完整词图。
-        correction_limits.max_results = 8;
-        for (const auto& correction :
-             GeneratePinyinCorrections(compact, correction_limits)) {
-            // 纯尾部删除的变体等价于「输入还没打完」：zhengt 打字进行中会被
-            // 解释成「多打了 t 的 zheng」，把 zheng 的单字顶成全覆盖候选。
-            // 这类场景交给前缀补全处理，纠错只保留中间位置的编辑。
-            if (correction.pinyin.size() < compact.size() &&
-                compact.compare(0, correction.pinyin.size(), correction.pinyin) == 0) {
-                continue;
+    const bool has_complete_mixed_sentence = std::any_of(
+        pool.begin(), pool.end(), [&](const Candidate& candidate) {
+            return candidate.covered_input_len == query.size() &&
+                candidate.source == CandidateSource::MixedSentence;
+        });
+    if (schema == InputSchema::Quanpin && !has_authoritative_exact &&
+        query.find('\'') == std::string::npos && compact.size() >= 4) {
+        int maximum_correction_cost = compact.size() <= 5 ? 2 : 4;
+        // 完整混拼句是用户有意使用声母简写的强信号。此时仅接受一次手滑
+        // 修正，避免把 x'x'li... 之类合法混拼误改成多个音节都变化的句子。
+        if (has_complete_mixed_sentence && !has_fast_correction_path)
+            maximum_correction_cost = 1;
+
+        struct CorrectionWork {
+            PinyinCorrection spelling;
+            std::vector<Candidate> exact_candidates;
+            double exact_evidence = 0.0;
+            bool needs_word_graph = true;
+        };
+        std::vector<CorrectionWork> correction_work;
+        correction_work.reserve(precomputed_corrections.size());
+        for (const auto& correction : precomputed_corrections) {
+            if (correction.cost > maximum_correction_cost) continue;
+            CorrectionWork work;
+            work.spelling = correction;
+            work.exact_candidates = user_lexicon->dictionary.LookupExact(
+                work.spelling.pinyin);
+            auto system_exact = lexicon->dictionary.LookupExact(work.spelling.pinyin);
+            work.exact_candidates.insert(
+                work.exact_candidates.end(),
+                std::make_move_iterator(system_exact.begin()),
+                std::make_move_iterator(system_exact.end()));
+            work.needs_word_graph = work.exact_candidates.empty();
+            for (auto& candidate : work.exact_candidates) {
+                apply_lexeme_prior(candidate);
+                work.exact_evidence = (std::max)(
+                    work.exact_evidence,
+                    ranking_frequency(candidate) +
+                        (candidate.from_user ? 1'000'000.0 : 0.0));
             }
+            correction_work.push_back(std::move(work));
+        }
+
+        std::sort(correction_work.begin(), correction_work.end(), [](const auto& left,
+                                                                      const auto& right) {
+            if (left.exact_candidates.empty() != right.exact_candidates.empty())
+                return !left.exact_candidates.empty();
+            const size_t left_spelling_quality =
+                left.spelling.syllable_count * 2 +
+                static_cast<size_t>(left.spelling.ranking_cost);
+            const size_t right_spelling_quality =
+                right.spelling.syllable_count * 2 +
+                static_cast<size_t>(right.spelling.ranking_cost);
+            if (left_spelling_quality != right_spelling_quality)
+                return left_spelling_quality < right_spelling_quality;
+            if (left.spelling.cost != right.spelling.cost)
+                return left.spelling.cost < right.spelling.cost;
+            if (left.exact_evidence != right.exact_evidence)
+                return left.exact_evidence > right.exact_evidence;
+            return left.spelling.pinyin < right.spelling.pinyin;
+        });
+
+        double best_literal_score = -(std::numeric_limits<double>::infinity)();
+        for (const auto& candidate : pool) {
+            if (candidate.covered_input_len >= query.size()) {
+                best_literal_score = (std::max)(
+                    best_literal_score, candidate.ranking_score);
+            }
+        }
+
+        for (auto& work : correction_work) {
+            if (work.exact_candidates.empty()) continue;
+            const int correction_cost = 80 + work.spelling.cost * 20;
+            correction_display_segmentation = work.spelling.input_segmentation;
+            active_correction_edit_cost = work.spelling.cost;
+            active_correction_ranking_cost = work.spelling.ranking_cost;
+            for (auto& candidate : work.exact_candidates) {
+                candidate.correction_edit_cost = work.spelling.cost;
+                candidate.correction_ranking_cost = work.spelling.ranking_cost;
+            }
+            add(std::move(work.exact_candidates), query.size(), correction_cost,
+                1, false, CandidateSource::Correction);
+        }
+
+        size_t graph_variant_count = 0;
+        for (const auto& work : correction_work) {
+            if (!work.needs_word_graph) continue;
+            const auto& correction = work.spelling;
             const int correction_cost = 80 + correction.cost * 20;
-            const bool previous_preference = prefer_single_edit_correction;
-            if (has_complete_mixed_path && correction.cost == 1) {
-                prefer_single_edit_correction = true;
-            }
             correction_display_segmentation = correction.input_segmentation;
             active_correction_edit_cost = correction.cost;
-            auto add_correction_exact = [&](std::vector<Candidate> items) {
-                for (auto& candidate : items) {
-                    candidate.correction_edit_cost = correction.cost;
-                }
-                add(std::move(items), query.size(), correction_cost,
-                    correction.syllable_count, false, CandidateSource::Correction);
-            };
-            add_correction_exact(user_lexicon->dictionary.LookupExact(correction.pinyin));
-            add_correction_exact(lexicon->dictionary.LookupExact(correction.pinyin));
+            active_correction_ranking_cost = correction.ranking_cost;
             add_word_graph(correction.pinyin, CandidateSource::Correction,
                            correction_cost, false);
-            if (!previous_preference &&
-                std::none_of(pool.begin(), pool.end(), [](const Candidate& candidate) {
-                    return candidate.source == CandidateSource::Correction &&
-                        candidate.correction_edit_cost == 1;
-                })) {
-                prefer_single_edit_correction = false;
-            }
-            active_correction_edit_cost = 0;
-            correction_display_segmentation.clear();
-            if (pool.size() > limit * 8) break;
+            if (++graph_variant_count >= 1) break;
         }
+        active_correction_edit_cost = 0;
+        active_correction_ranking_cost = 0;
+        correction_display_segmentation.clear();
+
+        double best_correction_score =
+            -(std::numeric_limits<double>::infinity)();
+        for (const auto& candidate : pool) {
+            if (candidate.source == CandidateSource::Correction &&
+                candidate.correction_edit_cost > 0 &&
+                candidate.text.size() >= 2) {
+                best_correction_score = (std::max)(
+                    best_correction_score, CorrectionQuality(candidate));
+            }
+        }
+        constexpr double kCorrectionPromotionMargin = 24.0;
+        // 快速路径已经由精确词条或纯换位模式确认了纠错意图。混拼搜索仍
+        // 保留用于 nihr -> 你好 这类歧义输入，但不能反过来把 shme -> 什么
+        // 这样的高置信纠错挤出首屏；末尾的配额会确保纠错最多占四项。
+        prefer_correction = has_fast_correction_path ||
+            (std::isfinite(best_correction_score) &&
+             (!std::isfinite(best_literal_score) ||
+              best_correction_score >=
+                  best_literal_score + kCorrectionPromotionMargin));
     }
 
     // Fuzzy variants are generated from each retained segmentation, with bounded cost/work.
@@ -1272,16 +1591,17 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 ++preferred_phrases;
             }
         }
-        // 第一页之后继续列出词典词组，再进入生僻单字。否则内部 90 项预算
-        // 会被同音单字耗尽，用户永远翻不到“想法/想象/想要”等前缀词。
+        // 第一页之后先完整列出剩余精确单字。前缀词可达数通常远大于候选
+        // 预算，若先放全部词组，char_dict 中稍靠后的单字会在最终截断前消失。
         for (size_t i = 0; i < pool.size(); ++i) {
-            if (!moved[i] && is_dictionary_phrase(pool[i])) {
+            if (!moved[i] && is_exact_single(pool[i])) {
                 ordered.push_back(std::move(pool[i]));
                 moved[i] = true;
             }
         }
+        // 剩余词典词组随后进入翻页结果；词图等其他来源保持原相对顺序。
         for (size_t i = 0; i < pool.size(); ++i) {
-            if (!moved[i] && is_exact_single(pool[i])) {
+            if (!moved[i] && is_dictionary_phrase(pool[i])) {
                 ordered.push_back(std::move(pool[i]));
                 moved[i] = true;
             }

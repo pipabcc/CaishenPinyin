@@ -22,7 +22,7 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
 
-    std::cout << u8"发财拼音引擎演练。输入拼音后回车，输入 quit 退出。\n";
+    std::cout << u8"财神输入法引擎演练。输入拼音后回车，输入 quit 退出。\n";
     while (true) {
         std::cout << "> " << std::flush;
         std::string line;

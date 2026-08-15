@@ -82,16 +82,27 @@ bool TryMapChinesePunctuation(WPARAM wparam, bool shift, wchar_t* punctuation) {
 }
 
 bool IsPasswordWindow(HWND window) {
-    for (HWND current = window; current != nullptr; current = GetParent(current)) {
-        const LONG_PTR style = GetWindowLongPtrW(current, GWL_STYLE);
-        if ((style & ES_PASSWORD) != 0) {
+    if (window == nullptr) {
+        return false;
+    }
+    wchar_t class_name[64] = {};
+    if (GetClassNameW(window, class_name, ARRAYSIZE(class_name)) > 0) {
+        if (_wcsicmp(class_name, L"PasswordBox") == 0 ||
+            _wcsicmp(class_name, L"CredentialEdit") == 0) {
             return true;
         }
-        wchar_t class_name[64] = {};
-        if (GetClassNameW(current, class_name, ARRAYSIZE(class_name)) > 0 &&
-            (_wcsicmp(class_name, L"PasswordBox") == 0 ||
-             _wcsicmp(class_name, L"CredentialEdit") == 0)) {
-            return true;
+        // 只有标准的 Edit 与 RichEdit 控件，ES_PASSWORD (0x0020) 才是密码框样式。
+        // 绝不能对任意父容器窗口盲目检查 0x0020 位，避免将搜索框、查找框等误判为密码框。
+        if (_wcsicmp(class_name, L"Edit") == 0 ||
+            _wcsicmp(class_name, L"RichEdit") == 0 ||
+            _wcsicmp(class_name, L"RichEdit20W") == 0 ||
+            _wcsicmp(class_name, L"RichEdit20A") == 0 ||
+            _wcsicmp(class_name, L"RICHEDIT50W") == 0 ||
+            _wcsicmp(class_name, L"RICHEDIT60W") == 0) {
+            const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+            if ((style & ES_PASSWORD) != 0) {
+                return true;
+            }
         }
     }
     return false;
@@ -1093,10 +1104,19 @@ void TextService::RefreshCandidates() {
     }
 
     if (!engine_->IsReady()) {
-        // 加载中：只显示已输入的拼音，不提供可上屏假候选，避免空格打出
-        // 提示文案。同时启动就绪轮询——词库在后台线程完成加载后没有任何
-        // 按键也能立即补上候选，用户无需退格触发刷新。
+        // 加载中：提供当前输入拼音作为保底回退候选，避免中间区域完全空白；
+        // 同时启动就绪轮询——词库在后台就绪后立刻自动刷新出完整候选词。
         candidate_display_ = comp;
+        Candidate fallback_cand;
+        fallback_cand.text = comp;
+        fallback_cand.pinyin = composing_pinyin_;
+        fallback_cand.covered_input_len = composing_pinyin_.size();
+        fallback_cand.learnable = false;
+        current_result_.candidates = {fallback_cand};
+        candidate_state_.total = 1;
+        candidate_state_.page_size = 1;
+        candidate_state_.selected = 0;
+        candidate_state_.page = 0;
         SyncCandidateWindowCandidates();
         candidate_window_.StartReadyPolling([this]() {
             if (composing_pinyin_.empty()) return false;

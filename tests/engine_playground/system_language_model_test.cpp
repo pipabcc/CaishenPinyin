@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -52,7 +53,7 @@ bool WriteValidModel(const std::filesystem::path& path) {
 
 }  // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
     namespace fs = std::filesystem;
     const fs::path root = fs::temp_directory_path() /
         (L"CaishenSystemLanguageModel-" +
@@ -88,6 +89,29 @@ int wmain() {
     if (error || model.LoadFromFile(truncated.wstring()) ||
         model.bigram_size() != 1 || model.trigram_size() != 1) {
         return 5;
+    }
+
+    if (argc >= 2) {
+        const fs::path grammar_path(argv[1]);
+        shuru::SystemLanguageModel grammar;
+        if (!grammar.LoadFromFile(grammar_path.wstring()) ||
+            !grammar.is_grammar() || grammar.grammar_unit_count() == 0 ||
+            grammar.mapped_bytes() != fs::file_size(grammar_path, error) || error) {
+            return 6;
+        }
+        const double known = grammar.AppendScore(L"查缺", L"补漏");
+        const double beauty = grammar.AppendScore(L"学校里有一个", L"美女", true);
+        const double yearly = grammar.AppendScore(L"学校里有一个", L"每年", true);
+        const double missing = grammar.AppendScore(L"不存在的上下文", L"不存在的词");
+        std::cout << "grammar units=" << grammar.grammar_unit_count()
+                  << " bytes=" << grammar.mapped_bytes()
+                  << " known=" << known << " beauty=" << beauty
+                  << " yearly=" << yearly << " missing=" << missing << '\n';
+        if (!std::isfinite(known) || !std::isfinite(missing) ||
+            known <= -4.0 || beauty <= yearly || beauty <= -4.0 ||
+            missing != -4.0) {
+            return 7;
+        }
     }
 
     fs::remove_all(root, error);

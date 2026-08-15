@@ -19,6 +19,7 @@ struct PinyinCorrection {
     // 查询和学习仍使用 pinyin，界面展示使用该字段。
     std::string input_segmentation;
     int cost = 0;
+    int ranking_cost = 0;
     std::size_t syllable_count = 0;
 };
 

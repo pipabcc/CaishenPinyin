@@ -179,7 +179,11 @@ if(BUILD_TESTING)
   )
   target_include_directories(system_language_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(system_language_model_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  add_test(NAME system_language_model COMMAND system_language_model_test)
+  add_test(
+    NAME system_language_model
+    COMMAND system_language_model_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon/rime-moqi-zh.gram
+  )
   set_tests_properties(system_language_model PROPERTIES TIMEOUT 30)
 
   add_executable(system_lexeme_prior_test
@@ -208,7 +212,9 @@ if(BUILD_TESTING)
   add_test(NAME p1_engine COMMAND p1_engine_test ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon)
   set_tests_properties(p1_engine PROPERTIES
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata-p1"
-    TIMEOUT 60
+    # 白霜正式词库会在本测试内执行文本装载、缓存生成、缓存校验和引擎装载；
+    # 查询延迟仍由测试内部的 P99 阈值单独约束。
+    TIMEOUT 300
   )
 
   add_executable(shared_engine_lifecycle_test

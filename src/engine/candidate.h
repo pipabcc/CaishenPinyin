@@ -28,6 +28,7 @@ struct Candidate {
     int frequency = 0;
     int match_cost = 0;       // 0=精确；越大表示越弱的模糊恢复
     int correction_edit_cost = 0; // 纠错编辑次数；仅 CandidateSource::Correction 使用
+    int correction_ranking_cost = 0; // 键盘错误类型代价：换位 < 增删 < 远键替换
     int selection_count = 0;  // 用户明确选择次数
     std::int64_t last_used_unix = 0;
     int learning_score = 0;   // 经时间衰减后的有界、可解释加分
@@ -38,6 +39,9 @@ struct Candidate {
     size_t segment_count = 1;
     double ranking_score = 0.0;
     double language_score = 0.0;
+    double path_log_frequency = 0.0;
+    bool language_score_ready = false;
+    bool path_log_frequency_ready = false;
     // 系统短字短词模型给出的无上下文常用度。为 0 表示模型中没有该词元；
     // 排序时它替代系统词典原始频率，避免对同一证据重复加分。
     std::uint32_t lexeme_prior = 0;

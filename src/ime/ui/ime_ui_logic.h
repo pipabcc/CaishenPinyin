@@ -13,6 +13,17 @@
 
 namespace shuru {
 
+inline std::size_t CandidateQueryLimit(
+    std::size_t page_size, bool single_complete_syllable) noexcept {
+    constexpr std::size_t kBufferedPageCount = 10;
+    constexpr std::size_t kSingleSyllableBudget = 256;
+    const std::size_t normalized_page_size = (std::max)(std::size_t{1}, page_size);
+    const std::size_t regular_budget = normalized_page_size * kBufferedPageCount;
+    return single_complete_syllable
+        ? (std::max)(regular_budget, kSingleSyllableBudget)
+        : regular_budget;
+}
+
 
 struct CandidateCommitPlan {
     std::wstring committed;

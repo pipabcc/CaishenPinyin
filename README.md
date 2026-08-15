@@ -1,4 +1,4 @@
-# 发财拼音（Facai Pinyin）
+# 财神输入法（Caishen IME）
 
 Windows 11 本地拼音输入法，包含 TSF 文本服务、拼音引擎、候选窗口、系统词库和独立设置程序。
 
@@ -7,12 +7,12 @@ Windows 11 本地拼音输入法，包含 TSF 文本服务、拼音引擎、候�
 | 模块 | 状态 |
 |---|---|
 | TSF 输入法 DLL 源码 | 已就绪（需 MSVC 编译） |
-| 拼音引擎 / 词库 | 已就绪（约 20 万基础中文词 + 完整单字库） |
+| 拼音引擎 / 词库 | 已就绪（约 67.7 万白霜多字词 + 8,247 条单字读音） |
 | 候选窗 | 已就绪（Win32 无焦点窗） |
 | 设置程序 (WPF) | 常规、全拼/双拼、自定义短语、词库与隐私设置已连接运行时 |
 | C# 引擎演练 | 可运行 |
 | 本机 C++ 工具链 | **已安装到 E:\\shurufa\\tools，可编译** |
-| 发布版本 | **0.4.5**（短字短词先验、最佳优先召回与多字拼音分界） |
+| 发布版本 | **2.0.1**（模型自动回退、单字全量召回与通用纠错增强） |
 
 ## 架构
 
@@ -64,7 +64,11 @@ powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
 ```
 
-默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。可用 `-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage` 显式调整；正式发布应使用 `-SigningPolicy Required`。
+默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。完整墨奇模型可用
+`-GrammarPath <rime-moqi-zh.gram>` 指定；未指定时脚本从 `data/lexicon` 或本机
+`ciku/rime-frost-master白霜拼音` 查找，并严格校验官方发布 SHA-256。其他参数包括
+`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage`；
+正式发布应使用 `-SigningPolicy Required`。
 
 ## 安装与注册
 
@@ -76,11 +80,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.5-lexeme-r2-20260814 `
+  -Version 2.0.1 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
-安装后可从开始菜单打开“发财拼音设置”，也可在候选框内右键直接打开设置。原“中 / 全 / 键 / 设”悬浮状态栏默认永久隐藏，软键盘仍可通过 `F9` 使用。
+安装后可从开始菜单打开“财神输入法设置”，也可在候选框内右键直接打开设置。原“中 / 全 / 键 / 设”悬浮状态栏默认永久隐藏，软键盘仍可通过 `F9` 使用。
 
 卸载：
 
@@ -118,12 +122,12 @@ nihao	你好	9000
 
 ## 设置与生效
 
-设置保存在 `%LOCALAPPDATA%\FacaiPinyin\settings.ini`，采用同目录临时文件 + 原子替换。设置程序可控制全拼/双拼、学习、内容日志（默认关闭）、模糊拼音、全/半角标点、候选数量、字体和输入法列表名称，并可管理系统词库、自动学习词及自定义短语。修改输入法列表名称时会请求管理员权限重新注册；它不会修改 Windows 根据 `zh-CN` 显示的“简体”。自定义短语保存在 `%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`，格式为 `输入码<TAB>短语<TAB>候选位置`。字数统计保存在 `%LOCALAPPDATA%\FacaiPinyin\data\typing_stats.txt`，只记录日期和当日累计计数，不保存输入正文；旧版速度计数桶会在读取时忽略。
+设置保存在 `%LOCALAPPDATA%\CaishenPinyin\settings.ini`，采用同目录临时文件 + 原子替换。设置程序可控制全拼/双拼、学习、内容日志（默认关闭）、模糊拼音、全/半角标点、候选数量、字体和输入法列表名称，并可管理系统词库、自动学习词及自定义短语。修改输入法列表名称时会请求管理员权限重新注册；它不会修改 Windows 根据 `zh-CN` 显示的“简体”。自定义短语保存在 `%LOCALAPPDATA%\CaishenPinyin\data\lexicon\custom_phrases.txt`，格式为 `输入码<TAB>短语<TAB>候选位置`。字数统计保存在 `%LOCALAPPDATA%\CaishenPinyin\data\typing_stats.txt`，只记录日期和当日累计计数，不保存输入正文；旧版速度计数桶会在读取时忽略。
 
-## 下一步（Phase 1）
+## 语言模型说明
 
-1. 安装 MSVC 后完成真机注册与记事本出字
-2. 扩大词库与简拼
-3. 用户词持久化
-4. 组合串显示属性 / 更精确光标跟随
-5. 应用兼容性矩阵
+`rime-moqi-zh.gram` 是本地统计 N-gram 模型，输入时会通过只读内存映射查询，用于
+长句词间搭配排序；它不是神经网络或生成式 AI，也不会联网。运行时按“完整墨奇 →
+`system_ngram.bin` → 旧版小墨奇”的顺序加载，删除完整模型后会自动使用随包安装的
+`system_ngram.bin`。单字和双字的无上下文常用度由 `system_lexeme_prior.bin` 负责，
+与语言模型互补。模型来源和再分发限制见 `THIRD_PARTY_NOTICES.md`。

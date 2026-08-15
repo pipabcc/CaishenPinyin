@@ -1,17 +1,21 @@
 #include "pinyin_correction.h"
 
+#include "pinyin_lattice.h"
 #include "pinyin_syllables.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
+#include <limits>
+#include <string_view>
 #include <unordered_map>
 
 namespace shuru {
 namespace {
 
 struct EditMeasurement {
-    int distance = 2;
-    int ranking_cost = 4;
+    int distance = 3;
+    int ranking_cost = (std::numeric_limits<int>::max)() / 4;
 };
 
 // QWERTY 相邻键：手滑打错几乎都落在物理相邻键上，替换代价按键距分级，
@@ -62,16 +66,16 @@ EditMeasurement MeasureSingleEdit(
             : EditMeasurement{1, 4};
     }
     if (left.size() + 1 == right.size()) {
-        std::size_t input = 0;
-        std::size_t output = 0;
+        std::size_t input_index = 0;
+        std::size_t output_index = 0;
         bool skipped = false;
-        while (input < left.size() && output < right.size()) {
-            if (left[input] == right[output]) {
-                ++input;
-                ++output;
+        while (input_index < left.size() && output_index < right.size()) {
+            if (left[input_index] == right[output_index]) {
+                ++input_index;
+                ++output_index;
             } else if (!skipped) {
                 skipped = true;
-                ++output;
+                ++output_index;
             } else {
                 return {};
             }
@@ -80,9 +84,70 @@ EditMeasurement MeasureSingleEdit(
     }
     if (right.size() + 1 == left.size()) {
         const EditMeasurement inverse = MeasureSingleEdit(right, left);
-        return inverse.distance == 1 ? EditMeasurement{1, 2} : EditMeasurement{};
+        return inverse.distance == 1 ? EditMeasurement{1, 2}
+                                     : EditMeasurement{};
     }
     return {};
+}
+
+bool BetterMeasurement(
+    const EditMeasurement& left, const EditMeasurement& right) {
+    if (left.distance != right.distance) return left.distance < right.distance;
+    return left.ranking_cost < right.ranking_cost;
+}
+
+EditMeasurement AddMeasurement(
+    const EditMeasurement& value, int distance, int ranking_cost) {
+    if (value.distance > 2 || value.distance + distance > 2) return {};
+    return {value.distance + distance, value.ranking_cost + ranking_cost};
+}
+
+// 每个音节允许最多两次局部编辑。短片段长度不超过 7，固定数组的
+// Damerau-Levenshtein 动态规划既覆盖增删改，也覆盖相邻字母换位。
+EditMeasurement MeasureSyllableEdit(
+    const std::string& left,
+    const std::string& right) {
+    constexpr std::size_t kMaximumPieceLength = 7;
+    if (left.size() > kMaximumPieceLength || right.size() > kMaximumPieceLength)
+        return {};
+
+    std::array<std::array<EditMeasurement, kMaximumPieceLength + 1>,
+               kMaximumPieceLength + 1> distance {};
+    distance[0][0] = {0, 0};
+    auto relax = [&](std::size_t row, std::size_t column,
+                     const EditMeasurement& candidate) {
+        if (BetterMeasurement(candidate, distance[row][column]))
+            distance[row][column] = candidate;
+    };
+
+    for (std::size_t row = 0; row <= left.size(); ++row) {
+        for (std::size_t column = 0; column <= right.size(); ++column) {
+            const EditMeasurement current = distance[row][column];
+            if (current.distance > 2) continue;
+            if (row < left.size()) {
+                relax(row + 1, column, AddMeasurement(current, 1, 2));
+            }
+            if (column < right.size()) {
+                relax(row, column + 1, AddMeasurement(current, 1, 2));
+            }
+            if (row < left.size() && column < right.size()) {
+                if (left[row] == right[column]) {
+                    relax(row + 1, column + 1, current);
+                } else {
+                    relax(row + 1, column + 1,
+                          AddMeasurement(current, 1,
+                              AreKeysAdjacent(left[row], right[column]) ? 2 : 4));
+                }
+            }
+            if (row + 1 < left.size() && column + 1 < right.size() &&
+                left[row] == right[column + 1] &&
+                left[row + 1] == right[column]) {
+                relax(row + 2, column + 2,
+                      AddMeasurement(current, 1, 1));
+            }
+        }
+    }
+    return distance[left.size()][right.size()];
 }
 
 struct CorrectionState {
@@ -127,6 +192,96 @@ void PruneStates(std::vector<CorrectionState>* states, std::size_t maximum) {
     if (states->size() > maximum) states->resize(maximum);
 }
 
+void AddWholeInputTranspositions(
+    const std::string& input, std::vector<CorrectionState>* states) {
+    if (states == nullptr || input.size() < 2) return;
+    for (std::size_t index = 0; index + 1 < input.size(); ++index) {
+        if (input[index] == input[index + 1]) continue;
+        std::string corrected = input;
+        std::swap(corrected[index], corrected[index + 1]);
+        const auto paths = pinyin_data::BuildSyllableLattice(corrected, 16);
+        const auto found = std::find_if(paths.begin(), paths.end(), [&](const auto& path) {
+            return path.complete && path.covered == corrected.size() &&
+                !path.edges.empty();
+        });
+        if (found == paths.end()) continue;
+
+        std::string display;
+        for (const auto& edge : found->edges) {
+            if (!display.empty()) display.push_back('\'');
+            display.append(input, edge.begin, edge.end - edge.begin);
+        }
+        states->push_back({std::move(corrected), std::move(display), 1, 1,
+                           found->edges.size()});
+    }
+}
+
+void AddShortDoubleEditCorrections(
+    const std::string& input, std::vector<CorrectionState>* states) {
+    if (states == nullptr || input.empty() || input.size() > 5) return;
+
+    auto find_complete_path = [](const std::string& value,
+                                 pinyin_data::SyllablePath* output) {
+        if (value.empty()) {
+            *output = {};
+            return true;
+        }
+        const auto paths = pinyin_data::BuildSyllableLattice(value, 8);
+        const auto found = std::find_if(
+            paths.begin(), paths.end(), [&](const auto& path) {
+                return path.complete && path.covered == value.size() &&
+                    !path.edges.empty();
+            });
+        if (found == paths.end()) return false;
+        *output = *found;
+        return true;
+    };
+    auto append_segment = [](std::string_view value, std::string* display) {
+        if (!display->empty()) display->push_back('\'');
+        display->append(value.data(), value.size());
+    };
+
+    for (std::size_t begin = 0; begin < input.size(); ++begin) {
+        pinyin_data::SyllablePath prefix_path;
+        if (!find_complete_path(input.substr(0, begin), &prefix_path)) continue;
+        for (std::size_t end = begin + 1; end <= input.size(); ++end) {
+            pinyin_data::SyllablePath suffix_path;
+            if (!find_complete_path(input.substr(end), &suffix_path)) continue;
+            const std::string piece = input.substr(begin, end - begin);
+            for (const auto& syllable : pinyin_data::Syllables()) {
+                if (std::abs(static_cast<int>(piece.size()) -
+                             static_cast<int>(syllable.size())) > 2) {
+                    continue;
+                }
+                const EditMeasurement edit = MeasureSyllableEdit(piece, syllable);
+                if (edit.distance != 2) continue;
+
+                std::string display;
+                for (const auto& edge : prefix_path.edges) {
+                    append_segment(
+                        std::string_view(input).substr(
+                            edge.begin, edge.end - edge.begin),
+                        &display);
+                }
+                append_segment(piece, &display);
+                for (const auto& edge : suffix_path.edges) {
+                    append_segment(
+                        std::string_view(input).substr(
+                            end + edge.begin, edge.end - edge.begin),
+                        &display);
+                }
+                states->push_back({
+                    input.substr(0, begin) + syllable + input.substr(end),
+                    std::move(display),
+                    2,
+                    edit.ranking_cost,
+                    prefix_path.edges.size() + 1 + suffix_path.edges.size(),
+                });
+            }
+        }
+    }
+}
+
 }  // namespace
 
 std::vector<PinyinCorrection> GeneratePinyinCorrections(
@@ -162,7 +317,8 @@ std::vector<PinyinCorrection> GeneratePinyinCorrections(
                     continue;
                 }
                 const EditMeasurement edit = MeasureSingleEdit(piece, syllable);
-                if (edit.distance <= 1) transitions.push_back({syllable, edit});
+                if (edit.distance <= 1)
+                    transitions.push_back({syllable, edit});
             }
             if (transitions.empty()) continue;
             std::sort(transitions.begin(), transitions.end(), [](const auto& left, const auto& right) {
@@ -191,13 +347,19 @@ std::vector<PinyinCorrection> GeneratePinyinCorrections(
         }
     }
 
-    PruneStates(&states.back(), limits.max_states_per_position);
+    std::vector<CorrectionState> completed = std::move(states.back());
+    AddWholeInputTranspositions(input, &completed);
+    // 短输入额外允许一个音节内的两次编辑，但只枚举“精确前缀 + 一个
+    // 双编辑片段 + 精确后缀”，避免通用状态机的组合爆炸。
+    AddShortDoubleEditCorrections(input, &completed);
+    PruneStates(&completed, (std::max)(
+        limits.max_states_per_position, limits.max_results));
     std::vector<PinyinCorrection> results;
-    results.reserve((std::min)(limits.max_results, states.back().size()));
-    for (const auto& state : states.back()) {
+    results.reserve((std::min)(limits.max_results, completed.size()));
+    for (const auto& state : completed) {
         if (state.cost == 0) continue;
         results.push_back({state.pinyin, state.input_segmentation,
-                           state.cost, state.syllables});
+                           state.cost, state.ranking_cost, state.syllables});
         if (results.size() >= limits.max_results) break;
     }
     return results;

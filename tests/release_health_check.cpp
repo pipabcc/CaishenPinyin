@@ -210,7 +210,8 @@ int wmain(int argc, wchar_t** argv) {
     const auto double_candidate = std::find_if(
         double_word.candidates.begin(), double_word.candidates.end(),
         [](const shuru::Candidate& candidate) {
-            return candidate.text == L"应我";
+            return candidate.text.size() >= 2 &&
+                candidate.input_segmentation == "ying'w";
         });
     if (double_candidate == double_word.candidates.end() ||
         double_candidate->input_segmentation != "ying'w") {

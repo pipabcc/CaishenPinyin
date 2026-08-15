@@ -14,10 +14,6 @@
 namespace shuru {
 namespace {
 
-// {34745C63-B2F0-4784-8B67-5E12C8701A31}
-static const GUID kTfCatTipKeyboard = {
-    0x34745C63, 0xB2F0, 0x4784, {0x8B, 0x67, 0x5E, 0x12, 0xC8, 0x70, 0x1A, 0x31}};
-
 HRESULT SetRegistryKeyValue(HKEY root, const std::wstring& key_path, const std::wstring& value_name, const std::wstring& value) {
     HKEY key = nullptr;
     LONG err = RegCreateKeyExW(root, key_path.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &key, nullptr);
@@ -60,6 +56,27 @@ std::wstring GetModulePath() {
     return path;
 }
 
+// {49D2F9CE-1F5E-11D7-A6D3-00065B84435C} - 双模式（桌面+沉浸）
+static const GUID kGuidCatDualMode = {
+    0x49d2f9ce, 0x1f5e, 0x11d7,
+    {0xa6, 0xd3, 0x00, 0x06, 0x5b, 0x84, 0x43, 0x5c}};
+
+// {CCF05DD7-4A87-11D7-A6E2-00065B84435C} - 输入法覆盖支持
+static const GUID kGuidCatInputMethodOverride = {
+    0xccf05dd7, 0x4a87, 0x11d7,
+    {0xa6, 0xe2, 0x00, 0x06, 0x5b, 0x84, 0x43, 0x5c}};
+
+static const GUID kTipCategories[] = {
+    GUID_TFCAT_TIP_KEYBOARD,
+    GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
+    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
+    GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
+    GUID_TFCAT_TIPCAP_UIELEMENTENABLED,
+    GUID_TFCAT_TIPCAP_COMLESS,
+    kGuidCatDualMode,
+    kGuidCatInputMethodOverride,
+};
+
 HRESULT RegisterTipCategory() {
     ITfCategoryMgr* category_mgr = nullptr;
     HRESULT hr = CoCreateInstance(
@@ -73,19 +90,13 @@ HRESULT RegisterTipCategory() {
         return hr;
     }
 
-    hr = category_mgr->RegisterCategory(CLSID_ShuruTextService, kTfCatTipKeyboard, CLSID_ShuruTextService);
-    if (SUCCEEDED(hr)) {
-        hr = category_mgr->RegisterCategory(CLSID_ShuruTextService, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, CLSID_ShuruTextService);
+    for (const auto& cat : kTipCategories) {
+        hr = category_mgr->RegisterCategory(CLSID_ShuruTextService, cat, CLSID_ShuruTextService);
         if (FAILED(hr)) {
-            SHURU_LOG_WARN("RegisterCategory display attribute provider failed: 0x%08X", hr);
-            hr = S_OK; // 非致命
+            SHURU_LOG_WARN("RegisterCategory failed: 0x%08X", hr);
         }
     }
     category_mgr->Release();
-    if (FAILED(hr)) {
-        SHURU_LOG_ERROR("RegisterCategory keyboard failed: 0x%08X", hr);
-        return hr;
-    }
     SHURU_LOG_INFO("RegisterTipCategory ok");
     return S_OK;
 }
@@ -101,8 +112,9 @@ HRESULT UnregisterTipCategory() {
     if (FAILED(hr)) {
         return hr;
     }
-    category_mgr->UnregisterCategory(CLSID_ShuruTextService, kTfCatTipKeyboard, CLSID_ShuruTextService);
-    category_mgr->UnregisterCategory(CLSID_ShuruTextService, GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER, CLSID_ShuruTextService);
+    for (const auto& cat : kTipCategories) {
+        category_mgr->UnregisterCategory(CLSID_ShuruTextService, cat, CLSID_ShuruTextService);
+    }
     category_mgr->Release();
     return S_OK;
 }

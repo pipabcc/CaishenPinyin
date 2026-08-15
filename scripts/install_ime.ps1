@@ -81,6 +81,11 @@ function Test-Lexicon([string]$Path) {
     foreach ($file in $manifest.files) {
         $filePath = Join-Path $Path $file.path
         if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            if ($file.PSObject.Properties.Name -contains 'runtimeOptional' -and
+                $file.runtimeOptional -eq $true) {
+                Write-DeployLog "optional runtime file absent: $($file.path)"
+                continue
+            }
             Stop-Deployment 22 "missing $($file.path)"
         }
         $actualHash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash

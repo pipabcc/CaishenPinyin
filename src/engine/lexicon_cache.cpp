@@ -81,24 +81,52 @@ bool BuildLexiconCache(const std::wstring& source_path, const std::wstring& cach
 bool VisitLexiconCache(const std::wstring& source_path, const std::wstring& cache_path,
                        const LexiconRowVisitor& visitor, size_t* row_count) {
     if (!visitor) return false;
-    std::ifstream in(std::filesystem::path(cache_path),std::ios::binary); Header h{};
-    if(!in.read(reinterpret_cast<char*>(&h),sizeof(h))||std::memcmp(h.magic,kMagic,8)||h.version!=kVersion||h.count>kMaxRows)return false;
-    unsigned char digest[32]; if(!Sha256File(source_path,digest)||std::memcmp(digest,h.source,32))return false;
-    // Validate the complete payload before publishing any row, preserving corruption fallback.
-    BCRYPT_ALG_HANDLE alg=nullptr; BCRYPT_HASH_HANDLE hash=nullptr; DWORD objlen=0,cb=0; std::vector<unsigned char> obj;
-    bool ok=BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,nullptr,0)>=0;
-    if(ok) ok=BCryptGetProperty(alg,BCRYPT_OBJECT_LENGTH,reinterpret_cast<PUCHAR>(&objlen),sizeof(objlen),&cb,0)>=0;
-    if(ok){obj.resize(objlen);ok=BCryptCreateHash(alg,&hash,obj.data(),objlen,nullptr,0,0)>=0;}
-    std::array<unsigned char,64*1024> block{}; while(ok&&in){in.read(reinterpret_cast<char*>(block.data()),block.size());auto n=in.gcount();if(n>0)ok=BCryptHashData(hash,block.data(),static_cast<ULONG>(n),0)>=0;}
-    ok=ok&&in.eof()&&BCryptFinishHash(hash,digest,32,0)>=0&&!std::memcmp(digest,h.payload,32);
-    if(hash)BCryptDestroyHash(hash);if(alg)BCryptCloseAlgorithmProvider(alg,0);if(!ok)return false;
-    in.clear();in.seekg(sizeof(Header));size_t count=0;
-    for(std::uint32_t i=0;i<h.count;++i){std::uint32_t a=0,b=0;std::int32_t f=0;
-        if(!in.read(reinterpret_cast<char*>(&a),4)||!in.read(reinterpret_cast<char*>(&b),4)||!in.read(reinterpret_cast<char*>(&f),4)||a>kMaxField||b>kMaxField)return false;
-        CachedLexiconLine row;row.pinyin.resize(a);row.word_utf8.resize(b);row.frequency=f;
-        if((a&&!in.read(&row.pinyin[0],a))||(b&&!in.read(&row.word_utf8[0],b))||!visitor(std::move(row)))return false;++count;
+    std::vector<unsigned char> cache_data;
+    if (!ReadAll(cache_path, &cache_data) || cache_data.size() < sizeof(Header)) {
+        return false;
     }
-    if(in.peek()!=std::char_traits<char>::eof())return false;if(row_count)*row_count=count;return true;
+    const auto* h = reinterpret_cast<const Header*>(cache_data.data());
+    if (std::memcmp(h->magic, kMagic, 8) != 0 || h->version != kVersion || h->count > kMaxRows) {
+        return false;
+    }
+
+    unsigned char digest[32];
+    if (!Sha256File(source_path, digest) || std::memcmp(digest, h->source, 32) != 0) {
+        return false;
+    }
+    const size_t payload_size = cache_data.size() - sizeof(Header);
+    if (!Sha256(cache_data.data() + sizeof(Header), payload_size, digest) ||
+        std::memcmp(digest, h->payload, 32) != 0) {
+        return false;
+    }
+
+    const unsigned char* p = cache_data.data() + sizeof(Header);
+    const unsigned char* end = cache_data.data() + cache_data.size();
+    size_t count = 0;
+    for (std::uint32_t i = 0; i < h->count; ++i) {
+        std::uint32_t a = 0, b = 0;
+        std::int32_t f = 0;
+        if (!Get(p, end, &a, sizeof(a)) || !Get(p, end, &b, sizeof(b)) ||
+            !Get(p, end, &f, sizeof(f)) || a > kMaxField || b > kMaxField) {
+            return false;
+        }
+        if (p + a + b > end) {
+            return false;
+        }
+        CachedLexiconLine row;
+        row.pinyin.assign(reinterpret_cast<const char*>(p), a);
+        p += a;
+        row.word_utf8.assign(reinterpret_cast<const char*>(p), b);
+        p += b;
+        row.frequency = f;
+        if (!visitor(std::move(row))) {
+            return false;
+        }
+        ++count;
+    }
+    if (p != end) return false;
+    if (row_count) *row_count = count;
+    return true;
 }
 
 bool LoadLexiconCache(const std::wstring& source_path, const std::wstring& cache_path, std::vector<CachedLexiconLine>* rows) {

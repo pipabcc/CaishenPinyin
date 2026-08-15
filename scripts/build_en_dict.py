@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Build English word lexicon for 发财拼音."""
+"""Build the English word lexicon for 财神输入法."""
 from pathlib import Path
 
 ROOT = Path(r"E:\shurufa")
@@ -50,7 +50,7 @@ if ALPHA.exists():
 items = sorted(words.items(), key=lambda kv: (-kv[1], kv[0]))
 OUT.parent.mkdir(parents=True, exist_ok=True)
 with OUT.open("w", encoding="utf-8", newline="\n") as f:
-    f.write("# 发财拼音英文词库\n")
+    f.write("# 财神输入法英文词库\n")
     f.write("# 格式: word<TAB>frequency\n")
     f.write("# 编码: UTF-8\n\n")
     for w, fre in items:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a deterministic short-character/word prior model for runtime ranking."""
+"""Build a deterministic single-character/two-character ranking prior."""
 from __future__ import annotations
 
 import argparse
@@ -27,22 +27,20 @@ def sha256(path: Path) -> str:
     return digest.hexdigest().upper()
 
 
-def read_rime_char_frequencies(path: Path):
-    in_data = False
+def read_character_frequencies(path: Path):
     with path.open(encoding="utf-8-sig", errors="strict") as source:
         for raw in source:
-            text = raw.rstrip("\r\n")
-            if not in_data:
-                if text.strip() == "...":
-                    in_data = True
+            stripped = raw.strip()
+            if not stripped or stripped.startswith(("#", ";")) or stripped == "...":
                 continue
-            stripped = text.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            fields = text.split("\t")
+            fields = stripped.split("\t")
             if len(fields) < 3:
                 continue
-            word, pinyin = fields[0].strip(), fields[1].strip().lower()
+            first, second = fields[0].strip(), fields[1].strip().lower()
+            if PINYIN.fullmatch(first) and len(fields[1].strip()) == 1:
+                pinyin, word = first, fields[1].strip()
+            else:
+                word, pinyin = fields[0].strip(), second
             if len(word) != 1 or not BMP_CHINESE.fullmatch(word):
                 continue
             if not PINYIN.fullmatch(pinyin):
@@ -76,30 +74,27 @@ def read_base_entries(path: Path):
 
 
 def build_records(char_source: Path, base_dictionary: Path):
-    base_entries = list(read_base_entries(base_dictionary))
     context_frequency: collections.Counter[str] = collections.Counter()
-    for _, word, frequency in base_entries:
+    records: dict[tuple[str, str], int] = {}
+    for pinyin, word, frequency in read_base_entries(base_dictionary):
         for character in word:
-            context_frequency[character] += frequency
+            context_frequency[character] += max(1, frequency)
+        if len(word) == 2 and frequency > 0:
+            key = (pinyin, word)
+            records[key] = max(records.get(key, 0), min(frequency, MAX_SCORE))
 
     char_frequency: dict[tuple[str, str], int] = {}
-    for pinyin, word, frequency in read_rime_char_frequencies(char_source):
+    for pinyin, word, frequency in read_character_frequencies(char_source):
         key = (pinyin, word)
         char_frequency[key] = max(char_frequency.get(key, 0), frequency)
 
-    records: dict[tuple[str, str], int] = {}
     for key, frequency in char_frequency.items():
-        context = context_frequency.get(key[1], 0)
-        if context <= 0:
-            continue
-        score = round(math.sqrt(frequency * context))
+        context = max(frequency, context_frequency.get(key[1], 0))
+        # The standalone table is useful for pronunciation coverage, while actual
+        # word usage is the stronger ordering signal. A 1:3 geometric blend keeps
+        # rare readings bounded without letting table counts dominate common usage.
+        score = round(math.pow(frequency, 0.25) * math.pow(context, 0.75))
         records[key] = max(1, min(score, MAX_SCORE))
-
-    for pinyin, word, frequency in base_entries:
-        if len(word) < 2:
-            continue
-        key = (pinyin, word)
-        records[key] = max(records.get(key, 0), min(frequency, MAX_SCORE))
 
     return sorted((pinyin, word, score) for (pinyin, word), score in records.items())
 

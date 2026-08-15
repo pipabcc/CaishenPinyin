@@ -16,6 +16,8 @@ dist/
 *.exp
 *.lib
 *.log
+*.pyc
+__pycache__/
 settings/bin/
 settings/obj/
 **/bin/
@@ -40,3 +42,8 @@ userdata/
 
 # 用户学习数据不属于系统词库或源码。
 data/lexicon/user_dict.txt
+
+# 上游下载区和超过 GitHub 普通 Git 单文件上限的完整语言模型。
+/ciku/
+/data/lexicon/rime-moqi-zh.gram
+/data/lexicon/zh-moqi.gram

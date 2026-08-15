@@ -23,6 +23,16 @@ bool HasCorrection(
     });
 }
 
+const shuru::PinyinCorrection* FindCorrection(
+    const std::vector<shuru::PinyinCorrection>& corrections,
+    const std::string& expected) {
+    const auto found = std::find_if(
+        corrections.begin(), corrections.end(), [&](const auto& correction) {
+            return correction.pinyin == expected;
+        });
+    return found == corrections.end() ? nullptr : &*found;
+}
+
 }  // namespace
 
 int main() {
@@ -71,6 +81,19 @@ int main() {
             std::cerr << correction.pinyin << " cost=" << correction.cost << '\n';
     }
     CHECK(HasCorrection(corrections, "zheshigejiucuo"));
+    const auto* typo = FindCorrection(corrections, "zheshigejiucuo");
+    const auto* deletion = FindCorrection(corrections, "zheshigejucuo");
+    CHECK(typo != nullptr && deletion != nullptr);
+    CHECK(typo->cost == deletion->cost);
+    CHECK(typo->ranking_cost < deletion->ranking_cost);
+    PinyinCorrectionLimits interactive_limits;
+    interactive_limits.max_states_per_position = 32;
+    interactive_limits.max_results = 4;
+    CHECK(HasCorrection(
+        GeneratePinyinCorrections("zehhsigejuicuo", interactive_limits),
+        "zheshigejiucuo"));
+    CHECK(HasCorrection(
+        GeneratePinyinCorrections("chognqi", interactive_limits), "chongqi"));
     CHECK(HasCorrection(GeneratePinyinCorrections("zeh"), "zhe"));
     CHECK(HasCorrection(GeneratePinyinCorrections("hsi"), "shi"));
     CHECK(HasCorrection(GeneratePinyinCorrections("jui"), "jiu"));

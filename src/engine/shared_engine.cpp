@@ -121,30 +121,16 @@ PinyinEngine* SharedEngine::Acquire(const std::wstring& lexicon_dir) {
 
 void SharedEngine::Release() {
     EnsureSharedCs();
-    PinyinEngine* cleanup = nullptr;
-    HANDLE thread_to_close = nullptr;
     EnterCriticalSection(&g_shared_cs);
     if (g_shared_ref > 0) {
         --g_shared_ref;
     }
     const long refs = g_shared_ref;
-    const bool load_thread_running =
-        g_load_thread != nullptr && WaitForSingleObject(g_load_thread, 0) == WAIT_TIMEOUT;
-    if (refs == 0 && !g_shutdown_waiting && !load_thread_running &&
-        InterlockedCompareExchange(&g_loading, 0, 0) == 0 && g_shared_engine != nullptr) {
-        cleanup = g_shared_engine;
-        g_shared_engine = nullptr;
-        g_shared_lexicon.clear();
-        thread_to_close = g_load_thread;
-        g_load_thread = nullptr;
-    }
+    // 进程级热缓存：当引用计数降至 0 时保留已创建/已就绪的单例引擎，
+    // 避免用户在不同窗口或输入法之间频繁切换时重复销毁并重新加载大词库。
+    // 仅在显式调用 SharedEngine::Shutdown() 或进程退出时才物理回收。
     LeaveCriticalSection(&g_shared_cs);
-    if (thread_to_close != nullptr) {
-        CloseHandle(thread_to_close);
-    }
-    const bool destroyed = cleanup != nullptr;
-    delete cleanup;
-    SHURU_LOG_INFO("SharedEngine release ref=%ld destroyed=%d", refs, destroyed ? 1 : 0);
+    SHURU_LOG_INFO("SharedEngine release ref=%ld (cached hot)", refs);
 }
 
 PinyinEngine* SharedEngine::GetIfReady() {

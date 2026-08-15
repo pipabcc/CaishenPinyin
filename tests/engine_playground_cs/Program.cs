@@ -111,7 +111,7 @@ internal static class Program
             return 1;
         }
 
-        Console.WriteLine("发财拼音引擎演练 (C#)。输入拼音后回车，quit 退出。");
+        Console.WriteLine("财神输入法引擎演练 (C#)。输入拼音后回车，quit 退出。");
         Console.WriteLine($"词库: {dictPath}");
         while (true)
         {

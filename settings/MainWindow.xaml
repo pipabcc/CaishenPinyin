@@ -68,7 +68,7 @@
             <!-- 侧边栏底部版本信息 -->
             <StackPanel Grid.Row="2" Margin="20,16,20,20">
               <Border Height="1" Background="#2E3542" Margin="0,0,0,16"/>
-              <TextBlock Text="0.4.5" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12"/>
+              <TextBlock Text="2.0.1" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12"/>
               <TextBlock Text="本地运行 · 数据归您所有" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12" Margin="0,4,0,0"/>
             </StackPanel>
           </Grid>
@@ -178,7 +178,7 @@
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
                         <TextBlock Text="关于" Style="{StaticResource SectionTitleStyle}"/>
-                        <TextBlock Text="财神输入法 0.4.5 · 本地运行，数据归您所有。" Style="{StaticResource SectionDescriptionStyle}"/>
+                        <TextBlock Text="财神输入法 2.0.1 · 本地运行，数据归您所有。" Style="{StaticResource SectionDescriptionStyle}"/>
                       </StackPanel>
                     </Border>
                   </StackPanel>

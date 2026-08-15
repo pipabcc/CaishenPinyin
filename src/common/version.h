@@ -1,9 +1,9 @@
 #pragma once
 
-#define SHURU_VERSION_MAJOR 0
-#define SHURU_VERSION_MINOR 4
-#define SHURU_VERSION_PATCH 5
-#define SHURU_VERSION_STRING "0.4.5"
+#define SHURU_VERSION_MAJOR 2
+#define SHURU_VERSION_MINOR 0
+#define SHURU_VERSION_PATCH 1
+#define SHURU_VERSION_STRING "2.0.1"
 
 // 对外产品名（语言栏 / 注册表显示）
 // 注意：此文件被 ShuruIme.rc 包含，不可使用非 ASCII 字符。

@@ -9,6 +9,9 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace {
 
@@ -36,6 +39,85 @@ bool ContainsTextInFirst(
 
 bool IsSingleBmpCharacter(const std::wstring& text) {
     return text.size() == 1 && text.front() >= L'\x4e00' && text.front() <= L'\x9fff';
+}
+
+bool VerifyAllCharactersReachable(
+    shuru::PinyinEngine& engine,
+    const std::filesystem::path& character_dictionary_path) {
+    std::ifstream input(character_dictionary_path, std::ios::binary);
+    if (!input) return false;
+
+    std::unordered_map<std::string, std::unordered_set<std::wstring>> expected;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line.front() == '#' || line.front() == ';') continue;
+        const size_t first_tab = line.find('\t');
+        const size_t second_tab = first_tab == std::string::npos
+            ? std::string::npos
+            : line.find('\t', first_tab + 1);
+        if (first_tab == std::string::npos || second_tab == std::string::npos)
+            return false;
+        const std::string pinyin = line.substr(0, first_tab);
+        const std::wstring character = shuru::Utf8ToWide(
+            line.substr(first_tab + 1, second_tab - first_tab - 1));
+        if (!IsSingleBmpCharacter(character)) return false;
+        expected[pinyin].insert(character);
+    }
+
+    size_t missing_count = 0;
+    for (const auto& item : expected) {
+        const auto result = engine.Query(item.first, 256);
+        std::unordered_set<std::wstring> actual;
+        for (const auto& candidate : result.candidates) {
+            if (candidate.source == shuru::CandidateSource::Exact &&
+                IsSingleBmpCharacter(candidate.text)) {
+                actual.insert(candidate.text);
+            }
+        }
+        for (const auto& character : item.second) {
+            if (actual.count(character) != 0) continue;
+            if (missing_count < 12) {
+                std::cerr << "unreachable character: pinyin=" << item.first
+                          << " text=" << shuru::WideToUtf8(character) << '\n';
+            }
+            ++missing_count;
+        }
+    }
+    if (missing_count != 0) {
+        std::cerr << "unreachable character count=" << missing_count << '\n';
+        return false;
+    }
+    return true;
+}
+
+bool VerifyCorrection(
+    shuru::PinyinEngine& engine,
+    const std::string& input,
+    const std::wstring& expected) {
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = engine.Query(input, 9);
+    const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    if (!result.candidates.empty() &&
+        result.candidates.front().text == expected &&
+        result.candidates.front().source == shuru::CandidateSource::Correction &&
+        latency <= std::chrono::milliseconds(1500)) {
+        return true;
+    }
+    std::cerr << "correction assertion failed: input=" << input
+              << " expected=" << shuru::WideToUtf8(expected)
+              << " latency=" << latency.count() << "ms actual=";
+    for (const auto& candidate : result.candidates) {
+        std::cerr << shuru::WideToUtf8(candidate.text)
+                  << "[py=" << candidate.pinyin
+                  << " source=" << static_cast<int>(candidate.source)
+                  << " edits=" << candidate.correction_edit_cost
+                  << " language=" << candidate.language_score
+                  << " score=" << candidate.ranking_score << "],";
+    }
+    std::cerr << '\n';
+    return false;
 }
 
 bool VerifyCandidate(
@@ -75,7 +157,12 @@ bool VerifyMixedSentence(
               << " expected=" << shuru::WideToUtf8(expected) << " actual=";
     for (const auto& candidate : result.candidates) {
         std::cerr << shuru::WideToUtf8(candidate.text)
-                  << "[" << candidate.input_segmentation << "]" << ',';
+                  << "[" << candidate.input_segmentation << "]"
+                  << " f=" << candidate.frequency
+                  << " ls=" << candidate.language_score
+                  << " seg=" << candidate.segment_count
+                  << " cost=" << candidate.match_cost
+                  << " rank=" << candidate.ranking_score << ',';
     }
     std::cerr << '\n';
     return false;
@@ -248,6 +335,14 @@ int wmain(int argc, wchar_t** argv) {
             std::cerr << '\n';
             return 23;
         }
+        const auto xiao = engine.Query("xiao", 256);
+        const auto tong = engine.Query("tong", 256);
+        if (!ContainsText(xiao, L"晓") || !ContainsText(tong, L"彤") ||
+            !VerifyAllCharactersReachable(
+                engine, fs::path(lexicon) / L"char_dict.txt")) {
+            std::cerr << "complete single-character reachability failed\n";
+            return 30;
+        }
         engine.Learn("xian", L"先");
         const auto learned_xian = engine.Query("xian", 9);
         if (learned_xian.candidates.empty() ||
@@ -269,7 +364,10 @@ int wmain(int argc, wchar_t** argv) {
         const auto double_partial = std::find_if(
             segmented_double_partial.candidates.begin(),
             segmented_double_partial.candidates.end(),
-            [](const Candidate& candidate) { return candidate.text == L"应我"; });
+            [](const Candidate& candidate) {
+                return candidate.text.size() >= 2 &&
+                    candidate.input_segmentation == "ying'w";
+            });
         const auto segmented_double_exact = engine.Query("renzhen", 20);
         const auto double_exact = std::find_if(
             segmented_double_exact.candidates.begin(),
@@ -284,7 +382,21 @@ int wmain(int argc, wchar_t** argv) {
             double_exact == segmented_double_exact.candidates.end() ||
             double_exact->input_segmentation != "ren'zhen" ||
             !xiang.candidates.front().input_segmentation.empty()) {
+            auto dump_segmentation = [](const char* input,
+                                        const EngineQueryResult& value) {
+                std::cerr << input << '=';
+                for (const auto& candidate : value.candidates) {
+                    std::cerr << WideToUtf8(candidate.text) << '['
+                              << candidate.input_segmentation << ",source="
+                              << static_cast<int>(candidate.source) << "],";
+                }
+                std::cerr << '\n';
+            };
             std::cerr << "candidate input segmentation failed\n";
+            dump_segmentation("womenzhidao", segmented_sentence);
+            dump_segmentation("haoduoc", predicted_suffix);
+            dump_segmentation("yingw", segmented_double_partial);
+            dump_segmentation("renzhen", segmented_double_exact);
             return 25;
         }
 
@@ -403,13 +515,24 @@ int wmain(int argc, wchar_t** argv) {
         const auto corrected = engine.Query("zehhsigejuicuo", 9);
         const auto correction_latency = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - correction_started);
+        std::cout << "bounded correction latency: "
+                  << correction_latency.count() << " ms\n";
         if (corrected.candidates.empty() ||
             corrected.candidates.front().text != L"这是个纠错" ||
             corrected.candidates.front().source != CandidateSource::Correction ||
             correction_latency > std::chrono::milliseconds(100)) {
             std::cerr << "bounded correction failed: ";
-            for (const auto& candidate : corrected.candidates)
-                std::cerr << WideToUtf8(candidate.text) << ',';
+            for (const auto& candidate : corrected.candidates) {
+                std::cerr << WideToUtf8(candidate.text)
+                          << "[py=" << candidate.pinyin
+                          << " edits=" << candidate.correction_edit_cost
+                          << " keyboard=" << candidate.correction_ranking_cost
+                          << " seg=" << candidate.segment_count
+                          << " cost=" << candidate.match_cost
+                          << " f=" << candidate.frequency
+                          << " ls=" << candidate.language_score
+                          << " rank=" << candidate.ranking_score << "],";
+            }
             std::cerr << " latency=" << correction_latency.count() << "ms\n";
             return 17;
         }
@@ -447,6 +570,44 @@ int wmain(int argc, wchar_t** argv) {
             typing_prefix.candidates.front().source == CandidateSource::Correction) {
             std::cerr << "correction displaced an in-progress prefix\n";
             return 29;
+        }
+        const std::vector<std::pair<std::string, std::wstring>> correction_cases = {
+            {"nihoa", L"你好"},
+            {"woemnzhidao", L"我们知道"},
+            {"gognzuo", L"工作"},
+            {"gonzuo", L"工作"},
+            {"gongzzuo", L"工作"},
+            {"gongzup", L"工作"},
+            {"mingtain", L"明天"},
+            {"xihuna", L"喜欢"},
+            {"xihun", L"喜欢"},
+            {"shenem", L"什么"},
+            {"shme", L"什么"},
+        };
+        for (const auto& correction_case : correction_cases) {
+            if (!VerifyCorrection(
+                    engine, correction_case.first, correction_case.second)) {
+                return 31;
+            }
+        }
+
+        const std::vector<std::pair<std::string, std::wstring>> correct_cases = {
+            {"nihao", L"你好"},
+            {"womenzhidao", L"我们知道"},
+            {"gongzuo", L"工作"},
+            {"mingtian", L"明天"},
+            {"xihuan", L"喜欢"},
+            {"shenme", L"什么"},
+        };
+        for (const auto& correct_case : correct_cases) {
+            const auto result = engine.Query(correct_case.first, 9);
+            if (result.candidates.empty() ||
+                result.candidates.front().text != correct_case.second ||
+                result.candidates.front().source == CandidateSource::Correction) {
+                std::cerr << "correct input was changed: "
+                          << correct_case.first << '\n';
+                return 32;
+            }
         }
 
         const auto time_shortcut = engine.Query("sj", 9);

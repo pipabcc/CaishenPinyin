@@ -8,7 +8,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -DllPath artifacts\release\ShuruIme.dll `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
-  -Version 0.4.5-lexeme-r2-20260814 `
+  -Version 2.0.1 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 

@@ -1,4 +1,4 @@
-# 发财拼音技术设计（Phase 0）
+# 财神输入法技术设计
 
 ## 1. 目标
 
@@ -36,19 +36,23 @@
 长句混拼采用音节 Trie 与有界 Beam Search，支持完整音节和单声母在一句内交错。
 运行时限制输入最长 48 个字母、每个输入位置最多保留 64 条路径、每个基础/用户
 词典在每位置最多读取 128 条词边，避免候选查询随词库规模无界增长。候选排序由用户学习、
-`system_lexeme_prior.bin` 短字短词先验和只读 `system_ngram.bin` 字符二元/三元语言分
-共同决定；词元先验负责无上下文常用度，N-gram 负责相邻字符关系，二者不重复加分。语言分按完整输出字符流累计，同一
-文本的不同分词不会重复获益。学习时写入规范全拼词段，不把声母简写串写入用户词库。
+`system_lexeme_prior.bin` 短字短词先验和只读映射的语言模型共同决定；词元先验负责
+单字、双字的无上下文常用度，语言模型负责词间搭配，二者不重复加分。语言模型按
+`rime-moqi-zh.gram`、`system_ngram.bin`、`zh-moqi.gram` 的顺序自动回退。
+束搜索先按白霜词频剪枝，仅对保留的完整路径查询 Grammar，并在单次查询内缓存相同
+转移，避免大模型在 UI 线程产生组合爆炸。学习时写入规范全拼词段，不把声母简写串
+写入用户词库。
 
 ### 2.3 数据层
 
 - `base_dict.txt`：系统词库
-- `system_lexeme_prior.bin`：单字、双字及多字词的只读常用度先验
-- `system_ngram.bin`：固定上游词典离线生成的只读字符二元/三元语言模型
+- `system_lexeme_prior.bin`：单字、双字的只读常用度先验
+- `rime-moqi-zh.gram`：完整墨奇统计语言模型，Windows 只读文件映射，可选运行文件
+- `system_ngram.bin`：必需的字符二元/三元回退模型
 - `user_dict.txt`：自动学习词，位于当前用户目录
 - `custom_phrases.txt`：自定义短语，位于当前用户目录
 - `typing_stats.txt`：当日累计计数，不保存输入正文；兼容忽略旧版速度桶
-- 系统词库从版本化的 `%ProgramData%\FacaiPinyin\data\lexicon` 加载
+- 系统词库从版本化的 `%ProgramData%\CaishenPinyin\data\lexicon` 加载
 
 ### 2.4 设置层（`settings`）
 
@@ -85,13 +89,13 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 
 - 光标跟随优先使用合法只读 edit session + `ITfContextView::GetTextExt`，复杂宿主仍需兼容性矩阵验证
 - 未做代码签名，部分环境可能拦截
-- 词库规模与语言模型直接决定“好用”程度
+- 完整墨奇模型上游未声明许可证，公开再分发前需取得明确授权
 - 需真机矩阵：Notepad、Word、Chrome、WinUI、终端、全屏游戏
 
 ## 6. 验收标准（Phase 0）
 
 1. DLL 可 `regsvr32` 注册
-2. 语言列表可见“发财拼音”
+2. 语言列表可见“财神输入法”
 3. 记事本可输入 `nihao` 选“你好”
 4. 候选窗可见
 5. 设置程序可显示注册状态
@@ -100,8 +104,8 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 
 ### 词库
 
-- 系统词：`base_dict.txt`（由 `scripts/build_lexicon.py` 从固定版本 rime-ice 转换，默认约 20 万高频词）
-- 用户词：`%LOCALAPPDATA%\FacaiPinyin\data\lexicon\user_dict.txt`；上屏学习后
+- 系统词：`base_dict.txt`（由 `scripts/build_frost_lexicon.py` 从固定版本白霜词库转换）
+- 用户词：`%LOCALAPPDATA%\CaishenPinyin\data\lexicon\user_dict.txt`；上屏学习后
   合并短时间内的连续更新并异步落盘，兼容迁移旧安装目录词典
 - 注册脚本复制词库时**不覆盖**已存在的 `user_dict.txt`
 
@@ -158,7 +162,7 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 
 ## 10. 自定义短语
 
-- 文件：`%LOCALAPPDATA%\FacaiPinyin\data\lexicon\custom_phrases.txt`
+- 文件：`%LOCALAPPDATA%\CaishenPinyin\data\lexicon\custom_phrases.txt`
 - 格式：`输入码<TAB>短语<TAB>候选位置`
 - 输入码精确匹配后按 1–9 的指定位置插入；位置冲突按文件顺序向后顺延
 - 自定义短语不参与自动学习，不写入 `user_dict.txt`

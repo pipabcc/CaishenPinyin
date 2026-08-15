@@ -9,6 +9,11 @@
 
 int main() {
     using namespace shuru;
+    CHECK(CandidateQueryLimit(9, false) == 90);
+    CHECK(CandidateQueryLimit(3, false) == 30);
+    CHECK(CandidateQueryLimit(9, true) == 256);
+    CHECK(CandidateQueryLimit(3, true) == 256);
+
     ChinesePunctuationState punctuation;
     CHECK(punctuation.Translate(VK_OEM_COMMA, false, true, L"") == L"，");
     CHECK(punctuation.Translate(VK_OEM_7, true, true, L"") == L"“");

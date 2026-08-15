@@ -38,6 +38,18 @@ try {
         -SigningPolicy Off -NoRegister
     if ($LASTEXITCODE -ne 0) { throw 'health check failed' }
 
+    $lexiconVersion = [string](
+        Get-Content -LiteralPath (Join-Path $root 'data\lexicon\manifest.json') -Raw |
+            ConvertFrom-Json).version
+    $installedLexicon = Join-Path $dataRoot "versions\$lexiconVersion"
+    Remove-Item -LiteralPath (Join-Path $installedLexicon 'rime-moqi-zh.gram') -Force
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck `
+        -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
+        -SigningPolicy Off -NoRegister
+    if ($LASTEXITCODE -ne 0) {
+        throw 'health check rejected an absent runtime-optional Grammar model'
+    }
+
     $installedSettings = Join-Path $installRoot 'versions\test-1\ShuruSettings.exe'
     if (-not (Test-Path -LiteralPath $installedSettings -PathType Leaf)) {
         throw 'settings application was not deployed'
@@ -58,10 +70,6 @@ try {
 
     $userDictionary = Join-Path $temporaryRoot 'user_dict.txt'
     Set-Content -LiteralPath $userDictionary -Value 'keep-me'
-    $lexiconVersion = [string](
-        Get-Content -LiteralPath (Join-Path $root 'data\lexicon\manifest.json') -Raw |
-            ConvertFrom-Json).version
-    $installedLexicon = Join-Path $dataRoot "versions\$lexiconVersion"
     $sentinel = Join-Path $installedLexicon 'reuse-sentinel.txt'
     Set-Content -LiteralPath $sentinel -Value 'keep-version-directory'
     $lock = [IO.File]::Open(
