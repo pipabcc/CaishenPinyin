@@ -35,24 +35,10 @@
               <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- 品牌 Logo 区域 -->
-            <StackPanel Margin="20,26,20,10">
-              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <!-- 渐变 Logo -->
-                <Border Width="44" Height="44" CornerRadius="10"
-                        Background="{StaticResource PrimaryGradientBrush}">
-                  <Border.Effect>
-                    <DropShadowEffect Color="#2F6BFF" BlurRadius="16" Opacity="0.4" ShadowDepth="4" Direction="270"/>
-                  </Border.Effect>
-                  <TextBlock Text="财" Foreground="#FFFFFF" FontSize="20" FontWeight="Bold"
-                             HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                </Border>
-                <!-- 品牌标题 -->
-                <StackPanel Margin="12,2,0,0" VerticalAlignment="Center">
-                  <TextBlock Text="财神输入法" Foreground="#FFFFFF" FontSize="17" FontWeight="Bold"/>
-                  <TextBlock Text="输入法设置" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12" Margin="0,3,0,0"/>
-                </StackPanel>
-              </StackPanel>
+            <!-- 品牌标题区域 -->
+            <StackPanel Margin="24,28,20,12">
+              <TextBlock Text="财神输入法" Foreground="#FFFFFF" FontSize="18" FontWeight="Bold"/>
+              <TextBlock Text="输入法设置" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12" Margin="0,4,0,0"/>
             </StackPanel>
 
             <!-- 导航菜单 -->
@@ -109,8 +95,8 @@
                   <TextBlock Text="调整启动状态、候选数量和中文标点。" Style="{StaticResource PageDescriptionStyle}"/>
                 </StackPanel>
 
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                  <StackPanel Margin="0,0,8,16">
+                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="0,0,40,16">
                     <!-- 卡片 1: 启动与输入 -->
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
@@ -198,8 +184,8 @@
                   <TextBlock Text="选择拼音输入方式，并配置容错规则。" Style="{StaticResource PageDescriptionStyle}"/>
                 </StackPanel>
 
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                  <StackPanel Margin="0,0,8,16">
+                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="0,0,40,16">
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
                         <TextBlock Text="拼音模式" Style="{StaticResource SectionTitleStyle}"/>
@@ -299,8 +285,13 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                       </Grid.ColumnDefinitions>
-                      <TextBlock x:Name="PhraseCountText" Foreground="{StaticResource TextSecondaryBrush}"
-                                 VerticalAlignment="Center" FontSize="13"/>
+                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="PhraseCountText" Foreground="{StaticResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center" FontSize="13"/>
+                        <CheckBox x:Name="PhraseDirectWindowBox" Content="按vv直接打开独立搜索窗口"
+                                  Margin="20,0,0,0" VerticalAlignment="Center"
+                                  Checked="VModeDirectWindowBox_Changed" Unchecked="VModeDirectWindowBox_Changed"/>
+                      </StackPanel>
                       <StackPanel Grid.Column="1" Orientation="Horizontal">
                         <Button Content="导入" Click="ImportPhrases_Click"/>
                         <Button Content="导出" Margin="10,0,0,0" Click="ExportPhrases_Click"/>
@@ -380,11 +371,13 @@
                                             HeaderStyle="{StaticResource CenteredDataGridColumnHeaderStyle}"/>
                         <DataGridTextColumn Header="内容摘要" Binding="{Binding DisplayTitle}" Width="*"
                                             ElementStyle="{StaticResource DataGridTextStyle}"/>
-                        <DataGridTemplateColumn Header="复制时间" Width="190">
+                        <DataGridTemplateColumn Header="复制时间" Width="190"
+                                                HeaderStyle="{StaticResource CenteredDataGridColumnHeaderStyle}">
                           <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                               <Grid>
                                 <TextBlock x:Name="TimeText" Text="{Binding FormattedTime}"
+                                           HorizontalAlignment="Center" TextAlignment="Center"
                                            VerticalAlignment="Center"/>
                                 <StackPanel x:Name="RowActions" Orientation="Horizontal"
                                             HorizontalAlignment="Right" VerticalAlignment="Center"
@@ -430,8 +423,13 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                       </Grid.ColumnDefinitions>
-                      <TextBlock x:Name="ClipboardCountText" Foreground="{StaticResource TextSecondaryBrush}"
-                                 VerticalAlignment="Center" FontSize="13"/>
+                      <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock x:Name="ClipboardCountText" Foreground="{StaticResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center" FontSize="13"/>
+                        <CheckBox x:Name="ClipboardDirectWindowBox" Content="按v直接打开独立搜索窗口"
+                                  Margin="20,0,0,0" VerticalAlignment="Center"
+                                  Checked="VModeDirectWindowBox_Changed" Unchecked="VModeDirectWindowBox_Changed"/>
+                      </StackPanel>
                       <StackPanel Grid.Column="1" Orientation="Horizontal">
                         <Button Content="删除选中" Click="DeleteClipboardItem_Click"/>
                         <Button Content="清空记录" Margin="10,0,0,0" Style="{StaticResource DangerButtonStyle}" Click="ClearClipboard_Click"/>
@@ -453,8 +451,8 @@
                   <TextBlock Text="管理自动学习词、系统词库和诊断选项。" Style="{StaticResource PageDescriptionStyle}"/>
                 </StackPanel>
 
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                  <StackPanel Margin="0,0,8,16">
+                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="0,0,40,16">
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
                         <TextBlock Text="用户学习词" Style="{StaticResource SectionTitleStyle}"/>

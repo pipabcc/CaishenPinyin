@@ -172,6 +172,22 @@ int main() {
     candidates.Select(3);
     CHECK(candidates.PageSize() == 1 && candidates.page == 3);
 
+    CandidatePageState expanded_candidates;
+    expanded_candidates.total = 12;
+    expanded_candidates.page_size = 5;
+    expanded_candidates.Select(3);
+    expanded_candidates.MoveRowDown();
+    CHECK(expanded_candidates.selected == 8 && expanded_candidates.page == 1);
+    expanded_candidates.MoveRowDown();
+    CHECK(expanded_candidates.selected == 11 && expanded_candidates.page == 2);
+    expanded_candidates.MoveRowDown();
+    CHECK(expanded_candidates.selected == 11 && expanded_candidates.page == 2);
+    expanded_candidates.MoveRowUp();
+    CHECK(expanded_candidates.selected == 6 && expanded_candidates.page == 1);
+    expanded_candidates.Select(1);
+    expanded_candidates.MoveRowUp();
+    CHECK(expanded_candidates.selected == 1 && expanded_candidates.page == 0);
+
     std::vector<Candidate> display_candidates(2);
     display_candidates[0].input_segmentation = "wo'men'zhi'dao";
     display_candidates[1].input_segmentation = "wo'men'xiang'xin";
@@ -190,10 +206,18 @@ int main() {
     CHECK(!IsReliableCandidateRect(flat_rect));
     CHECK(GetCandidatePagingDirection(VK_PRIOR, true) == CandidatePagingDirection::Previous);
     CHECK(GetCandidatePagingDirection(VK_NEXT, false) == CandidatePagingDirection::Next);
-    CHECK(GetCandidatePagingDirection(VK_OEM_COMMA, false) == CandidatePagingDirection::Previous);
-    CHECK(GetCandidatePagingDirection(VK_OEM_PERIOD, false) == CandidatePagingDirection::Next);
+    CHECK(GetCandidatePagingDirection(VK_OEM_COMMA, false) == CandidatePagingDirection::None);
+    CHECK(GetCandidatePagingDirection(VK_OEM_PERIOD, false) == CandidatePagingDirection::None);
     CHECK(GetCandidatePagingDirection(VK_OEM_COMMA, true) == CandidatePagingDirection::None);
+    CHECK(GetCandidatePagingDirection(VK_OEM_MINUS, false) == CandidatePagingDirection::Previous);
+    CHECK(GetCandidatePagingDirection(VK_OEM_PLUS, false) == CandidatePagingDirection::Next);
     CHECK(GetCandidatePagingDirection(VK_OEM_MINUS, true) == CandidatePagingDirection::None);
+    CHECK(GetCandidateRowDirection(VK_UP, true) == CandidateRowDirection::Up);
+    CHECK(GetCandidateRowDirection(VK_DOWN, false) == CandidateRowDirection::Down);
+    CHECK(GetCandidateRowDirection(VK_OEM_COMMA, false) == CandidateRowDirection::Up);
+    CHECK(GetCandidateRowDirection(VK_OEM_PERIOD, false) == CandidateRowDirection::Down);
+    CHECK(GetCandidateRowDirection(VK_OEM_COMMA, true) == CandidateRowDirection::None);
+    CHECK(GetCandidateRowDirection(VK_OEM_PERIOD, true) == CandidateRowDirection::None);
 
     Candidate predicted;
     predicted.text = L"短剑";
@@ -218,6 +242,11 @@ int main() {
         std::vector<int>(9, 48), 0, 13, 4, 8, 16);
     CHECK(row.size() == 9 && row.back().index == 8);
     CHECK(CandidateRowRequiredWidth(row, 9) == row.back().hit_right + 9);
+    CHECK(CandidateExpandedFirstPage(0, 5) == 0);
+    CHECK(CandidateExpandedFirstPage(4, 5) == 0);
+    CHECK(CandidateExpandedFirstPage(5, 5) == 5);
+    CHECK(CandidateExpandedRowCount(90, 9, 0, 5) == 5);
+    CHECK(CandidateExpandedRowCount(63, 9, 5, 5) == 2);
 
     const auto compact_window = BuildCandidateWindowVerticalLayout(5, 30, 4);
     CHECK(compact_window.composing_top == 5 && compact_window.composing_bottom == 35);

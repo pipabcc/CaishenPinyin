@@ -84,6 +84,8 @@ RuntimeConfig ReadConfig() {
     value.candidate_count = ReadInt(values, "CandidateCount", 9, 3, 9);
     value.candidate_font_size = ReadInt(values, "CandidateFontSize", 19, 14, 32);
     value.display_name = ReadDisplayName(values, L"财神输入法");
+    value.v_mode_open_window = ReadBool(values, "VModeOpenWindow", false);
+    value.vv_mode_open_window = ReadBool(values, "VvModeOpenWindow", false);
     {
         const auto found = values.find("TrayText");
         if (found != values.end()) {

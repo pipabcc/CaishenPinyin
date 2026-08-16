@@ -17,6 +17,11 @@
       <GradientStop Color="#22D3EE" Offset="1"/>
     </LinearGradientBrush>
 
+    <LinearGradientBrush x:Key="CaishenRedGradientBrush" StartPoint="0,0" EndPoint="1,1">
+      <GradientStop Color="#EF4444" Offset="0"/>
+      <GradientStop Color="#DC2626" Offset="1"/>
+    </LinearGradientBrush>
+
     <SolidColorBrush x:Key="SidebarBgBrush" Color="#20242B"/>
     <SolidColorBrush x:Key="SidebarNavHoverBrush" Color="#2A303A"/>
     <SolidColorBrush x:Key="SidebarNavSelectedBrush" Color="#3A4150"/>

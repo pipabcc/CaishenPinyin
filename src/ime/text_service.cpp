@@ -705,7 +705,10 @@ bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidat
             }
             return finish_external_paste("large text paste");
         }
-        const HRESULT hr = CommitText(context, committed);
+        const bool is_utility = IsVerticalUtilityMode(composing_pinyin_) ||
+                                candidate.source == CandidateSource::CustomPhrase ||
+                                candidate.action == CandidateAction::PasteClipboardRecord;
+        const HRESULT hr = CommitText(context, committed, !is_utility);
         if (FAILED(hr)) return false;
         if (!IsPasswordContext(context)) {
             last_committed_word_ = committed;
@@ -718,9 +721,12 @@ bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidat
         return true;
     }
 
+    const bool is_utility = IsVerticalUtilityMode(composing_pinyin_) ||
+                            candidate.source == CandidateSource::CustomPhrase ||
+                            candidate.action == CandidateAction::PasteClipboardRecord;
     const CandidateCommitPlan plan = PlanCandidateCommit(composing_pinyin_, candidate);
     if (!plan.has_coverage) return false;
-    const HRESULT hr = CommitText(context, plan.committed);
+    const HRESULT hr = CommitText(context, plan.committed, !is_utility);
     if (FAILED(hr)) return false;
     LearnCandidate(context, candidate, plan.learned_pinyin, plan.learned_input);
     if (!IsPasswordContext(context)) {
@@ -729,9 +735,12 @@ bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidat
     composing_pinyin_ = plan.remaining;
     candidate_state_ = {}; current_result_ = {};
     if (composing_pinyin_.empty()) {
+        ClearCompositionState();
         ShowAssociation(context);
         return true;
     }
+    ResetCandidateAnchor();
+    candidate_window_.SetExpanded(false);
     if (FAILED(SetCompositionString(context, PinyinToWide(composing_pinyin_)))) {
         ClearCompositionState(); candidate_window_.Hide(); return true;
     }
@@ -794,9 +803,13 @@ bool TextService::IsKeyEaten(
                 &filter_digit)) {
             return true;
         }
+        if (wparam == VK_TAB && !IsVerticalUtilityMode(composing_pinyin_)) {
+            return true;
+        }
         if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam)) ||
             wparam == VK_BACK || wparam == VK_SPACE || wparam == VK_ESCAPE ||
-            wparam == VK_RETURN || wparam == VK_LEFT || wparam == VK_RIGHT ||
+            wparam == VK_RETURN ||
+            wparam == VK_LEFT || wparam == VK_RIGHT ||
             wparam == VK_UP || wparam == VK_DOWN || wparam == VK_PRIOR || wparam == VK_NEXT ||
             wparam == VK_OEM_MINUS || wparam == VK_OEM_PLUS ||
             wparam == VK_OEM_COMMA || wparam == VK_OEM_PERIOD) {
@@ -1057,8 +1070,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
-    // 组合期间这些键属于候选分页。必须先于中文标点处理，否则标点状态机
-    // 会抢先提交文本，使配置声明的翻页键永远不可达。
+    // PageUp/PageDown 与 -/= 保留整页翻页。逗号和句号用于展开后的
+    // 行导航，不能再进入分页分支。
     const CandidatePagingDirection paging = GetCandidatePagingDirection(wparam, shift_down);
     if (!composing_pinyin_.empty() && paging != CandidatePagingDirection::None) {
         if (paging == CandidatePagingDirection::Previous)
@@ -1067,6 +1080,36 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             candidate_state_.NextPage();
         SyncCandidateWindowCandidates();
         UpdateCandidateWindow(context);
+        *eaten = true;
+        return true;
+    }
+
+    const CandidateRowDirection row_direction =
+        GetCandidateRowDirection(wparam, shift_down);
+    if (!composing_pinyin_.empty() &&
+        !IsVerticalUtilityMode(composing_pinyin_) &&
+        row_direction != CandidateRowDirection::None) {
+        if (!candidate_window_.IsExpanded()) {
+            if (candidate_window_.SetExpanded(true)) {
+                UpdateCandidateWindow(context);
+            }
+        } else if (!current_result_.candidates.empty()) {
+            if (row_direction == CandidateRowDirection::Up)
+                candidate_state_.MoveRowUp();
+            else
+                candidate_state_.MoveRowDown();
+            SyncCandidateWindowCandidates();
+            UpdateCandidateWindow(context);
+        }
+        *eaten = true;
+        return true;
+    }
+
+    if (wparam == VK_TAB && !composing_pinyin_.empty() &&
+        !IsVerticalUtilityMode(composing_pinyin_)) {
+        if (candidate_window_.ToggleExpanded()) {
+            UpdateCandidateWindow(context);
+        }
         *eaten = true;
         return true;
     }
@@ -1104,6 +1147,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     // Escape 清空
     if (wparam == VK_ESCAPE && !composing_pinyin_.empty()) {
+        candidate_window_.StopVModeTimer();
         const HRESULT hr = EndComposition();
         if (SUCCEEDED(hr)) {
             ClearCompositionState();
@@ -1115,6 +1159,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     // Backspace
     if (wparam == VK_BACK && !composing_pinyin_.empty()) {
+        candidate_window_.StopVModeTimer();
         const std::string previous = composing_pinyin_;
         composing_pinyin_.pop_back();
         candidate_state_.selected = 0;
@@ -1209,6 +1254,22 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     // 空格上屏首选
     if (wparam == VK_SPACE && !composing_pinyin_.empty()) {
+        candidate_window_.StopVModeTimer();
+        if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && config.v_mode_open_window) {
+            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick");
+            ClearCompositionState();
+            if (context) (void)SetCompositionString(context, L"");
+            *eaten = true;
+            return true;
+        }
+        if ((composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0) && config.vv_mode_open_window) {
+            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
+            ClearCompositionState();
+            if (context) (void)SetCompositionString(context, L"");
+            *eaten = true;
+            return true;
+        }
+
         if (engine_ == nullptr || !engine_->IsReady()) {
             const HRESULT hr = CommitText(context, PinyinToWide(composing_pinyin_) + L" ");
             if (SUCCEEDED(hr)) {
@@ -1233,6 +1294,22 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     // 计算器 Enter 上屏结果；其它组合仍上屏原文。单独 Shift 始终走原文路径。
     if (wparam == VK_RETURN && !composing_pinyin_.empty()) {
+        candidate_window_.StopVModeTimer();
+        if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && config.v_mode_open_window) {
+            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick");
+            ClearCompositionState();
+            if (context) (void)SetCompositionString(context, L"");
+            *eaten = true;
+            return true;
+        }
+        if ((composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0) && config.vv_mode_open_window) {
+            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
+            ClearCompositionState();
+            if (context) (void)SetCompositionString(context, L"");
+            *eaten = true;
+            return true;
+        }
+
         if (IsCalculatorInput(composing_pinyin_) && !current_result_.candidates.empty()) {
             const size_t index = candidate_state_.selected < current_result_.candidates.size()
                 ? candidate_state_.selected : 0;
@@ -1248,18 +1325,22 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
-    // 左右切换候选
+    // 普通候选使用左右键逐项选择；v/vv 竖向工具列表继续允许四向键
+    // 按前后项线性选择。普通候选的上下键已在展开导航分支处理。
     if (!composing_pinyin_.empty() && (wparam == VK_LEFT || wparam == VK_RIGHT || wparam == VK_UP || wparam == VK_DOWN)) {
         if (!current_result_.candidates.empty()) {
-            if (wparam == VK_LEFT || wparam == VK_UP) {
-                candidate_state_.MovePrevious();
-            } else {
-                candidate_state_.MoveNext();
+            const bool vertical_utility = IsVerticalUtilityMode(composing_pinyin_);
+            if (vertical_utility || wparam == VK_LEFT || wparam == VK_RIGHT) {
+                if (wparam == VK_LEFT || wparam == VK_UP) {
+                    candidate_state_.MovePrevious();
+                } else {
+                    candidate_state_.MoveNext();
+                }
+                // 同步完整候选内容和当前页，跨页选择时窗口立即滚动。
+                SyncCandidateWindowCandidates();
+                UpdateCandidateWindow(context);
+                *eaten = true;
             }
-            // 同步完整候选内容和当前页，跨页选择时窗口立即滚动。
-            SyncCandidateWindowCandidates();
-            UpdateCandidateWindow(context);
-            *eaten = true;
         }
         return true;
     }
@@ -1280,12 +1361,46 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     // 字母输入
     if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam))) {
+        const bool starts_new_composition = composing_pinyin_.empty();
         char ch = static_cast<char>(wparam);
-        // TSF 传入的是虚拟键码（始终为大写 A-Z）；Shift 按下时保留
-        // 大写，作为中英混输的原样片段。
         if (ch >= 'A' && ch <= 'Z' && !shift_down) {
             ch = static_cast<char>(ch - 'A' + 'a');
         }
+        candidate_window_.StopVModeTimer();
+        if (starts_new_composition) {
+            ResetCandidateAnchor();
+            candidate_window_.SetExpanded(false);
+        }
+
+        // 1. 如果当前为空且输入第一个 'v' 且开启了 v_mode_open_window
+        if (composing_pinyin_.empty() && (ch == 'v' || ch == 'V') && config.v_mode_open_window) {
+            *eaten = true;
+            composing_pinyin_.push_back(ch);
+            (void)SetCompositionString(context, PinyinToWide(composing_pinyin_));
+            candidate_window_.Hide();
+            // 启动 220ms 延时定时器：停顿未按第2个v时自动唤起剪贴板弹窗
+            candidate_window_.StartVModeTimer([this]() {
+                if (composing_pinyin_ == "v" || composing_pinyin_ == "V") {
+                    LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick");
+                    ClearCompositionState();
+                    if (edit_context_) {
+                        (void)SetCompositionString(edit_context_, L"");
+                    }
+                }
+            }, 220);
+            return true;
+        }
+
+        // 2. 如果当前为 'v' 且输入第2个 'v' 且开启了 vv_mode_open_window
+        if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && (ch == 'v' || ch == 'V') && config.vv_mode_open_window) {
+            *eaten = true;
+            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
+            ClearCompositionState();
+            if (context) (void)SetCompositionString(context, L"");
+            candidate_window_.Hide();
+            return true;
+        }
+
         *eaten = true;
         composing_pinyin_.push_back(ch);
         const HRESULT hr = SetCompositionString(context, PinyinToWide(composing_pinyin_));
@@ -1428,6 +1543,15 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
     }
     *rect = {};
 
+    bool tsf_view_available = false;
+    if (context != nullptr && client_id_ != TF_CLIENTID_NULL) {
+        ITfContextView* view = nullptr;
+        if (SUCCEEDED(context->GetActiveView(&view)) && view != nullptr) {
+            tsf_view_available = true;
+            view->Release();
+        }
+    }
+
     // 1) 只读 edit session + 合法 cookie 的 GetTextExt（多应用更稳）
     if (context != nullptr && client_id_ != TF_CLIENTID_NULL) {
         bool ok = false;
@@ -1445,6 +1569,13 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
         }
     }
 
+    // 如果是 TSF 兼容宿主（存在 ActiveView），但当前 GetTextExt 尚未就绪（如初次输入排版中），
+    // 绝对不能回退到 GetGUIThreadInfo 过期的系统光标坐标（那会导致候选框从上一次输入的历史位置跳跃闪烁）。
+    // 应该直接返回 false，等待随之而来的 OnLayoutChange 通知拿到真实的当前光标后再呈现。
+    if (tsf_view_available) {
+        return false;
+    }
+
     HWND target = nullptr;
     if (context != nullptr) {
         ITfContextView* view = nullptr;
@@ -1458,7 +1589,7 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
         target = GetForegroundWindow();
     }
 
-    // 3) GUITHREADINFO 光标
+    // 3) GUITHREADINFO 光标（仅用于不支持 TSF ActiveView 的纯旧式宿主）
     if (target != nullptr) {
         DWORD tid = GetWindowThreadProcessId(target, nullptr);
         GUITHREADINFO gi {};
@@ -1473,15 +1604,20 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
                 }
             }
         }
-
     }
 
-    // No reliable insertion rectangle yet. Keep the candidate hidden and retry
-    // after the asynchronous edit/layout notification instead of flashing at (0,0).
     return false;
 }
 
 void TextService::UpdateCandidateWindow(ITfContext* context) {
+    const RuntimeConfig config = GetRuntimeConfig();
+    const bool is_v1 = (composing_pinyin_ == "v" || composing_pinyin_ == "V");
+    const bool is_vv = (composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0);
+    if ((is_v1 && config.v_mode_open_window) || (is_vv && config.vv_mode_open_window)) {
+        candidate_window_.Hide();
+        return;
+    }
+
     int gap = 6;
     HWND fg = GetForegroundWindow();
     if (fg) {
@@ -1497,7 +1633,7 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
     } else {
         RECT rc {};
         if (!GetCaretScreenRect(context, &rc)) {
-            if (!candidate_window_.IsVisible() || !has_last_candidate_rect_) {
+            if (!has_last_candidate_rect_) {
                 candidate_window_.Hide();
                 return;
             }
@@ -1520,15 +1656,23 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
 }
 
 void TextService::ClearCompositionState() {
+    candidate_window_.StopVModeTimer();
     composing_pinyin_.clear();
     candidate_state_ = {};
     current_result_ = {};
     candidate_display_.clear();
     candidate_display_fallback_.clear();
-    has_last_candidate_rect_ = false;
-    candidate_pos_overridden_ = false;
+    ResetCandidateAnchor();
+    candidate_window_.SetExpanded(false);
     DismissAssociation();
     candidate_window_.StopReadyPolling();
+}
+
+void TextService::ResetCandidateAnchor() noexcept {
+    has_last_candidate_rect_ = false;
+    last_candidate_rect_ = {};
+    candidate_pos_overridden_ = false;
+    candidate_override_pos_ = {};
 }
 
 HRESULT TextService::EndComposition() {
@@ -1549,7 +1693,7 @@ HRESULT TextService::EndComposition() {
     return SUCCEEDED(hr) ? hr_session : hr;
 }
 
-HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text) {
+HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text, bool count_typing_stats) {
     if (context == nullptr) {
         SHURU_LOG_ERROR("CommitText context is null");
         return E_FAIL;
@@ -1567,9 +1711,11 @@ HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text) {
         if (recent_committed_text_.size() > 128) {
             recent_committed_text_.erase(0, recent_committed_text_.size() - 128);
         }
-        candidate_window_.SetTypingStats(typing_stats_.Record(text));
+        if (count_typing_stats) {
+            candidate_window_.SetTypingStats(typing_stats_.Record(text));
+        }
     }
-    SHURU_LOG_INFO("CommitText req=0x%08X session=0x%08X len=%u", hr, hr_session, static_cast<unsigned>(text.size()));
+    SHURU_LOG_INFO("CommitText req=0x%08X session=0x%08X len=%u stats=%d", hr, hr_session, static_cast<unsigned>(text.size()), count_typing_stats ? 1 : 0);
     return final_hr;
 }
 
@@ -1587,9 +1733,11 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     if (context == nullptr) {
         return E_FAIL;
     }
+    RECT init_rect {};
+    bool init_ok = false;
     auto* session = new (std::nothrow) SetCompositionEditSession(
         context, client_id_, static_cast<ITfCompositionSink*>(this),
-        &composition_, text, display_atom_);
+        &composition_, text, display_atom_, &init_rect, &init_ok);
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }
@@ -1598,6 +1746,10 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     const HRESULT hr = context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
     composition_edit_in_progress_ = false;
     session->Release();
+    if (SUCCEEDED(hr) && init_ok && IsReliableCandidateRect(init_rect)) {
+        last_candidate_rect_ = init_rect;
+        has_last_candidate_rect_ = true;
+    }
     return SUCCEEDED(hr) ? hr_session : hr;
 }
 
@@ -1614,6 +1766,7 @@ STDMETHODIMP TextService::OnLayoutChange(
     if (lcode == TF_LC_DESTROY) {
         candidate_window_.Hide();
         has_last_candidate_rect_ = false;
+        last_candidate_rect_ = {};
         return S_OK;
     }
     // 首字布局以及后续滚动、重排都会触发此通知。宿主排版完成后，

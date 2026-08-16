@@ -187,15 +187,6 @@ void BlendSolidColor(
     }
 }
 
-std::wstring BuildPageText(size_t candidate_count, size_t page, size_t page_size) {
-    const size_t normalized_page_size = (std::max)(size_t {1}, page_size);
-    if (candidate_count <= normalized_page_size) return {};
-    const size_t pages = (candidate_count + normalized_page_size - 1) /
-        normalized_page_size;
-    return L"‹  " + std::to_wstring((std::min)(page, pages - 1) + 1) +
-        L"/" + std::to_wstring(pages) + L"  ›";
-}
-
 }  // namespace
 
 CandidateWindow::~CandidateWindow() {
@@ -258,6 +249,10 @@ void CandidateWindow::Destroy() {
         DeleteObject(font_meta_);
         font_meta_ = nullptr;
     }
+    if (font_header_title_ != nullptr) {
+        DeleteObject(font_header_title_);
+        font_header_title_ = nullptr;
+    }
     if (font_utility_ != nullptr) {
         DeleteObject(font_utility_);
         font_utility_ = nullptr;
@@ -285,6 +280,14 @@ void CandidateWindow::EnsureFonts() {
         font_meta_ = CreateFontW(
             -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
             0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            L"Microsoft YaHei UI");
+    }
+    if (font_header_title_ == nullptr) {
+        font_header_title_ = CreateFontW(
+            -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
+            0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
             L"Microsoft YaHei UI");
@@ -380,9 +383,8 @@ void CandidateWindow::Show(const POINT& screen_pos) {
     if (needs_show || position_changed || size_changed || paint_dirty_) {
         if (!UpdateLayeredWindowContent(window_origin)) return;
     }
-    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE |
-                     (needs_show ? SWP_SHOWWINDOW : 0));
+    SetWindowPos(hwnd_, HWND_TOPMOST, window_origin.x, window_origin.y, window_width, window_height,
+                 SWP_NOACTIVATE | (needs_show ? SWP_SHOWWINDOW : 0));
     visible_ = true;
     if (needs_show) {
         // 像素和最终尺寸已经由 UpdateLayeredWindow 原子提交，此处只切换可见性。
@@ -396,6 +398,7 @@ void CandidateWindow::Hide() {
     }
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
+    SetWindowPos(hwnd_, nullptr, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 bool CandidateWindow::DisplayContentEquals(
@@ -431,7 +434,10 @@ void CandidateWindow::SetContent(
     size_t normalized_page = (std::min)(page, page_count - 1);
     if (!candidates.empty()) normalized_page = normalized_selected / normalized_page_size;
 
-    const bool layout_changed = !DisplayContentEquals(
+    const bool must_collapse = expanded_ &&
+        candidates.size() <= normalized_page_size;
+    if (must_collapse) expanded_ = false;
+    const bool layout_changed = must_collapse || !DisplayContentEquals(
         composing, candidates, normalized_page, normalized_page_size);
     const bool selection_changed = selected_ != normalized_selected;
     if (!layout_changed && !selection_changed) return;
@@ -507,6 +513,27 @@ void CandidateWindow::SetSelectedIndex(size_t selected_index) {
     }
 }
 
+bool CandidateWindow::SetExpanded(bool expanded) {
+    const bool is_v_mode = !composing_.empty() &&
+        (composing_[0] == L'v' || composing_[0] == L'V') &&
+        composing_.rfind(L"vvv", 0) != 0;
+    const bool next = expanded && !is_v_mode &&
+        candidates_.size() > page_size_;
+    if (expanded_ == next) return false;
+    expanded_ = next;
+    layout_dirty_ = true;
+    paint_dirty_ = true;
+    RecalcSize();
+    if (visible_ && hwnd_ != nullptr) {
+        Show(ScreenPosition());
+    }
+    return true;
+}
+
+bool CandidateWindow::ToggleExpanded() {
+    return SetExpanded(!expanded_);
+}
+
 void CandidateWindow::SetEnglishMode(bool english) {
     english_mode_ = english;
     if (visible_) {
@@ -550,6 +577,23 @@ void CandidateWindow::StopReadyPolling() {
     ready_poll_ = nullptr;
 }
 
+void CandidateWindow::StartVModeTimer(std::function<void()> callback, UINT delay_ms) {
+    if (hwnd_ == nullptr) return;
+    StopVModeTimer();
+    vmode_timer_cb_ = std::move(callback);
+    if (vmode_timer_cb_) {
+        vmode_timer_active_ = SetTimer(hwnd_, kVModeTimerId, delay_ms, nullptr) != 0;
+    }
+}
+
+void CandidateWindow::StopVModeTimer() {
+    if (vmode_timer_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, kVModeTimerId);
+    }
+    vmode_timer_active_ = false;
+    vmode_timer_cb_ = nullptr;
+}
+
 void CandidateWindow::OpenSettings() {
     if (!LaunchSettingsExecutable(hwnd_, instance_)) {
         MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
@@ -587,36 +631,55 @@ void CandidateWindow::RecalcSize() {
 
     const int comp_w = MeasureText(
         hdc, font_comp_, composing_.empty() ? L" " : composing_);
-    const std::wstring page_text = BuildPageText(
-        candidates_.size(), page_, page_size_);
     const std::wstring status_text = BuildTypingStatisticsText(
         typing_stats_.daily_count);
-    const std::wstring header_right_text = page_text.empty()
-        ? status_text
-        : status_text + L"   " + page_text;
-    const int page_w = MeasureText(hdc, font_meta_, header_right_text);
+    const bool can_expand = candidates_.size() > page_size_;
+    const int header_right_w = MeasureText(hdc, font_meta_, status_text) +
+        (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     int cand_w = 0;
-    const size_t begin = page_ * page_size_;
-    const size_t end = (std::min)(candidates_.size(), begin + page_size_);
-    std::vector<int> item_widths;
-    item_widths.reserve(end - begin);
-    for (size_t i = begin; i < end; ++i) {
-        std::wstring item = std::to_wstring(i - begin + 1) + L"." + candidates_[i].text;
-        item_widths.push_back(MeasureText(hdc, font_, item));
-    }
     const int padding = Scale(kHorizontalPadding);
-    item_layout_ = BuildCandidateRowLayout(
-        item_widths, begin, padding + Scale(4), Scale(4), Scale(8), Scale(16));
-    cand_w = CandidateRowRequiredWidth(item_layout_, padding);
+    const size_t first_page = expanded_
+        ? CandidateExpandedFirstPage(page_, kExpandedMaxRows)
+        : page_;
+    const size_t row_count = expanded_
+        ? CandidateExpandedRowCount(
+            candidates_.size(), page_size_, page_, kExpandedMaxRows)
+        : 1;
+    item_rows_.clear();
+    item_rows_.reserve(row_count);
+    for (size_t row = 0; row < row_count; ++row) {
+        const size_t row_page = first_page + row;
+        const size_t begin = row_page * page_size_;
+        const size_t end = (std::min)(
+            candidates_.size(), begin + page_size_);
+        const bool numbered = row_page == page_;
+        std::vector<int> item_widths;
+        item_widths.reserve(end - begin);
+        for (size_t i = begin; i < end; ++i) {
+            std::wstring item;
+            if (numbered) {
+                item = std::to_wstring(i - begin + 1) + L".";
+            }
+            item += candidates_[i].text;
+            item_widths.push_back(MeasureText(hdc, font_, item));
+        }
+        item_rows_.push_back(BuildCandidateRowLayout(
+            item_widths, begin, padding + Scale(4), Scale(4),
+            Scale(8), Scale(16)));
+        cand_w = (std::max)(cand_w,
+            CandidateRowRequiredWidth(item_rows_.back(), padding));
+    }
     ReleaseDC(nullptr, hdc);
 
     const int header_w = CandidateHeaderRequiredWidth(
-        comp_w, page_w, padding + Scale(4), padding, Scale(kHeaderTextGap));
+        comp_w, header_right_w, padding + Scale(4), padding,
+        Scale(kHeaderTextGap));
     width_ = (std::max)(Scale(kMinWidth),
         (std::min)(Scale(kMaxWidth), (std::max)(header_w, cand_w)));
     const auto vertical = BuildCandidateWindowVerticalLayout(
         Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
-    height_ = vertical.window_height;
+    height_ = vertical.window_height +
+        static_cast<int>(row_count - 1) * Scale(kLineHeight);
     layout_dirty_ = false;
 }
 
@@ -640,12 +703,15 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
 
     const auto vertical = BuildCandidateWindowVerticalLayout(
         Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
-    if (y < vertical.candidate_top || y >= vertical.candidate_bottom) {
+    const int row_height = Scale(kLineHeight);
+    const int row = (y - vertical.candidate_top) / row_height;
+    if (y < vertical.candidate_top || row < 0 ||
+        static_cast<size_t>(row) >= item_rows_.size()) {
         return -1;
     }
 
     int hit = -1;
-    for (const auto& item : item_layout_) {
+    for (const auto& item : item_rows_[static_cast<size_t>(row)]) {
         if (x >= item.hit_left && x < item.hit_right) {
             hit = static_cast<int>(item.index);
             break;
@@ -675,8 +741,8 @@ void CandidateWindow::DrawContent(
         const int row_h = Scale(kVerticalRowHeight);
         const int padding = Scale(12);
 
-        // 1. 顶部标题
-        SelectObject(hdc, font_comp_);
+        // 1. 顶部标题 (字号适中精致)
+        SelectObject(hdc, font_header_title_);
         SetTextColor(hdc, RGB(15, 23, 42));
         std::wstring title = composing_.rfind(L"vv", 0) == 0 ? L"自定义短语" : L"复制记录";
         RECT title_rc {padding, Scale(4), padding + Scale(120), top_bar_h};
@@ -764,18 +830,45 @@ void CandidateWindow::DrawContent(
                 RECT dot_rc {Scale(14), row_y, Scale(26), row_y + row_h};
                 DrawTextW(hdc, L"•", -1, &dot_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-                // 绘制文本
+                // 绘制文本 (固定右边距为 row_rc.right - Scale(30)，鼠标悬停垃圾桶出现时文字绝对不动！)
                 SetTextColor(hdc, is_selected ? RGB(30, 27, 75) : RGB(30, 41, 59));
-                RECT item_text_rc {Scale(26), row_y, row_rc.right - (is_hovered ? Scale(30) : Scale(8)), row_y + row_h};
+                RECT item_text_rc {Scale(26), row_y, row_rc.right - Scale(30), row_y + row_h};
                 DrawTextW(hdc, candidates_[i].text.c_str(), -1, &item_text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-                // 悬停显示垃圾桶 🗑
+                // 悬停显示精致矢量简约垃圾桶
                 if (is_hovered) {
-                    SelectObject(hdc, font_meta_);
-                    SetTextColor(hdc, hovered_delete_ ? RGB(239, 68, 68) : RGB(148, 163, 184));
-                    RECT del_rc {row_rc.right - Scale(26), row_y, row_rc.right - Scale(4), row_y + row_h};
-                    DrawTextW(hdc, L"🗑", -1, &del_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                    SelectObject(hdc, font_utility_);
+                    const int btn_x = row_rc.right - Scale(22);
+                    const int btn_y = row_y + (row_h - Scale(14)) / 2;
+                    const int icon_w = Scale(11);
+                    const int icon_h = Scale(13);
+                    COLORREF trash_color = hovered_delete_ ? RGB(239, 68, 68) : RGB(156, 163, 175);
+                    HPEN trash_pen = CreatePen(PS_SOLID, 1, trash_color);
+                    HGDIOBJ old_trash_pen = SelectObject(hdc, trash_pen);
+                    HGDIOBJ old_trash_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+                    // 1. 垃圾桶盖把手
+                    MoveToEx(hdc, btn_x + Scale(4), btn_y, nullptr);
+                    LineTo(hdc, btn_x + Scale(7), btn_y);
+                    // 2. 垃圾桶盖横线
+                    MoveToEx(hdc, btn_x + Scale(1), btn_y + Scale(2), nullptr);
+                    LineTo(hdc, btn_x + icon_w - Scale(1), btn_y + Scale(2));
+                    // 3. 垃圾桶桶身
+                    const POINT body_pts[4] = {
+                        {btn_x + Scale(2), btn_y + Scale(3)},
+                        {btn_x + icon_w - Scale(2), btn_y + Scale(3)},
+                        {btn_x + icon_w - Scale(3), btn_y + icon_h},
+                        {btn_x + Scale(3), btn_y + icon_h}
+                    };
+                    Polygon(hdc, body_pts, 4);
+                    // 4. 桶身竖线条
+                    MoveToEx(hdc, btn_x + Scale(4), btn_y + Scale(5), nullptr);
+                    LineTo(hdc, btn_x + Scale(4), btn_y + icon_h - Scale(2));
+                    MoveToEx(hdc, btn_x + Scale(6), btn_y + Scale(5), nullptr);
+                    LineTo(hdc, btn_x + Scale(6), btn_y + icon_h - Scale(2));
+
+                    SelectObject(hdc, old_trash_brush);
+                    SelectObject(hdc, old_trash_pen);
+                    DeleteObject(trash_pen);
                 }
             }
         }
@@ -813,16 +906,15 @@ void CandidateWindow::DrawContent(
     const int line_height = Scale(kLineHeight);
     const auto vertical = BuildCandidateWindowVerticalLayout(
         Scale(kVerticalPadding), line_height, Scale(kRowGap));
-    const std::wstring page_text = BuildPageText(
-        candidates_.size(), page_, page_size_);
     const std::wstring status_text = BuildTypingStatisticsText(
         typing_stats_.daily_count);
-    const std::wstring header_right_text = page_text.empty()
-        ? status_text
-        : status_text + L"   " + page_text;
-    const int page_width = MeasureText(hdc, font_meta_, header_right_text);
+    const bool can_expand = candidates_.size() > page_size_;
+    const int status_width = MeasureText(hdc, font_meta_, status_text);
+    const int header_right_width = status_width +
+        (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     const auto header = BuildCandidateHeaderLayout(
-        rc.right, page_width, horizontal_padding + Scale(4), horizontal_padding,
+        rc.right, header_right_width,
+        horizontal_padding + Scale(4), horizontal_padding,
         Scale(kHeaderTextGap));
     RECT composing_rect {header.composing_left, vertical.composing_top,
                          header.composing_right, vertical.composing_bottom};
@@ -835,13 +927,44 @@ void CandidateWindow::DrawContent(
     DrawTextW(hdc, comp_draw.c_str(), -1, &composing_rect,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    // 右侧内容（普通打字显示字数与页码）
+    // 右侧只显示当日字数和紧随其后的展开/收起箭头。
     SelectObject(hdc, font_meta_);
     SetTextColor(hdc, RGB(90, 100, 115));
-    RECT page_rect {header.page_left, vertical.composing_top,
-                    header.page_right, vertical.composing_bottom};
-    DrawTextW(hdc, header_right_text.c_str(), -1, &page_rect,
-              DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    RECT status_rect {header.page_left, vertical.composing_top,
+                      header.page_left + status_width,
+                      vertical.composing_bottom};
+    DrawTextW(hdc, status_text.c_str(), -1, &status_rect,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    expand_toggle_rect_ = {};
+    if (can_expand) {
+        const int toggle_left = status_rect.right + Scale(kExpandToggleGap);
+        expand_toggle_rect_ = RECT {
+            toggle_left, vertical.composing_top,
+            toggle_left + Scale(kExpandToggleWidth),
+            vertical.composing_bottom};
+        const int center_x =
+            (expand_toggle_rect_.left + expand_toggle_rect_.right) / 2;
+        const int center_y =
+            (expand_toggle_rect_.top + expand_toggle_rect_.bottom) / 2;
+        const int half_width = Scale(4);
+        const int half_height = Scale(2);
+        POINT chevron[3] {};
+        if (expanded_) {
+            chevron[0] = POINT {center_x - half_width, center_y + half_height};
+            chevron[1] = POINT {center_x, center_y - half_height};
+            chevron[2] = POINT {center_x + half_width, center_y + half_height};
+        } else {
+            chevron[0] = POINT {center_x - half_width, center_y - half_height};
+            chevron[1] = POINT {center_x, center_y + half_height};
+            chevron[2] = POINT {center_x + half_width, center_y - half_height};
+        }
+        HPEN arrow_pen = CreatePen(
+            PS_SOLID, (std::max)(1, Scale(1)), RGB(90, 100, 115));
+        HGDIOBJ old_arrow_pen = SelectObject(hdc, arrow_pen);
+        Polyline(hdc, chevron, ARRAYSIZE(chevron));
+        SelectObject(hdc, old_arrow_pen);
+        DeleteObject(arrow_pen);
+    }
 
     // 分隔线
     HPEN sep = CreatePen(PS_SOLID, 1, RGB(230, 233, 238));
@@ -853,40 +976,50 @@ void CandidateWindow::DrawContent(
 
     // 候选：逐项绘制，选中高亮
     SelectObject(hdc, font_);
-    const int y2 = vertical.candidate_top;
-    const size_t begin = page_ * page_size_;
-    const size_t end = (std::min)(candidates_.size(), begin + page_size_);
-    for (size_t slot = 0; slot < item_layout_.size() && begin + slot < end; ++slot) {
-        const size_t i = begin + slot;
-        wchar_t prefix[16];
-        swprintf_s(prefix, L"%u.", static_cast<unsigned>(i - begin + 1));
-        std::wstring item = prefix;
-        item += candidates_[i].text;
+    const size_t first_page = expanded_
+        ? CandidateExpandedFirstPage(page_, kExpandedMaxRows)
+        : page_;
+    for (size_t row = 0; row < item_rows_.size(); ++row) {
+        const size_t row_page = first_page + row;
+        const size_t begin = row_page * page_size_;
+        const bool numbered = row_page == page_;
+        const int row_top = vertical.candidate_top +
+            static_cast<int>(row) * line_height;
+        const int row_bottom = row_top + line_height;
+        for (size_t slot = 0; slot < item_rows_[row].size(); ++slot) {
+            const size_t i = item_rows_[row][slot].index;
+            if (i >= candidates_.size()) continue;
+            std::wstring item;
+            if (numbered) {
+                item = std::to_wstring(i - begin + 1) + L".";
+            }
+            item += candidates_[i].text;
 
-        RECT item_rc {item_layout_[slot].hit_left, y2,
-                      item_layout_[slot].hit_right, vertical.candidate_bottom};
+            RECT item_rc {item_rows_[row][slot].hit_left, row_top,
+                          item_rows_[row][slot].hit_right, row_bottom};
 
-        if (i == selected_) {
-            RECT hl {item_rc.left + Scale(2), item_rc.top + Scale(3),
-                     item_rc.right - Scale(2), item_rc.bottom - Scale(3)};
-            GdiFlush();
-            const std::vector<uint8_t> highlight_mask = BuildRoundedCardMask(
-                bitmap_width, bitmap_height,
-                content_offset + hl.left, content_offset + hl.top,
-                hl.right - hl.left, hl.bottom - hl.top,
-                Scale(kCornerRadius));
-            BlendSolidColor(
-                pixels, highlight_mask, bitmap_width, bitmap_height,
-                RGB(22, 119, 255));
-            SetTextColor(hdc, RGB(255, 255, 255));
-        } else {
-            SetTextColor(hdc, RGB(30, 30, 30));
+            if (i == selected_) {
+                RECT hl {item_rc.left + Scale(2), item_rc.top + Scale(3),
+                         item_rc.right - Scale(2), item_rc.bottom - Scale(3)};
+                GdiFlush();
+                const std::vector<uint8_t> highlight_mask = BuildRoundedCardMask(
+                    bitmap_width, bitmap_height,
+                    content_offset + hl.left, content_offset + hl.top,
+                    hl.right - hl.left, hl.bottom - hl.top,
+                    Scale(kCornerRadius));
+                BlendSolidColor(
+                    pixels, highlight_mask, bitmap_width, bitmap_height,
+                    RGB(22, 119, 255));
+                SetTextColor(hdc, RGB(255, 255, 255));
+            } else {
+                SetTextColor(hdc, RGB(30, 30, 30));
+            }
+
+            RECT text_rc_item {item_rows_[row][slot].text_left, row_top,
+                               item_rows_[row][slot].hit_right, row_bottom};
+            DrawTextW(hdc, item.c_str(), -1, &text_rc_item,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
-
-        RECT text_rc_item {item_layout_[slot].text_left, y2,
-                           item_layout_[slot].hit_right, vertical.candidate_bottom};
-        DrawTextW(hdc, item.c_str(), -1, &text_rc_item,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     SelectObject(hdc, old_font);
@@ -1051,6 +1184,14 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
     case WM_TIMER:
+        if (wparam == kVModeTimerId) {
+            KillTimer(hwnd, kVModeTimerId);
+            self->vmode_timer_active_ = false;
+            auto cb = std::move(self->vmode_timer_cb_);
+            self->vmode_timer_cb_ = nullptr;
+            if (cb) cb();
+            return 0;
+        }
         if (wparam == kReadyPollTimerId) {
             // 先拷贝再调用：回调内部可能触发 Stop/StartReadyPolling 替换
             // ready_poll_，直接调用成员会销毁正在执行的 lambda。
@@ -1078,6 +1219,15 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
         const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
+
+        if (!is_v_mode && self->expand_toggle_rect_.right > 0 &&
+            x >= self->expand_toggle_rect_.left &&
+            x < self->expand_toggle_rect_.right &&
+            y >= self->expand_toggle_rect_.top &&
+            y < self->expand_toggle_rect_.bottom) {
+            self->ToggleExpanded();
+            return 0;
+        }
 
         if (is_v_mode) {
             // 1. 检查是否点击搜索框清空按钮

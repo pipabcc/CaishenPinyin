@@ -35,8 +35,8 @@ $versionHeader=Get-Content -LiteralPath (Join-Path $Root 'src\common\version.h')
 if($versionHeader-notmatch '#define\s+SHURU_VERSION_STRING\s+"([^"]+)"'){throw 'version string missing'}
 $productVersion=$Matches[1]
 $ninja=Get-Command ninja -ErrorAction SilentlyContinue
-if($ninja){$configure="cmake -S `"$Root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl";$compile="cmake --build `"$build`" --config $Config";$dll=Join-Path $build 'ShuruIme.dll'}
-else{$configure="cmake -S `"$Root`" -B `"$build`" -G `"Visual Studio 17 2022`" -A x64 -DBUILD_TESTING=ON";$compile="cmake --build `"$build`" --config $Config";$dll=Join-Path $build "$Config\ShuruIme.dll"}
+if($ninja){$configure="cmake -S `"$Root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl";$compile="cmake --build `"$build`" --config $Config --clean-first";$dll=Join-Path $build 'ShuruIme.dll'}
+else{$configure="cmake -S `"$Root`" -B `"$build`" -G `"Visual Studio 17 2022`" -A x64 -DBUILD_TESTING=ON";$compile="cmake --build `"$build`" --config $Config --clean-first";$dll=Join-Path $build "$Config\ShuruIme.dll"}
 $settingsProject=Join-Path $Root 'settings\ShuruSettings.csproj'
 $settingsOutput=Join-Path $Root "settings\bin\$Config\net8.0-windows"
 $bat=Join-Path $env:TEMP 'facai-release-build.cmd';@"

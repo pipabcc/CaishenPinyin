@@ -20,6 +20,8 @@ struct RuntimeConfig {
     int candidate_font_size = 19;
     std::wstring display_name = L"财神输入法";
     std::wstring tray_text = L"财";  // 任务栏语言指示按钮上的自定义字符
+    bool v_mode_open_window = false;  // 按 v 是否直接打开剪贴板搜索窗口
+    bool vv_mode_open_window = false; // 按 vv 是否直接打开自定义短语搜索窗口
 };
 
 // Thread-safe, process-cached settings. Values are read from

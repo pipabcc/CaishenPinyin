@@ -1,7 +1,7 @@
-#include "common/guid_def.h"
-#include "engine/pinyin_engine.h"
 #include <Windows.h>
 #include <msctf.h>
+#include "common/guid_def.h"
+#include "engine/pinyin_engine.h"
 
 #include <algorithm>
 #include <cstdio>

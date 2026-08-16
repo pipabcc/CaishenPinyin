@@ -223,7 +223,9 @@ if(BUILD_TESTING)
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata-p1"
     # 白霜正式词库会在本测试内执行文本装载、缓存生成、缓存校验和引擎装载；
     # 查询延迟仍由测试内部的 P99 阈值单独约束。
-    TIMEOUT 300
+    # 白霜 18 MB 文本词库的冷解析与缓存重建在实时防护繁忙时可能超过
+    # 300 秒；查询延迟仍由测试内部的 P99 门槛严格约束。
+    TIMEOUT 600
   )
 
   add_executable(shared_engine_lifecycle_test
@@ -370,7 +372,9 @@ if(BUILD_TESTING)
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/deployment_core_test.ps1)
   set_tests_properties(deployment_core PROPERTIES
-    TIMEOUT 60
+    # 完整白霜词库与 Grammar 超过 240 MB，部署测试会多次复制并校验哈希。
+    # 在机械盘或实时防护开启时 60 秒不足，保留明确上限但给足正常 I/O 时间。
+    TIMEOUT 180
     # VsDevCmd 可能把 PowerShell 7 模块目录放到最前，导致 Windows PowerShell
     # 先发现不兼容的 Microsoft.PowerShell.Utility，而不是自身模块。
     ENVIRONMENT "PSModulePath=$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0/Modules"

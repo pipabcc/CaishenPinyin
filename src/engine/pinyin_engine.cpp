@@ -686,6 +686,31 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             return path.covered == query.size() && path.complete &&
                 !path.edges.empty();
         });
+    std::string leading_single_syllable;
+    bool has_partial_tail_syllable = false;
+    if (single_complete_syllable) {
+        leading_single_syllable = compact;
+    } else if (!has_complete_syllable_path &&
+               schema == InputSchema::Quanpin &&
+               query.find('\'') == std::string::npos) {
+        // wanq / renz / womenz 这类输入已经完成前面的音节，末尾只是
+        // 下一音节的前缀。这是正常输入过程，不应让纠错抢占相关词。
+        const auto partial_tail = std::find_if(
+            lattice.begin(), lattice.end(), [&](const auto& path) {
+                return path.covered == query.size() && !path.complete &&
+                    path.edges.size() >= 2 && path.edges.back().partial &&
+                    std::all_of(
+                        path.edges.begin(), path.edges.end() - 1,
+                        [](const auto& edge) { return !edge.partial; });
+            });
+        if (partial_tail != lattice.end()) {
+            has_partial_tail_syllable = true;
+            if (partial_tail->edges.size() == 2) {
+                leading_single_syllable =
+                    partial_tail->edges.front().syllable;
+            }
+        }
+    }
     const bool has_partial_tail = !has_complete_syllable_path && std::any_of(
         lattice.begin(), lattice.end(), [&](const auto& path) {
             return path.covered == query.size() && !path.complete &&
@@ -1545,67 +1570,53 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             return retained_corrections++ >= correction_quota;
         }), pool.end());
     }
-    if (single_complete_syllable) {
-        auto is_exact_single = [](const Candidate& candidate) {
-            return candidate.source == CandidateSource::Exact && IsBmpChineseWord(candidate.text) &&
-                candidate.text.size() == 1;
+    if (!leading_single_syllable.empty() || has_partial_tail_syllable) {
+        auto is_leading_single = [&](const Candidate& candidate) {
+            return candidate.source != CandidateSource::Correction &&
+                IsBmpChineseWord(candidate.text) && candidate.text.size() == 1 &&
+                candidate.pinyin == leading_single_syllable;
         };
-        auto is_dictionary_phrase = [](const Candidate& candidate) {
-            return IsBmpChineseWord(candidate.text) && candidate.text.size() > 1 &&
-                (candidate.source == CandidateSource::Exact ||
-                 candidate.source == CandidateSource::Prefix);
-        };
-        auto is_graph_phrase = [](const Candidate& candidate) {
-            return IsBmpChineseWord(candidate.text) && candidate.text.size() > 1 &&
-                (candidate.source == CandidateSource::WordGraph ||
-                 candidate.source == CandidateSource::MixedSentence);
+        auto is_related_phrase = [&](const Candidate& candidate) {
+            if (!IsBmpChineseWord(candidate.text) || candidate.text.size() < 2 ||
+                candidate.covered_input_len < query.size() ||
+                candidate.pinyin.size() < compact.size() ||
+                candidate.pinyin.compare(0, compact.size(), compact) != 0) {
+                return false;
+            }
+            return candidate.source == CandidateSource::Exact ||
+                candidate.source == CandidateSource::Prefix;
         };
         std::vector<Candidate> ordered;
         ordered.reserve(pool.size());
         std::vector<bool> moved(pool.size(), false);
-        size_t reserved_singles = 0;
-        for (size_t i = 0; i < pool.size() && reserved_singles < 4; ++i) {
-            if (is_exact_single(pool[i])) {
-                ordered.push_back(std::move(pool[i]));
-                moved[i] = true;
-                ++reserved_singles;
+        auto move_matching = [&](const auto& predicate, size_t maximum) {
+            size_t moved_count = 0;
+            for (size_t i = 0; i < pool.size() && moved_count < maximum; ++i) {
+                if (!moved[i] && predicate(pool[i])) {
+                    ordered.push_back(std::move(pool[i]));
+                    moved[i] = true;
+                    ++moved_count;
+                }
             }
+            return moved_count;
+        };
+
+        // 完整单音节（wan）先给 6 个常用单字；已经进入第二音节
+        // （wanq / renz）时，覆盖全部输入的相关词才是用户正在输入的
+        // 目标，应放在单字和纠错之前。两者不能共用同一种排序。
+        if (has_partial_tail_syllable) {
+            move_matching(is_related_phrase, 5);
+        } else {
+            move_matching(is_leading_single, 6);
+            move_matching(is_related_phrase, 5);
         }
-        // 一页九项时形成“4 个常用单字 + 5 个词组”；更大的内部查询也只让
-        // 有限数量的词组插队，避免扩库后数百个前缀词永久淹没其余单字。
-        const size_t phrase_quota = limit > reserved_singles
-            ? (std::min)(size_t{5}, limit - reserved_singles)
-            : 0;
-        size_t preferred_phrases = 0;
-        for (size_t i = 0; i < pool.size() && preferred_phrases < phrase_quota; ++i) {
-            if (!moved[i] && is_dictionary_phrase(pool[i])) {
-                ordered.push_back(std::move(pool[i]));
-                moved[i] = true;
-                ++preferred_phrases;
-            }
-        }
-        for (size_t i = 0; i < pool.size() && preferred_phrases < phrase_quota; ++i) {
-            if (!moved[i] && is_graph_phrase(pool[i])) {
-                ordered.push_back(std::move(pool[i]));
-                moved[i] = true;
-                ++preferred_phrases;
-            }
-        }
-        // 第一页之后先完整列出剩余精确单字。前缀词可达数通常远大于候选
-        // 预算，若先放全部词组，char_dict 中稍靠后的单字会在最终截断前消失。
-        for (size_t i = 0; i < pool.size(); ++i) {
-            if (!moved[i] && is_exact_single(pool[i])) {
-                ordered.push_back(std::move(pool[i]));
-                moved[i] = true;
-            }
-        }
-        // 剩余词典词组随后进入翻页结果；词图等其他来源保持原相对顺序。
-        for (size_t i = 0; i < pool.size(); ++i) {
-            if (!moved[i] && is_dictionary_phrase(pool[i])) {
-                ordered.push_back(std::move(pool[i]));
-                moved[i] = true;
-            }
-        }
+        move_matching([](const Candidate& candidate) {
+            return candidate.source == CandidateSource::Correction;
+        }, (std::numeric_limits<size_t>::max)());
+
+        // 翻页中仍保留其余单字与相关词，确保 char_dict 的生僻字可达。
+        move_matching(is_leading_single, (std::numeric_limits<size_t>::max)());
+        move_matching(is_related_phrase, (std::numeric_limits<size_t>::max)());
         for (size_t i = 0; i < pool.size(); ++i) {
             if (!moved[i]) {
                 ordered.push_back(std::move(pool[i]));

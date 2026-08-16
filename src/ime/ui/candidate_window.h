@@ -45,6 +45,9 @@ public:
         size_t page = 0,
         size_t page_size = 9);
     void SetSelectedIndex(size_t selected_index);
+    bool ToggleExpanded();
+    bool SetExpanded(bool expanded);
+    bool IsExpanded() const noexcept { return expanded_; }
     void SetEnglishMode(bool english);
     void SetTypingStats(const TypingStatsSnapshot& snapshot);
     void SetSelectionHandler(std::function<void(size_t)> handler) { on_select_ = std::move(handler); }
@@ -56,6 +59,10 @@ public:
     // 引擎就绪轮询：poll 返回 true 继续轮询，false 停止。
     void StartReadyPolling(std::function<bool()> poll);
     void StopReadyPolling();
+
+    // V/VV 模式延时唤起独立窗口定时器
+    void StartVModeTimer(std::function<void()> callback, UINT delay_ms = 220);
+    void StopVModeTimer();
 
 private:
     static constexpr int kHorizontalPadding = 9;
@@ -70,18 +77,24 @@ private:
     static constexpr int kMaxWidth = 1440;
     static constexpr int kVerticalRowHeight = 32;
     static constexpr int kVerticalMaxVisible = 10;
+    static constexpr int kExpandedMaxRows = 5;
+    static constexpr int kExpandToggleWidth = 16;
+    static constexpr int kExpandToggleGap = 5;
     static constexpr int kUtilityFontSize = 13;
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
+    static constexpr UINT_PTR kVModeTimerId = 1002;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HFONT font_ = nullptr;
     HFONT font_comp_ = nullptr;
     HFONT font_meta_ = nullptr;
+    HFONT font_header_title_ = nullptr;
     HFONT font_utility_ = nullptr;
     bool visible_ = false;
     bool english_mode_ = false;
+    bool expanded_ = false;
     bool mouse_down_ = false;
     bool dragging_ = false;
     POINT drag_start_cursor_ {};
@@ -100,6 +113,7 @@ private:
     int drag_start_scroll_ = 0;
     RECT search_box_rect_ {};
     RECT search_clear_rect_ {};
+    RECT expand_toggle_rect_ {};
 
     std::wstring composing_;
     TypingStatsSnapshot typing_stats_;
@@ -107,7 +121,7 @@ private:
     size_t selected_ = 0;
     size_t page_ = 0;
     size_t page_size_ = 9;
-    std::vector<CandidateItemLayout> item_layout_;
+    std::vector<std::vector<CandidateItemLayout>> item_rows_;
     bool layout_dirty_ = true;
     bool paint_dirty_ = true;
     std::function<void(size_t)> on_select_;
@@ -116,6 +130,8 @@ private:
     std::function<void()> on_search_cleared_;
     std::function<void(size_t)> on_delete_item_;
     std::function<bool()> ready_poll_;
+    bool vmode_timer_active_ = false;
+    std::function<void()> vmode_timer_cb_;
 
     int Scale(int value) const;
     void EnsureFonts();

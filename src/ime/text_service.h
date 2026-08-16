@@ -130,6 +130,7 @@ private:
     void SyncCandidateWindowCandidates();
     void UpdateCandidateWindow(ITfContext* context);
     bool GetCaretScreenRect(ITfContext* context, RECT* rect);
+    void ResetCandidateAnchor() noexcept;
     void ClearCompositionState();
     void ToggleEnglishMode();
     void SyncStatusUi();
@@ -141,7 +142,7 @@ private:
     static void SendVirtualKey(WORD vk);
 
     HRESULT EndComposition();
-    HRESULT CommitText(ITfContext* context, const std::wstring& text);
+    HRESULT CommitText(ITfContext* context, const std::wstring& text, bool count_typing_stats = true);
     HRESULT SetCompositionString(ITfContext* context, const std::wstring& text);
 
     bool ShortcutModifierForKey(

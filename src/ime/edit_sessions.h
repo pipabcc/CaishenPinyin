@@ -31,7 +31,8 @@ public:
     SetCompositionEditSession(
         ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
         ITfComposition** composition, const std::wstring& text,
-        TfGuidAtom display_atom = TF_INVALID_GUIDATOM);
+        TfGuidAtom display_atom = TF_INVALID_GUIDATOM,
+        RECT* out_caret_rect = nullptr, bool* out_caret_ok = nullptr);
     virtual ~SetCompositionEditSession();
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
@@ -47,6 +48,8 @@ private:
     ITfComposition** composition_ = nullptr;
     std::wstring text_;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
+    RECT* out_caret_rect_ = nullptr;
+    bool* out_caret_ok_ = nullptr;
 };
 
 class EndCompositionEditSession : public ITfEditSession {
@@ -83,7 +86,7 @@ private:
     bool* out_ok_ = nullptr;
 };
 
-// 只读会话：读取当前选区的 GUID_PROP_INPUTSCOPE。
+// 只读会话：获取宿主 InputScope（密码框识别）
 class GetInputScopeEditSession : public ITfEditSession {
 public:
     GetInputScopeEditSession(ITfContext* context, InputScopePrivacy* out_privacy);
@@ -100,4 +103,4 @@ private:
     InputScopePrivacy* out_privacy_ = nullptr;
 };
 
-} // namespace shuru
+}  // namespace shuru

@@ -132,9 +132,11 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
 
 SetCompositionEditSession::SetCompositionEditSession(
     ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
-    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom)
+    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom,
+    RECT* out_caret_rect, bool* out_caret_ok)
     : context_(context), client_id_(client_id), sink_(sink),
-      composition_(composition), text_(text), display_atom_(display_atom) {
+      composition_(composition), text_(text), display_atom_(display_atom),
+      out_caret_rect_(out_caret_rect), out_caret_ok_(out_caret_ok) {
     if (context_) {
         context_->AddRef();
     }
@@ -189,6 +191,22 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
             SafeRelease(&insertion_range);
             return FAILED(hr) ? hr : E_FAIL;
         }
+
+        // 在写入字符前测量已排版完成的前置光标插入点矩形
+        if (out_caret_rect_ != nullptr) {
+            ITfContextView* view = nullptr;
+            if (SUCCEEDED(context_->GetActiveView(&view)) && view != nullptr) {
+                RECT rc {};
+                BOOL clipped = FALSE;
+                if (SUCCEEDED(view->GetTextExt(ec, insertion_range, &rc, &clipped)) &&
+                    !clipped && rc.bottom > rc.top && rc.right >= rc.left) {
+                    *out_caret_rect_ = rc;
+                    if (out_caret_ok_ != nullptr) *out_caret_ok_ = true;
+                }
+                view->Release();
+            }
+        }
+
         ITfContextComposition* context_composition = nullptr;
         hr = context_->QueryInterface(
             IID_ITfContextComposition,
@@ -340,6 +358,9 @@ STDMETHODIMP GetTextExtEditSession::DoEditSession(TfEditCookie ec) {
     TfAnchor caret_anchor = TF_ANCHOR_END;
     if (composition_) {
         composition_->GetRange(&range);
+        // 组合期间始终以拼音起点为稳定锚点，避免每输入一个字母候选窗
+        // 都横向跳动。滚动或换行时 TSF 会重新上报该起点。
+        caret_anchor = TF_ANCHOR_START;
     }
     if (!range) {
         TF_SELECTION sel {};
@@ -354,22 +375,39 @@ STDMETHODIMP GetTextExtEditSession::DoEditSession(TfEditCookie ec) {
         return E_FAIL;
     }
 
-    // 整段组合串的 GetTextExt 左边界是拼音起点；候选窗应跟随当前插入端，
-    // 因此先把范围折叠到实际光标锚点。
-    const HRESULT collapse_hr = range->Collapse(ec, caret_anchor);
-    if (FAILED(collapse_hr)) {
-        range->Release();
-        view->Release();
-        return collapse_hr;
+    // 优先测量折叠后的稳定锚点。
+    ITfRange* caret_range = nullptr;
+    if (SUCCEEDED(range->Clone(&caret_range)) && caret_range != nullptr) {
+        if (SUCCEEDED(caret_range->Collapse(ec, caret_anchor))) {
+            RECT rc {};
+            BOOL clipped = FALSE;
+            HRESULT hr = view->GetTextExt(ec, caret_range, &rc, &clipped);
+            if (SUCCEEDED(hr) && !clipped && rc.bottom > rc.top && rc.right >= rc.left) {
+                caret_range->Release();
+                range->Release();
+                view->Release();
+                *out_rect_ = rc;
+                if (out_ok_) *out_ok_ = true;
+                return S_OK;
+            }
+        }
+        caret_range->Release();
     }
 
+    // 若折叠点测量未就绪（如单字符刚插入时），尝试测量整段组合串
     RECT rc {};
     BOOL clipped = FALSE;
     HRESULT hr = view->GetTextExt(ec, range, &rc, &clipped);
     range->Release();
     view->Release();
     if (SUCCEEDED(hr) && !clipped && rc.bottom > rc.top && rc.right >= rc.left) {
-        *out_rect_ = rc;
+        RECT caret_rc = rc;
+        if (caret_anchor == TF_ANCHOR_END) {
+            caret_rc.left = rc.right;
+        } else {
+            caret_rc.right = rc.left;
+        }
+        *out_rect_ = caret_rc;
         if (out_ok_) *out_ok_ = true;
         return S_OK;
     }

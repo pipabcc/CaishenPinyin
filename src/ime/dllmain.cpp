@@ -1,3 +1,4 @@
+#include <Windows.h>
 #include "class_factory.h"
 
 #include "globals.h"
@@ -7,7 +8,6 @@
 #include "../common/guid_def.h"
 #include "../common/logger.h"
 
-#include <Windows.h>
 #include <new>
 
 using namespace shuru;

@@ -1,4 +1,5 @@
 #include "engine/pinyin_engine.h"
+#include "engine/pinyin_lattice.h"
 #include "engine/dictionary.h"
 #include "common/com_utils.h"
 
@@ -444,19 +445,74 @@ int wmain(int argc, wchar_t** argv) {
 
 
         const auto duan = engine.Query("duan", 9);
-        if (duan.candidates.size() < 4 ||
+        if (duan.candidates.size() < 6 ||
             !std::all_of(
-                duan.candidates.begin(), duan.candidates.begin() + 4,
+                duan.candidates.begin(), duan.candidates.begin() + 6,
                 [](const Candidate& candidate) {
                     return IsSingleBmpCharacter(candidate.text) && candidate.pinyin == "duan";
                 }) ||
-            !ContainsTextInFirst(duan, L"短", 4)) {
+            !ContainsTextInFirst(duan, L"短", 6)) {
             std::cerr << "single-syllable candidates were crowded out: ";
             for (const auto& candidate : duan.candidates) {
                 std::cerr << WideToUtf8(candidate.text) << ',';
             }
             std::cerr << '\n';
             return 13;
+        }
+
+        const auto wan = engine.Query("wan", 9);
+        if (wan.candidates.size() < 6 ||
+            !std::all_of(
+                wan.candidates.begin(), wan.candidates.begin() + 6,
+                [](const Candidate& candidate) {
+                    return IsSingleBmpCharacter(candidate.text) &&
+                        candidate.pinyin == "wan" &&
+                        candidate.source != CandidateSource::Correction;
+                })) {
+            std::cerr << "complete wan syllable did not keep six singles\n";
+            return 33;
+        }
+
+        // 完整单音节先展示 6 个单字；一旦进入第二音节，覆盖全部已输入
+        // 字母的多字词应提前，首音节单字和纠错均排在其后。
+        const std::vector<std::string> partial_tail_inputs = {
+            "wanq", "renz", "haod"};
+        for (const auto& input : partial_tail_inputs) {
+            const auto ranked = engine.Query(input, 9);
+            if (ranked.candidates.size() < 7) {
+                std::cerr << "partial-tail candidate count too small: " << input << '\n';
+                return 33;
+            }
+            const auto lattice = pinyin_data::BuildSyllableLattice(input);
+            const auto path = std::find_if(
+                lattice.begin(), lattice.end(), [](const auto& value) {
+                    return value.covered > 0 && value.edges.size() >= 2 &&
+                        value.edges.back().partial;
+                });
+            if (path == lattice.end()) {
+                std::cerr << "partial-tail lattice missing: " << input << '\n';
+                return 33;
+            }
+            const auto is_related_phrase = [&](const Candidate& candidate) {
+                return candidate.text.size() >= 2 &&
+                    candidate.source != CandidateSource::Correction &&
+                    candidate.covered_input_len >= input.size() &&
+                    candidate.pinyin.size() >= input.size() &&
+                    candidate.pinyin.compare(0, input.size(), input) == 0;
+            };
+            constexpr size_t related_prefix_count = 5;
+            if (!std::all_of(
+                    ranked.candidates.begin(),
+                    ranked.candidates.begin() + related_prefix_count,
+                    is_related_phrase)) {
+                std::cerr << "partial-tail ranking failed: " << input << ' ';
+                for (const auto& candidate : ranked.candidates) {
+                    std::cerr << WideToUtf8(candidate.text) << '['
+                              << static_cast<int>(candidate.source) << "],";
+                }
+                std::cerr << '\n';
+                return 33;
+            }
         }
 
         engine.Learn("duan", L"短剑");

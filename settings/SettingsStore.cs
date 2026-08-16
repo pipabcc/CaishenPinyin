@@ -15,7 +15,9 @@ public sealed record AppSettings(
     bool FullWidthPunctuation = true,
     int CandidateCount = 9,
     int CandidateFontSize = 19,
-    string DisplayName = SettingsStore.DefaultDisplayName)
+    string DisplayName = SettingsStore.DefaultDisplayName,
+    bool VModeOpenWindow = false,
+    bool VvModeOpenWindow = false)
 {
     public AppSettings Validated() => this with
     {
@@ -61,7 +63,9 @@ public static class SettingsStore
                 B("FullWidthPunctuation", defaults.FullWidthPunctuation),
                 I("CandidateCount", defaults.CandidateCount),
                 I("CandidateFontSize", defaults.CandidateFontSize),
-                S("DisplayName", defaults.DisplayName)).Validated();
+                S("DisplayName", defaults.DisplayName),
+                B("VModeOpenWindow", defaults.VModeOpenWindow),
+                B("VvModeOpenWindow", defaults.VvModeOpenWindow)).Validated();
         }
         catch (IOException) { return defaults; }
         catch (UnauthorizedAccessException) { return defaults; }
@@ -90,6 +94,8 @@ public static class SettingsStore
             $"CandidateCount={settings.CandidateCount}",
             $"CandidateFontSize={settings.CandidateFontSize}",
             $"DisplayName={settings.DisplayName}",
+            $"VModeOpenWindow={Bit(settings.VModeOpenWindow)}",
+            $"VvModeOpenWindow={Bit(settings.VvModeOpenWindow)}",
             ""
         });
         try

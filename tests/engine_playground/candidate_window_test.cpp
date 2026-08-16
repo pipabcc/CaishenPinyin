@@ -65,7 +65,7 @@ int wmain(int argc, wchar_t** argv) {
     shuru::CandidateWindow window;
     if (!window.Create(GetModuleHandleW(nullptr))) return 4;
 
-    std::vector<shuru::Candidate> candidates(18);
+    std::vector<shuru::Candidate> candidates(63);
     for (size_t i = 0; i < candidates.size(); ++i) {
         candidates[i].text = L"候选" + std::to_wstring(i + 1);
     }
@@ -94,6 +94,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     const UINT dpi = (std::max)(UINT {96}, GetDpiForWindow(handle));
+    const int shadow_margin = MulDiv(12, static_cast<int>(dpi), 96);
     const SIZE size = window.WindowSize();
     const int expected_height = MulDiv(74, static_cast<int>(dpi), 96);
     if (size.cy != expected_height) {
@@ -104,6 +105,60 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"candidate layout changed during first Show\n");
         return 7;
     }
+
+    if (window.IsExpanded() || !window.ToggleExpanded()) {
+        std::fwprintf(stderr, L"candidate did not expand\n");
+        return 21;
+    }
+    const SIZE expanded_size = window.WindowSize();
+    const int expected_expanded_height = size.cy +
+        4 * MulDiv(30, static_cast<int>(dpi), 96);
+    if (!window.IsExpanded() ||
+        expanded_size.cy != expected_expanded_height) {
+        std::fwprintf(stderr,
+            L"expanded height=%d expected=%d\n",
+            expanded_size.cy, expected_expanded_height);
+        return 22;
+    }
+    if (!window.ToggleExpanded() || window.IsExpanded() ||
+        window.WindowSize().cy != size.cy) {
+        std::fwprintf(stderr, L"candidate did not restore collapsed size\n");
+        return 23;
+    }
+
+    // 箭头位于右上角字数统计之后，鼠标点击与 Tab 共用展开状态。
+    window.Show(POINT {40, 40});
+    const int arrow_x = shadow_margin + size.cx -
+        MulDiv(9 + 8, static_cast<int>(dpi), 96);
+    const int arrow_y = shadow_margin + MulDiv(
+        5 + 15, static_cast<int>(dpi), 96);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(arrow_x, arrow_y));
+    if (!window.IsExpanded()) {
+        std::fwprintf(stderr, L"candidate arrow click did not expand\n");
+        return 24;
+    }
+    size_t expanded_clicked_index = static_cast<size_t>(-1);
+    window.SetSelectionHandler([&expanded_clicked_index](size_t index) {
+        expanded_clicked_index = index;
+    });
+    const int expanded_second_row_x = shadow_margin +
+        MulDiv(13 + 24, static_cast<int>(dpi), 96);
+    const int expanded_second_row_y = shadow_margin +
+        MulDiv(5 + 30 + 4 + 30 + 15, static_cast<int>(dpi), 96);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON,
+                 MAKELPARAM(expanded_second_row_x, expanded_second_row_y));
+    SendMessageW(handle, WM_LBUTTONUP, 0,
+                 MAKELPARAM(expanded_second_row_x, expanded_second_row_y));
+    if (expanded_clicked_index != 9) {
+        std::fwprintf(stderr,
+            L"expanded second-row click=%zu expected=9\n",
+            expanded_clicked_index);
+        return 25;
+    }
+    window.SetSelectionHandler({});
+    window.SetSelectedIndex(0);
+    window.SetExpanded(false);
 
     const LONG_PTR extended_style = GetWindowLongPtrW(handle, GWL_EXSTYLE);
     if ((extended_style & WS_EX_LAYERED) == 0) {
@@ -127,7 +182,6 @@ int wmain(int argc, wchar_t** argv) {
 
     RECT actual_rect {};
     if (!GetWindowRect(handle, &actual_rect)) return 12;
-    const int shadow_margin = MulDiv(12, static_cast<int>(dpi), 96);
     const int expected_actual_width = size.cx + shadow_margin * 2;
     const int expected_actual_height = size.cy + shadow_margin * 2;
     if (actual_rect.right - actual_rect.left != expected_actual_width ||
@@ -139,6 +193,29 @@ int wmain(int argc, wchar_t** argv) {
             expected_actual_width,
             expected_actual_height);
         return 13;
+    }
+
+    // 隐藏后不能保留上一次的可见坐标；新组合的首帧必须直接
+    // 提交到新光标位置，不得先在旧位置曝光一帧。
+    window.Hide();
+    RECT hidden_rect {};
+    if (!GetWindowRect(handle, &hidden_rect) ||
+        hidden_rect.left > -30000 || hidden_rect.top > -30000) {
+        std::fwprintf(stderr, L"hidden candidate retained its previous anchor\n");
+        return 19;
+    }
+    const POINT second_anchor {320, 180};
+    window.Show(second_anchor);
+    RECT second_rect {};
+    if (!GetWindowRect(handle, &second_rect) ||
+        second_rect.left != second_anchor.x - shadow_margin ||
+        second_rect.top != second_anchor.y - shadow_margin) {
+        std::fwprintf(stderr,
+            L"candidate first frame origin=(%ld,%ld) expected=(%d,%d)\n",
+            second_rect.left, second_rect.top,
+            second_anchor.x - shadow_margin,
+            second_anchor.y - shadow_margin);
+        return 20;
     }
 
     size_t clicked_index = static_cast<size_t>(-1);

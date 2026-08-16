@@ -116,16 +116,32 @@ enum class CandidatePagingDirection {
     Next,
 };
 
+enum class CandidateRowDirection {
+    None,
+    Up,
+    Down,
+};
+
 inline CandidatePagingDirection GetCandidatePagingDirection(
     WPARAM key, bool shift_down) noexcept {
     if (key == VK_PRIOR) return CandidatePagingDirection::Previous;
     if (key == VK_NEXT) return CandidatePagingDirection::Next;
     if (shift_down) return CandidatePagingDirection::None;
-    if (key == VK_OEM_MINUS || key == VK_OEM_COMMA)
+    if (key == VK_OEM_MINUS)
         return CandidatePagingDirection::Previous;
-    if (key == VK_OEM_PLUS || key == VK_OEM_PERIOD)
+    if (key == VK_OEM_PLUS)
         return CandidatePagingDirection::Next;
     return CandidatePagingDirection::None;
+}
+
+inline CandidateRowDirection GetCandidateRowDirection(
+    WPARAM key, bool shift_down) noexcept {
+    if (key == VK_UP) return CandidateRowDirection::Up;
+    if (key == VK_DOWN) return CandidateRowDirection::Down;
+    if (shift_down) return CandidateRowDirection::None;
+    if (key == VK_OEM_COMMA) return CandidateRowDirection::Up;
+    if (key == VK_OEM_PERIOD) return CandidateRowDirection::Down;
+    return CandidateRowDirection::None;
 }
 
 struct CandidatePageState {
@@ -171,6 +187,23 @@ struct CandidatePageState {
     void MoveNext() noexcept {
         if (total == 0) return;
         Select((selected + 1) % total);
+    }
+
+    void MoveRowUp() noexcept {
+        Clamp();
+        const std::size_t row_width = PageSize();
+        if (total == 0 || selected < row_width) return;
+        Select(selected - row_width);
+    }
+
+    void MoveRowDown() noexcept {
+        Clamp();
+        if (total == 0) return;
+        const std::size_t row_width = PageSize();
+        const std::size_t current_row = selected / row_width;
+        if (current_row + 1 >= PageCount()) return;
+        const std::size_t next_row_start = (current_row + 1) * row_width;
+        Select((std::min)(next_row_start + selected % row_width, total - 1));
     }
 
     void PreviousPage() noexcept {
@@ -384,6 +417,31 @@ inline int CandidateMetadataFontSize(int candidate_font_size) noexcept {
 
 inline std::wstring BuildTypingStatisticsText(std::uint64_t daily_count) {
     return L"今日 " + FormatUnsignedWithSeparators(daily_count) + L" 字";
+}
+
+inline std::size_t CandidateExpandedFirstPage(
+    std::size_t current_page,
+    std::size_t maximum_rows) noexcept {
+    const std::size_t rows = (std::max)(std::size_t{1}, maximum_rows);
+    return current_page / rows * rows;
+}
+
+inline std::size_t CandidateExpandedRowCount(
+    std::size_t candidate_count,
+    std::size_t page_size,
+    std::size_t current_page,
+    std::size_t maximum_rows) noexcept {
+    const std::size_t normalized_page_size =
+        (std::max)(std::size_t{1}, page_size);
+    const std::size_t page_count = candidate_count == 0
+        ? 1
+        : (candidate_count + normalized_page_size - 1) /
+            normalized_page_size;
+    const std::size_t first_page = CandidateExpandedFirstPage(
+        (std::min)(current_page, page_count - 1), maximum_rows);
+    return (std::min)(
+        (std::max)(std::size_t{1}, maximum_rows),
+        page_count - first_page);
 }
 
 }  // namespace shuru

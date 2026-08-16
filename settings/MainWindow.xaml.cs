@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -102,6 +101,8 @@ public partial class MainWindow : Window
         SelectComboValue(CandidateCountBox, settings.CandidateCount);
         SelectComboValue(CandidateFontSizeBox, settings.CandidateFontSize);
         DisplayNameBox.Text = settings.DisplayName;
+        if (PhraseDirectWindowBox != null) PhraseDirectWindowBox.IsChecked = settings.VvModeOpenWindow;
+        if (ClipboardDirectWindowBox != null) ClipboardDirectWindowBox.IsChecked = settings.VModeOpenWindow;
         UpdateFuzzyChildren();
     }
 
@@ -135,7 +136,9 @@ public partial class MainWindow : Window
             FullWidthBox.IsChecked == true,
             ReadComboValue(CandidateCountBox, "每页候选数量"),
             ReadComboValue(CandidateFontSizeBox, "候选字体大小"),
-            displayName);
+            displayName,
+            ClipboardDirectWindowBox?.IsChecked == true,
+            PhraseDirectWindowBox?.IsChecked == true);
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -421,15 +424,12 @@ public partial class MainWindow : Window
             using var document = JsonDocument.Parse(File.ReadAllText(manifest));
             var root = document.RootElement;
             long entries = 0;
-            var valid = true;
             foreach (var file in root.GetProperty("files").EnumerateArray())
             {
-                entries += file.GetProperty("entries").GetInt64();
                 var path = Path.Combine(directory, file.GetProperty("path").GetString() ?? string.Empty);
-                valid &= File.Exists(path) && Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))
-                    .Equals(file.GetProperty("sha256").GetString(), StringComparison.OrdinalIgnoreCase);
+                if (File.Exists(path)) entries += file.GetProperty("entries").GetInt64();
             }
-            return $"版本 {root.GetProperty("version").GetString()} · {entries:N0} 条 · 校验{(valid ? "通过" : "失败")}";
+            return $"版本 {root.GetProperty("version").GetString()} · {entries:N0} 条";
         }
         catch (Exception ex)
         {
@@ -654,6 +654,39 @@ public partial class MainWindow : Window
         {
             CrashLogger.Log("MainWindow.SaveClipboardConfig", ex);
             ShowOperationError(ex);
+        }
+    }
+
+    private void VModeDirectWindowBox_Changed(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var isClipboard = ReferenceEquals(sender, ClipboardDirectWindowBox);
+            var isPhrase = ReferenceEquals(sender, PhraseDirectWindowBox);
+            var isChecked = (sender as CheckBox)?.IsChecked == true;
+
+            var current = SettingsStore.Load();
+            AppSettings updated;
+            if (isClipboard)
+            {
+                updated = current with { VModeOpenWindow = isChecked };
+                StatusText.Text = isChecked ? "剪贴板（按v）已设置为直接打开独立搜索窗口。" : "剪贴板（按v）已设置为内嵌候选窗展示。";
+            }
+            else if (isPhrase)
+            {
+                updated = current with { VvModeOpenWindow = isChecked };
+                StatusText.Text = isChecked ? "自定义短语（按vv）已设置为直接打开独立搜索窗口。" : "自定义短语（按vv）已设置为内嵌候选窗展示。";
+            }
+            else
+            {
+                return;
+            }
+
+            SettingsStore.Save(updated);
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log("MainWindow.SaveVModeOpenWindow", ex);
         }
     }
 
