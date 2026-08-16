@@ -87,6 +87,12 @@ RuntimeConfig ReadConfig() {
     value.v_mode_open_window = ReadBool(values, "VModeOpenWindow", false);
     value.vv_mode_open_window = ReadBool(values, "VvModeOpenWindow", false);
     {
+        const auto found = values.find("SkinId");
+        if (found != values.end() && !found->second.empty()) {
+            value.skin_id = Utf8ToWide(found->second);
+        }
+    }
+    {
         const auto found = values.find("TrayText");
         if (found != values.end()) {
             const std::wstring normalized = NormalizeTrayText(Utf8ToWide(found->second));

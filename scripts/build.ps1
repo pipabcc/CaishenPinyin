@@ -66,6 +66,7 @@ if(-not $NoPackage){
  Copy-Item -LiteralPath (Join-Path $lexiconRoot 'manifest.json') -Destination (Join-Path $lexiconOut 'manifest.json') -Force
  Copy-Item -LiteralPath (Join-Path $Root 'THIRD_PARTY_NOTICES.md') -Destination $out
  Copy-Item -LiteralPath (Join-Path $Root 'licenses') -Destination (Join-Path $out 'licenses') -Recurse -Force
+ if(Test-Path (Join-Path $Root 'data\skins')){Copy-Item -LiteralPath (Join-Path $Root 'data\skins') -Destination (Join-Path $out 'data\skins') -Recurse -Force}
  & (Join-Path $PSScriptRoot 'new_release_manifest.ps1') -PackageRoot $out -Version $productVersion -SigningPolicy $SigningPolicy
 }
 Write-Host "[OK] formal $Config build + full CTest; DLL=$dll package=$out" -ForegroundColor Green

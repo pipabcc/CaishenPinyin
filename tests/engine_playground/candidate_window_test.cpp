@@ -1,8 +1,12 @@
 #include "ime/ui/candidate_window.h"
+#include "ime/ui/skin_manager.h"
+#include "common/runtime_config.h"
 
 #include <Windows.h>
 
 #include <cstdio>
+#include <fstream>
+#include <string>
 #include <vector>
 
 namespace {
@@ -20,6 +24,22 @@ BOOL CALLBACK FindCandidateWindow(HWND window, LPARAM value) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    wchar_t temporary_path[MAX_PATH] {};
+    const DWORD temporary_length = GetTempPathW(
+        ARRAYSIZE(temporary_path), temporary_path);
+    if (temporary_length == 0 || temporary_length >= ARRAYSIZE(temporary_path)) return 29;
+    wchar_t configured_test_data[MAX_PATH] {};
+    const DWORD configured_length = GetEnvironmentVariableW(
+        L"CAISHEN_CANDIDATE_TEST_LOCALAPPDATA", configured_test_data,
+        ARRAYSIZE(configured_test_data));
+    const std::wstring isolated_local_app_data = configured_length > 0 &&
+            configured_length < ARRAYSIZE(configured_test_data)
+        ? std::wstring(configured_test_data, configured_length)
+        : std::wstring(temporary_path, temporary_length) +
+            L"caishen-candidate-window-" + std::to_wstring(GetCurrentProcessId());
+    CreateDirectoryW(isolated_local_app_data.c_str(), nullptr);
+    SetEnvironmentVariableW(L"LOCALAPPDATA", isolated_local_app_data.c_str());
+
     bool found_antialiased_corner = false;
     for (int y = 0; y < 8; ++y) {
         for (int x = 0; x < 8; ++x) {
@@ -80,7 +100,7 @@ int wmain(int argc, wchar_t** argv) {
     if (handle == nullptr) return 5;
 
     if (argc > 1 && wcscmp(argv[1], L"--preview") == 0) {
-        const ULONGLONG deadline = GetTickCount64() + 30000;
+        const ULONGLONG deadline = GetTickCount64() + 8000;
         MSG message {};
         while (GetTickCount64() < deadline) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -306,6 +326,79 @@ int wmain(int argc, wchar_t** argv) {
 
     window.Hide();
     window.Destroy();
+
+    // 规范化 SSF 使用素材自身透明轮廓、原生最小尺寸和逐帧动画，
+    // 不应再套默认阴影或 74px 卡片高度。
+    wchar_t local_app_data[MAX_PATH] {};
+    const DWORD local_length = GetEnvironmentVariableW(
+        L"LOCALAPPDATA", local_app_data, ARRAYSIZE(local_app_data));
+    const std::wstring skin_root = std::wstring(local_app_data, local_length) +
+        L"\\CaishenPinyin\\skins\\candidate-test-native";
+    const std::wstring frames_root = skin_root + L"\\frames";
+    CreateDirectoryW((std::wstring(local_app_data, local_length) +
+        L"\\CaishenPinyin").c_str(), nullptr);
+    CreateDirectoryW((std::wstring(local_app_data, local_length) +
+        L"\\CaishenPinyin\\skins").c_str(), nullptr);
+    CreateDirectoryW(skin_root.c_str(), nullptr);
+    CreateDirectoryW(frames_root.c_str(), nullptr);
+    wchar_t module_path[MAX_PATH] {};
+    GetModuleFileNameW(nullptr, module_path, ARRAYSIZE(module_path));
+    std::wstring module_directory(module_path);
+    module_directory.resize(module_directory.find_last_of(L"\\/"));
+    const std::wstring source_frame =
+        module_directory + L"\\data\\skins\\classic_blue\\cand_bg.png";
+    CopyFileW(source_frame.c_str(), (frames_root + L"\\frame_000.png").c_str(), FALSE);
+    CopyFileW(source_frame.c_str(), (frames_root + L"\\frame_001.png").c_str(), FALSE);
+    {
+        std::ofstream ini(skin_root + L"\\skin.ini", std::ios::binary);
+        ini << "[Display]\nfont_family=Microsoft YaHei UI\nfont_size=18\n"
+               "[Scheme_H1]\nbg_image=frames\\frame_000.png\n"
+               "layout_horizontal=0,16,16\nlayout_vertical=0,16,16\n"
+               "pinyin_margin=20,2,24,20\ncandidate_margin=4,8,24,70\n"
+               "native_appearance=1\nhas_shadow=0\nshow_separator=0\n"
+               "[Animation]\nframe_count=2\nframe_0=frames\\frame_000.png\n"
+               "delay_0=80\nframe_1=frames\\frame_001.png\ndelay_1=80\n";
+    }
+    const std::wstring settings_path = std::wstring(local_app_data, local_length) +
+        L"\\CaishenPinyin\\settings.ini";
+    {
+        std::ofstream settings(settings_path, std::ios::binary);
+        settings << "SkinId=candidate-test-native\n";
+    }
+    shuru::ReloadRuntimeConfig();
+    shuru::CandidateWindow native_window;
+    if (!native_window.Create(GetModuleHandleW(nullptr))) return 26;
+    native_window.SetContent(L"bao", candidates, 0, 0, 9);
+    native_window.Show(POINT {40, 40});
+    auto& native_skin = shuru::SkinManager::Instance();
+    if (!native_skin.CurrentTheme().native_appearance ||
+        native_skin.CurrentTheme().has_shadow || !native_skin.HasAnimation() ||
+        native_skin.CurrentFrameDelayMs() != 80 || !native_skin.AdvanceFrame()) {
+        std::fwprintf(stderr, L"native skin animation metadata is invalid\n");
+        return 26;
+    }
+    const SIZE native_size = native_window.WindowSize();
+    RECT native_rect {};
+    GetWindowRect(native_window.GetHwnd(), &native_rect);
+    if (native_size.cx < MulDiv(280, static_cast<int>(dpi), 96) ||
+        native_size.cy < MulDiv(74, static_cast<int>(dpi), 96) ||
+        native_rect.right - native_rect.left != native_size.cx ||
+        native_rect.bottom - native_rect.top != native_size.cy) {
+        std::fwprintf(stderr, L"native skin size or shadow policy is invalid\n");
+        return 27;
+    }
+    native_window.Destroy();
+    DeleteFileW(settings_path.c_str());
+    DeleteFileW((frames_root + L"\\frame_000.png").c_str());
+    DeleteFileW((frames_root + L"\\frame_001.png").c_str());
+    DeleteFileW((skin_root + L"\\skin.ini").c_str());
+    RemoveDirectoryW(frames_root.c_str());
+    RemoveDirectoryW(skin_root.c_str());
+    RemoveDirectoryW((std::wstring(local_app_data, local_length) +
+        L"\\CaishenPinyin\\skins").c_str());
+    RemoveDirectoryW((std::wstring(local_app_data, local_length) +
+        L"\\CaishenPinyin").c_str());
+    RemoveDirectoryW(isolated_local_app_data.c_str());
     std::wprintf(L"candidate layered shadow, first frame, and v/vv scrolling passed\n");
     return 0;
 }

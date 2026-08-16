@@ -32,6 +32,7 @@ static int RunMainTests()
         TestClipboardMigrationAndCrud(clipboardDirectory);
         TestClipboardConcurrencyAndPerformance();
         TestClipboardImageNormalizationAndCapture();
+        TestSsfConversion(root);
         TestTextPasteRequests(root);
         TestCorruptMigrationInChildProcess(root);
         Console.WriteLine("settings_logic: OK");
@@ -48,6 +49,45 @@ static int RunMainTests()
         try { Directory.Delete(root, recursive: true); }
         catch (Exception ex) { Console.Error.WriteLine("cleanup: " + ex.Message); }
     }
+}
+
+static void TestSsfConversion(string root)
+{
+    var repositoryRoot = Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+    var source = Path.Combine(repositoryRoot, "1.ssf");
+    if (!File.Exists(source))
+    {
+        Console.WriteLine("settings_logic: 跳过 SSF 样例测试（未找到 1.ssf）");
+        return;
+    }
+
+    var target = Path.Combine(root, "skins", "ssf-sample");
+    Require(SsfConverter.ConvertAndInstall(source, target) == "ssf-sample",
+        "SSF 转换返回了错误的皮肤标识");
+    var ini = File.ReadAllText(Path.Combine(target, "skin.ini"));
+    Require(ini.Contains("bg_image=frames\\frame_000.png") &&
+            ini.Contains("layout_horizontal=0,95,182") &&
+            ini.Contains("layout_vertical=0,121,5") &&
+            ini.Contains("pinyin_margin=60,2,35,33") &&
+            ini.Contains("candidate_margin=10,8,32,134") &&
+            ini.Contains("native_appearance=1") &&
+            ini.Contains("frame_count=6") &&
+            ini.Contains("delay_0=80"),
+        "SSF 配置未按 Scheme_H1 规范化");
+    Require(Directory.GetFiles(Path.Combine(target, "frames"), "frame_*.png").Length == 6,
+        "SSF APNG 没有完整导出 6 帧");
+
+    using var frame = new FileStream(Path.Combine(target, "frames", "frame_000.png"),
+        FileMode.Open, FileAccess.Read, FileShare.Read);
+    var decoder = new PngBitmapDecoder(frame, BitmapCreateOptions.PreservePixelFormat,
+        BitmapCacheOption.OnLoad);
+    Require(decoder.Frames[0].PixelWidth == 285 && decoder.Frames[0].PixelHeight == 131,
+        "SSF 候选背景错误地选择了状态栏素材");
+    var normalizedBefore = File.ReadAllText(Path.Combine(target, "skin.ini"));
+    Require(!SsfConverter.NormalizeInstalledSkin(target, "ssf-sample") &&
+            File.ReadAllText(Path.Combine(target, "skin.ini")) == normalizedBefore,
+        "已规范化皮肤没有保持幂等");
 }
 
 static void TestSettingsAndCustomPhrases(string root)

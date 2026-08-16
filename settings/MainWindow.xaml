@@ -49,6 +49,7 @@
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="输入方案"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="自定义短语"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="剪贴板"/>
+              <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="外观与皮肤"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="词库与隐私"/>
             </ListBox>
 
@@ -302,7 +303,303 @@
                 </Border>
               </Grid>
 
-              <!-- 4. 剪贴板管理页面 -->
+              <!-- 4. 外观与皮肤页面 -->
+              <Grid x:Name="SkinPage" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,8,20">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0">
+                    <TextBlock Text="外观与皮肤" Style="{StaticResource PageTitleStyle}"/>
+                    <TextBlock Text="选择精心定制的输入法皮肤与主题外观，即时生效。" Style="{StaticResource PageDescriptionStyle}"/>
+                  </StackPanel>
+                  <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="还原默认皮肤" Click="ResetDefaultSkin_Click"/>
+                    <Button Content="打开皮肤目录" Margin="10,0,0,0" Click="OpenSkinFolder_Click"/>
+                    <Button Content="导入皮肤" Margin="10,0,0,0" Style="{StaticResource PrimaryButtonStyle}" Click="ImportSkin_Click"/>
+                  </StackPanel>
+                </Grid>
+
+                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="0,0,40,16">
+
+                    <!-- 皮肤 0: 经典蓝调 (原版默认) -->
+                    <Border Style="{StaticResource SectionStyle}" Padding="20">
+                      <Grid>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto"/>
+                          <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                              <TextBlock Text="经典蓝调" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                              <Border Background="#EFF6FF" BorderBrush="#BFDBFE" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
+                                <TextBlock Text="原版默认" FontSize="11" Foreground="#1D4ED8" FontWeight="Medium"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="原版纯净白底搭配科技亮蓝高光胶囊，经典耐看、高对比度清晰视效" Style="{StaticResource SectionDescriptionStyle}"/>
+                          </StackPanel>
+                          <Button x:Name="BtnSkinClassicBlue" Grid.Column="1" Content="应用此皮肤" Tag="classic_blue" MinWidth="120" Padding="18,10" VerticalAlignment="Center" Click="ApplySkin_Click"/>
+                        </Grid>
+                        <!-- 候选框高保真预览 (1:1 原版复刻) -->
+                        <Border Grid.Row="1" Margin="0,14,0,0" Background="#FFFFFF" BorderThickness="0" CornerRadius="8" Padding="14,10" HorizontalAlignment="Left">
+                          <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                              <TextBlock Text="ddd" Foreground="#000000" FontSize="15" FontWeight="Bold"/>
+                              <TextBlock Text="今日 1,280 字" Foreground="#94A3B8" FontSize="11" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Height="1" Background="#E6E9EF" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal">
+                              <Border Background="#2F6BFF" CornerRadius="6" Padding="8,4" Margin="0,0,8,0">
+                                <TextBlock Text="1.大地" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold"/>
+                              </Border>
+                              <TextBlock Text="2.大大的" Foreground="#000000" FontSize="13" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                              <TextBlock Text="3.单独的" Foreground="#000000" FontSize="13" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                              <TextBlock Text="4.淡淡的" Foreground="#000000" FontSize="13" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                              <TextBlock Text="5.大胆的" Foreground="#000000" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </Grid>
+                    </Border>
+
+                    <!-- 皮肤 1: 财神金韵 -->
+                    <Border Style="{StaticResource SectionStyle}" Padding="20">
+                      <Grid>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto"/>
+                          <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                              <TextBlock Text="财神金韵" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                              <Border Background="#FFFBEB" BorderBrush="#FDE68A" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
+                                <TextBlock Text="官方国风" FontSize="11" Foreground="#B45309" FontWeight="Medium"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="暖白温润底色配流金与朱红点缀，典雅高贵的经典国风主题" Style="{StaticResource SectionDescriptionStyle}"/>
+                          </StackPanel>
+                          <Button x:Name="BtnSkinClassicGold" Grid.Column="1" Content="应用此皮肤" Tag="classic_gold" MinWidth="120" Padding="18,10" VerticalAlignment="Center" Click="ApplySkin_Click"/>
+                        </Grid>
+                        <!-- 候选框高保真预览 -->
+                        <Border Grid.Row="1" Margin="0,14,0,0" Background="#FFFDF8" BorderThickness="0" CornerRadius="8" Padding="14,10" HorizontalAlignment="Left">
+                          <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                              <TextBlock Text="cai shen" Foreground="#8B1E0F" FontSize="14" FontWeight="Bold"/>
+                              <TextBlock Text="今日 1,280 字" Foreground="#998877" FontSize="11" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Height="1" Background="#F0E4D2" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal">
+                              <Border Background="#C8161D" CornerRadius="6" Padding="8,4" Margin="0,0,8,0">
+                                <TextBlock Text="1.财神" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold"/>
+                              </Border>
+                              <TextBlock Text="2.输入法" Foreground="#2C2416" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="3.发财" Foreground="#2C2416" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="4.吉祥" Foreground="#2C2416" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="5.如意" Foreground="#2C2416" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </Grid>
+                    </Border>
+
+                    <!-- 皮肤 2: 极简无界 -->
+                    <Border Style="{StaticResource SectionStyle}" Padding="20">
+                      <Grid>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto"/>
+                          <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                              <TextBlock Text="极简无界" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                              <Border Background="#F1F5F9" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
+                                <TextBlock Text="现代极简" FontSize="11" Foreground="#475569" FontWeight="Medium"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="纯净透亮磨砂白，极简无边框浅灰，专为日常与高效办公设计" Style="{StaticResource SectionDescriptionStyle}"/>
+                          </StackPanel>
+                          <Button x:Name="BtnSkinMinimalLight" Grid.Column="1" Content="应用此皮肤" Tag="minimal_light" MinWidth="120" Padding="18,10" VerticalAlignment="Center" Click="ApplySkin_Click"/>
+                        </Grid>
+                        <Border Grid.Row="1" Margin="0,14,0,0" Background="#FFFFFF" BorderThickness="0" CornerRadius="8" Padding="14,10" HorizontalAlignment="Left">
+                          <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                              <TextBlock Text="cai shen" Foreground="#0F172A" FontSize="14" FontWeight="Bold"/>
+                              <TextBlock Text="今日 1,280 字" Foreground="#94A3B8" FontSize="11" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Height="1" Background="#E2E8F0" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal">
+                              <Border Background="#0F172A" CornerRadius="6" Padding="8,4" Margin="0,0,8,0">
+                                <TextBlock Text="1.财神" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold"/>
+                              </Border>
+                              <TextBlock Text="2.输入法" Foreground="#1E293B" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="3.发财" Foreground="#1E293B" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="4.吉祥" Foreground="#1E293B" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="5.如意" Foreground="#1E293B" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </Grid>
+                    </Border>
+
+                    <!-- 皮肤 3: 暗黑极客 -->
+                    <Border Style="{StaticResource SectionStyle}" Padding="20">
+                      <Grid>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto"/>
+                          <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                              <TextBlock Text="暗黑极客" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                              <Border Background="#1E1E2E" BorderBrush="#414868" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
+                                <TextBlock Text="深色护眼" FontSize="11" Foreground="#7AA2F7" FontWeight="Medium"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="深空暗夜背景与冰蓝霓虹高亮，极客程序员的专属护眼暗色主题" Style="{StaticResource SectionDescriptionStyle}"/>
+                          </StackPanel>
+                          <Button x:Name="BtnSkinCyberDark" Grid.Column="1" Content="应用此皮肤" Tag="cyber_dark" MinWidth="120" Padding="18,10" VerticalAlignment="Center" Click="ApplySkin_Click"/>
+                        </Grid>
+                        <Border Grid.Row="1" Margin="0,14,0,0" Background="#1A1B26" BorderThickness="0" CornerRadius="8" Padding="14,10" HorizontalAlignment="Left">
+                          <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                              <TextBlock Text="cai shen" Foreground="#7AA2F7" FontSize="14" FontWeight="Bold"/>
+                              <TextBlock Text="今日 1,280 字" Foreground="#787C99" FontSize="11" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Height="1" Background="#2F354A" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal">
+                              <Border Background="#7AA2F7" CornerRadius="6" Padding="8,4" Margin="0,0,8,0">
+                                <TextBlock Text="1.财神" Foreground="#1A1B26" FontSize="13" FontWeight="Bold"/>
+                              </Border>
+                              <TextBlock Text="2.输入法" Foreground="#C0CAF5" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="3.发财" Foreground="#C0CAF5" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="4.吉祥" Foreground="#C0CAF5" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="5.如意" Foreground="#C0CAF5" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </Grid>
+                    </Border>
+
+                    <!-- 皮肤 4: 春日樱粉 -->
+                    <Border Style="{StaticResource SectionStyle}" Padding="20">
+                      <Grid>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto"/>
+                          <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                              <TextBlock Text="春日樱粉" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                              <Border Background="#FFF1F2" BorderBrush="#FECDD3" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
+                                <TextBlock Text="清新马卡龙" FontSize="11" Foreground="#E11D48" FontWeight="Medium"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="温柔浅粉与初樱点缀，治愈甜美的马卡龙二次元风格" Style="{StaticResource SectionDescriptionStyle}"/>
+                          </StackPanel>
+                          <Button x:Name="BtnSkinSakuraPink" Grid.Column="1" Content="应用此皮肤" Tag="sakura_pink" MinWidth="120" Padding="18,10" VerticalAlignment="Center" Click="ApplySkin_Click"/>
+                        </Grid>
+                        <Border Grid.Row="1" Margin="0,14,0,0" Background="#FFF5F7" BorderThickness="0" CornerRadius="8" Padding="14,10" HorizontalAlignment="Left">
+                          <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                              <TextBlock Text="cai shen" Foreground="#D81B60" FontSize="14" FontWeight="Bold"/>
+                              <TextBlock Text="今日 1,280 字" Foreground="#CE93D8" FontSize="11" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Height="1" Background="#F8BBD0" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal">
+                              <Border Background="#F06292" CornerRadius="6" Padding="8,4" Margin="0,0,8,0">
+                                <TextBlock Text="1.财神" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold"/>
+                              </Border>
+                              <TextBlock Text="2.输入法" Foreground="#4A3E3D" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="3.发财" Foreground="#4A3E3D" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="4.吉祥" Foreground="#4A3E3D" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="5.如意" Foreground="#4A3E3D" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </Grid>
+                    </Border>
+
+                    <!-- 皮肤 5: 碧水青瓷 -->
+                    <Border Style="{StaticResource SectionStyle}" Padding="20">
+                      <Grid>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto"/>
+                          <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Grid.Column="0">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                              <TextBlock Text="碧水青瓷" FontSize="16" FontWeight="Bold" Foreground="{StaticResource TextPrimaryBrush}"/>
+                              <Border Background="#F0FDF4" BorderBrush="#BBF7D0" BorderThickness="1" CornerRadius="4" Padding="6,2" Margin="10,0,0,0">
+                                <TextBlock Text="雅致国风" FontSize="11" Foreground="#15803D" FontWeight="Medium"/>
+                              </Border>
+                            </StackPanel>
+                            <TextBlock Text="雨过天晴云破处的淡雅天青色，搭配竹青黛绿，诗意盎然" Style="{StaticResource SectionDescriptionStyle}"/>
+                          </StackPanel>
+                          <Button x:Name="BtnSkinCeladonJade" Grid.Column="1" Content="应用此皮肤" Tag="celadon_jade" MinWidth="120" Padding="18,10" VerticalAlignment="Center" Click="ApplySkin_Click"/>
+                        </Grid>
+                        <Border Grid.Row="1" Margin="0,14,0,0" Background="#F0F9F8" BorderThickness="0" CornerRadius="8" Padding="14,10" HorizontalAlignment="Left">
+                          <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                              <TextBlock Text="cai shen" Foreground="#00695C" FontSize="14" FontWeight="Bold"/>
+                              <TextBlock Text="今日 1,280 字" Foreground="#80CBC4" FontSize="11" HorizontalAlignment="Right"/>
+                            </Grid>
+                            <Border Height="1" Background="#B2DFDB" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal">
+                              <Border Background="#00897B" CornerRadius="6" Padding="8,4" Margin="0,0,8,0">
+                                <TextBlock Text="1.财神" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold"/>
+                              </Border>
+                              <TextBlock Text="2.输入法" Foreground="#1B3834" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="3.发财" Foreground="#1B3834" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="4.吉祥" Foreground="#1B3834" FontSize="13" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                              <TextBlock Text="5.如意" Foreground="#1B3834" FontSize="13" VerticalAlignment="Center"/>
+                            </StackPanel>
+                          </StackPanel>
+                        </Border>
+                      </Grid>
+                    </Border>
+
+                  </StackPanel>
+                </ScrollViewer>
+              </Grid>
+
+              <!-- 5. 剪贴板管理页面 -->
               <Grid x:Name="ClipboardPage" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto"/>
@@ -496,7 +793,7 @@
 
             <!-- ================= 底部状态与操作栏 (右下 12px 圆角) ================= -->
             <Border Grid.Row="1" Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}"
-                    BorderThickness="0,1,0,0" CornerRadius="0,0,12,0" Padding="28,14">
+                    BorderThickness="0,1,0,0" CornerRadius="0,0,12,0" Padding="28,14,48,14">
               <Grid>
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="*"/>

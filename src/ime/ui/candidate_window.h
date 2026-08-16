@@ -84,6 +84,7 @@ private:
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
     static constexpr UINT_PTR kVModeTimerId = 1002;
+    static constexpr UINT_PTR kSkinAnimationTimerId = 1003;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -132,8 +133,15 @@ private:
     std::function<bool()> ready_poll_;
     bool vmode_timer_active_ = false;
     std::function<void()> vmode_timer_cb_;
+    bool skin_animation_timer_active_ = false;
+    std::wstring font_signature_;
+    std::wstring layout_skin_id_;
 
     int Scale(int value) const;
+    int ShadowMargin() const;
+    void StopSkinAnimation();
+    void SyncSkinAnimation();
+    void ResetFonts();
     void EnsureFonts();
     void RecalcSize();
     bool DisplayContentEquals(

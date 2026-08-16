@@ -1,4 +1,5 @@
 #include "candidate_window.h"
+#include "skin_manager.h"
 #include "common/runtime_config.h"
 
 #include <algorithm>
@@ -233,6 +234,7 @@ bool CandidateWindow::Create(HINSTANCE instance) {
 void CandidateWindow::Destroy() {
     if (hwnd_ != nullptr) {
         StopReadyPolling();
+        StopSkinAnimation();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -261,20 +263,42 @@ void CandidateWindow::Destroy() {
     instance_ = nullptr;
 }
 
+void CandidateWindow::ResetFonts() {
+    for (HFONT* font : {&font_, &font_comp_, &font_meta_,
+                        &font_header_title_, &font_utility_}) {
+        if (*font != nullptr) {
+            DeleteObject(*font);
+            *font = nullptr;
+        }
+    }
+    font_signature_.clear();
+}
+
 void CandidateWindow::EnsureFonts() {
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    const auto& skin = SkinManager::Instance().CurrentTheme();
+    const std::wstring family = skin.font_family.empty()
+        ? L"Microsoft YaHei UI" : skin.font_family;
+    const int candidate_size = skin.native_appearance
+        ? skin.font_size : GetRuntimeConfig().candidate_font_size;
+    const std::wstring signature = family + L"\n" +
+        std::to_wstring(candidate_size) + L"\n" +
+        std::to_wstring(Scale(100));
+    if (!font_signature_.empty() && font_signature_ != signature) ResetFonts();
+    font_signature_ = signature;
     if (font_ == nullptr) {
         font_ = CreateFontW(
-            -Scale(GetRuntimeConfig().candidate_font_size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            -Scale(candidate_size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-            L"Microsoft YaHei UI");
+            family.c_str());
     }
     if (font_comp_ == nullptr) {
         font_comp_ = CreateFontW(
-            -Scale(GetRuntimeConfig().candidate_font_size + 1), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            -Scale(candidate_size + 1), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-            L"Microsoft YaHei UI");
+            family.c_str());
     }
     if (font_meta_ == nullptr) {
         font_meta_ = CreateFontW(
@@ -312,6 +336,12 @@ int CandidateWindow::Scale(int value) const {
     return MulDiv(value, static_cast<int>(dpi), 96);
 }
 
+int CandidateWindow::ShadowMargin() const {
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    return SkinManager::Instance().CurrentTheme().has_shadow
+        ? Scale(kShadowMargin) : 0;
+}
+
 SIZE CandidateWindow::WindowSize() const {
     return SIZE {width_, height_};
 }
@@ -319,7 +349,7 @@ SIZE CandidateWindow::WindowSize() const {
 POINT CandidateWindow::ScreenPosition() const {
     RECT rect {};
     if (hwnd_ != nullptr && GetWindowRect(hwnd_, &rect)) {
-        const int shadow_margin = Scale(kShadowMargin);
+        const int shadow_margin = ShadowMargin();
         return POINT {rect.left + shadow_margin, rect.top + shadow_margin};
     }
     return POINT {};
@@ -340,11 +370,19 @@ void CandidateWindow::Show(const POINT& screen_pos) {
     if (hwnd_ == nullptr) {
         return;
     }
+    const std::wstring configured_skin_id = GetRuntimeConfig().skin_id;
+    if (layout_skin_id_ != configured_skin_id) {
+        layout_skin_id_ = configured_skin_id;
+        ResetFonts();
+        SkinManager::Instance().EnsureSkin(configured_skin_id);
+        layout_dirty_ = true;
+        paint_dirty_ = true;
+    }
     POINT pos = screen_pos;
     HMONITOR monitor = MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST);
     if (!visible_) RefreshTypingStats();
     if (layout_dirty_) RecalcSize();
-    const int shadow_margin = Scale(kShadowMargin);
+    const int shadow_margin = ShadowMargin();
     MONITORINFO mi {};
     mi.cbSize = sizeof(mi);
     if (monitor && GetMonitorInfoW(monitor, &mi)) {
@@ -386,6 +424,7 @@ void CandidateWindow::Show(const POINT& screen_pos) {
     SetWindowPos(hwnd_, HWND_TOPMOST, window_origin.x, window_origin.y, window_width, window_height,
                  SWP_NOACTIVATE | (needs_show ? SWP_SHOWWINDOW : 0));
     visible_ = true;
+    SyncSkinAnimation();
     if (needs_show) {
         // 像素和最终尺寸已经由 UpdateLayeredWindow 原子提交，此处只切换可见性。
         UpdateWindow(hwnd_);
@@ -398,7 +437,26 @@ void CandidateWindow::Hide() {
     }
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
+    StopSkinAnimation();
+    SkinManager::Instance().ResetAnimation();
     SetWindowPos(hwnd_, nullptr, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void CandidateWindow::StopSkinAnimation() {
+    if (skin_animation_timer_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, kSkinAnimationTimerId);
+    }
+    skin_animation_timer_active_ = false;
+}
+
+void CandidateWindow::SyncSkinAnimation() {
+    StopSkinAnimation();
+    auto& manager = SkinManager::Instance();
+    if (visible_ && hwnd_ != nullptr && manager.HasAnimation()) {
+        skin_animation_timer_active_ = SetTimer(
+            hwnd_, kSkinAnimationTimerId,
+            manager.CurrentFrameDelayMs(), nullptr) != 0;
+    }
 }
 
 bool CandidateWindow::DisplayContentEquals(
@@ -604,6 +662,7 @@ void CandidateWindow::OpenSettings() {
 void CandidateWindow::RecalcSize() {
     HDC hdc = GetDC(nullptr);
     EnsureFonts();
+    const auto& skin = SkinManager::Instance().CurrentTheme();
 
     if (hdc == nullptr || font_ == nullptr || font_comp_ == nullptr ||
         font_meta_ == nullptr || font_utility_ == nullptr) {
@@ -637,7 +696,12 @@ void CandidateWindow::RecalcSize() {
     const int header_right_w = MeasureText(hdc, font_meta_, status_text) +
         (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     int cand_w = 0;
-    const int padding = Scale(kHorizontalPadding);
+    const int padding = skin.native_appearance
+        ? Scale(skin.candidate_margin.left)
+        : Scale(kHorizontalPadding);
+    const int candidate_right_padding = skin.native_appearance
+        ? Scale(skin.candidate_margin.right)
+        : padding;
     const size_t first_page = expanded_
         ? CandidateExpandedFirstPage(page_, kExpandedMaxRows)
         : page_;
@@ -664,27 +728,47 @@ void CandidateWindow::RecalcSize() {
             item_widths.push_back(MeasureText(hdc, font_, item));
         }
         item_rows_.push_back(BuildCandidateRowLayout(
-            item_widths, begin, padding + Scale(4), Scale(4),
+            item_widths, begin,
+            skin.native_appearance ? padding : padding + Scale(4), Scale(4),
             Scale(8), Scale(16)));
         cand_w = (std::max)(cand_w,
-            CandidateRowRequiredWidth(item_rows_.back(), padding));
+            CandidateRowRequiredWidth(item_rows_.back(), candidate_right_padding));
     }
     ReleaseDC(nullptr, hdc);
 
+    const int header_left = skin.native_appearance
+        ? Scale(skin.pinyin_margin.left) : padding + Scale(4);
+    const int header_right = skin.native_appearance
+        ? Scale((std::max)(skin.pinyin_margin.right,
+                           skin.candidate_margin.right)) : padding;
     const int header_w = CandidateHeaderRequiredWidth(
-        comp_w, header_right_w, padding + Scale(4), padding,
+        comp_w, header_right_w, header_left, header_right,
         Scale(kHeaderTextGap));
-    width_ = (std::max)(Scale(kMinWidth),
+    const int minimum_width = skin.native_appearance
+        ? Scale((std::max)(skin.native_width, kMinWidth))
+        : Scale(kMinWidth);
+    width_ = (std::max)(minimum_width,
         (std::min)(Scale(kMaxWidth), (std::max)(header_w, cand_w)));
-    const auto vertical = BuildCandidateWindowVerticalLayout(
-        Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
-    height_ = vertical.window_height +
-        static_cast<int>(row_count - 1) * Scale(kLineHeight);
+    if (skin.native_appearance) {
+        const int native_line_height = Scale((std::max)(24, skin.font_size + 6));
+        const int candidate_top = Scale(skin.pinyin_margin.top) +
+            native_line_height + Scale(
+                skin.pinyin_margin.bottom + skin.candidate_margin.top);
+        const int content_height = candidate_top +
+            static_cast<int>(row_count) * native_line_height +
+            Scale(skin.candidate_margin.bottom);
+        height_ = (std::max)(Scale(skin.native_height), content_height);
+    } else {
+        const auto vertical = BuildCandidateWindowVerticalLayout(
+            Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
+        height_ = vertical.window_height +
+            static_cast<int>(row_count - 1) * Scale(kLineHeight);
+    }
     layout_dirty_ = false;
 }
 
 int CandidateWindow::HitTestCandidate(int x, int y) const {
-    const int shadow_margin = Scale(kShadowMargin);
+    const int shadow_margin = ShadowMargin();
     x -= shadow_margin;
     y -= shadow_margin;
 
@@ -701,11 +785,17 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
         return -1;
     }
 
-    const auto vertical = BuildCandidateWindowVerticalLayout(
-        Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
-    const int row_height = Scale(kLineHeight);
-    const int row = (y - vertical.candidate_top) / row_height;
-    if (y < vertical.candidate_top || row < 0 ||
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    const auto& skin = SkinManager::Instance().CurrentTheme();
+    const int row_height = skin.native_appearance
+        ? Scale((std::max)(24, skin.font_size + 6)) : Scale(kLineHeight);
+    const int candidate_top = skin.native_appearance
+        ? Scale(skin.pinyin_margin.top) + row_height +
+            Scale(skin.pinyin_margin.bottom + skin.candidate_margin.top)
+        : BuildCandidateWindowVerticalLayout(
+            Scale(kVerticalPadding), row_height, Scale(kRowGap)).candidate_top;
+    const int row = (y - candidate_top) / row_height;
+    if (y < candidate_top || row < 0 ||
         static_cast<size_t>(row) >= item_rows_.size()) {
         return -1;
     }
@@ -723,10 +813,18 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
 void CandidateWindow::DrawContent(
     HDC hdc, uint8_t* pixels, int bitmap_width, int bitmap_height,
     int content_offset) {
-    RECT rc {0, 0, width_, height_};
-    HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(hdc, &rc, bg);
-    DeleteObject(bg);
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    const auto& skin = SkinManager::Instance().CurrentTheme();
+
+    // 绘制背景：优先使用皮肤 9-Slice 位图切片，否则使用默认白底
+    if (!SkinManager::Instance().DrawBackground(
+            hdc, width_, height_, hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_),
+            pixels, bitmap_width, bitmap_height, content_offset)) {
+        RECT rc {0, 0, width_, height_};
+        HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255));
+        FillRect(hdc, &rc, bg);
+        DeleteObject(bg);
+    }
 
     EnsureFonts();
     if (font_ == nullptr || font_comp_ == nullptr || font_meta_ == nullptr ||
@@ -743,7 +841,7 @@ void CandidateWindow::DrawContent(
 
         // 1. 顶部标题 (字号适中精致)
         SelectObject(hdc, font_header_title_);
-        SetTextColor(hdc, RGB(15, 23, 42));
+        SetTextColor(hdc, skin.pinyin_color);
         std::wstring title = composing_.rfind(L"vv", 0) == 0 ? L"自定义短语" : L"复制记录";
         RECT title_rc {padding, Scale(4), padding + Scale(120), top_bar_h};
         DrawTextW(hdc, title.c_str(), -1, &title_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -783,7 +881,7 @@ void CandidateWindow::DrawContent(
         }
 
         // 3. 分隔线
-        HPEN sep = CreatePen(PS_SOLID, 1, RGB(241, 245, 249));
+        HPEN sep = CreatePen(PS_SOLID, 1, skin.separator_color);
         old_pen = SelectObject(hdc, sep);
         MoveToEx(hdc, Scale(6), top_bar_h, nullptr);
         LineTo(hdc, width_ - Scale(6), top_bar_h);
@@ -793,7 +891,7 @@ void CandidateWindow::DrawContent(
         // 4. 竖向候选列表
         SelectObject(hdc, font_utility_);
         if (candidates_.empty()) {
-            SetTextColor(hdc, RGB(148, 163, 184));
+            SetTextColor(hdc, skin.status_text_color);
             RECT empty_rc {padding, top_bar_h + Scale(16), width_ - padding, top_bar_h + Scale(50)};
             DrawTextW(hdc, L"暂无记录", -1, &empty_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         } else {
@@ -826,12 +924,12 @@ void CandidateWindow::DrawContent(
                 }
 
                 // 绘制圆点 •
-                SetTextColor(hdc, is_selected ? RGB(79, 70, 229) : RGB(100, 116, 139));
+                SetTextColor(hdc, is_selected ? skin.highlight_bg_color : skin.index_color);
                 RECT dot_rc {Scale(14), row_y, Scale(26), row_y + row_h};
                 DrawTextW(hdc, L"•", -1, &dot_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-                // 绘制文本 (固定右边距为 row_rc.right - Scale(30)，鼠标悬停垃圾桶出现时文字绝对不动！)
-                SetTextColor(hdc, is_selected ? RGB(30, 27, 75) : RGB(30, 41, 59));
+                // 绘制文本
+                SetTextColor(hdc, is_selected ? skin.highlight_bg_color : skin.candidate_color);
                 RECT item_text_rc {Scale(26), row_y, row_rc.right - Scale(30), row_y + row_h};
                 DrawTextW(hdc, candidates_[i].text.c_str(), -1, &item_text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
@@ -846,13 +944,10 @@ void CandidateWindow::DrawContent(
                     HGDIOBJ old_trash_pen = SelectObject(hdc, trash_pen);
                     HGDIOBJ old_trash_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-                    // 1. 垃圾桶盖把手
                     MoveToEx(hdc, btn_x + Scale(4), btn_y, nullptr);
                     LineTo(hdc, btn_x + Scale(7), btn_y);
-                    // 2. 垃圾桶盖横线
                     MoveToEx(hdc, btn_x + Scale(1), btn_y + Scale(2), nullptr);
                     LineTo(hdc, btn_x + icon_w - Scale(1), btn_y + Scale(2));
-                    // 3. 垃圾桶桶身
                     const POINT body_pts[4] = {
                         {btn_x + Scale(2), btn_y + Scale(3)},
                         {btn_x + icon_w - Scale(2), btn_y + Scale(3)},
@@ -860,7 +955,6 @@ void CandidateWindow::DrawContent(
                         {btn_x + Scale(3), btn_y + icon_h}
                     };
                     Polygon(hdc, body_pts, 4);
-                    // 4. 桶身竖线条
                     MoveToEx(hdc, btn_x + Scale(4), btn_y + Scale(5), nullptr);
                     LineTo(hdc, btn_x + Scale(4), btn_y + icon_h - Scale(2));
                     MoveToEx(hdc, btn_x + Scale(6), btn_y + Scale(5), nullptr);
@@ -902,10 +996,25 @@ void CandidateWindow::DrawContent(
     }
 
     // ================= 普通横向拼音候选模式 =================
-    const int horizontal_padding = Scale(kHorizontalPadding);
-    const int line_height = Scale(kLineHeight);
-    const auto vertical = BuildCandidateWindowVerticalLayout(
-        Scale(kVerticalPadding), line_height, Scale(kRowGap));
+    const int horizontal_padding = skin.native_appearance
+        ? Scale(skin.candidate_margin.left)
+        : Scale(kHorizontalPadding);
+    const int line_height = skin.native_appearance
+        ? Scale((std::max)(24, skin.font_size + 6)) : Scale(kLineHeight);
+    CandidateWindowVerticalLayout vertical;
+    if (skin.native_appearance) {
+        vertical.composing_top = Scale(skin.pinyin_margin.top);
+        vertical.composing_bottom = vertical.composing_top + line_height;
+        vertical.separator_y = vertical.composing_bottom +
+            Scale(skin.pinyin_margin.bottom + skin.candidate_margin.top) / 2;
+        vertical.candidate_top = vertical.composing_bottom +
+            Scale(skin.pinyin_margin.bottom + skin.candidate_margin.top);
+        vertical.candidate_bottom = vertical.candidate_top + line_height;
+        vertical.window_height = height_;
+    } else {
+        vertical = BuildCandidateWindowVerticalLayout(
+            Scale(kVerticalPadding), line_height, Scale(kRowGap));
+    }
     const std::wstring status_text = BuildTypingStatisticsText(
         typing_stats_.daily_count);
     const bool can_expand = candidates_.size() > page_size_;
@@ -913,13 +1022,19 @@ void CandidateWindow::DrawContent(
     const int header_right_width = status_width +
         (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     const auto header = BuildCandidateHeaderLayout(
-        rc.right, header_right_width,
-        horizontal_padding + Scale(4), horizontal_padding,
+        width_, header_right_width,
+        skin.native_appearance
+            ? Scale(skin.pinyin_margin.left)
+            : horizontal_padding + Scale(4),
+        skin.native_appearance
+            ? Scale((std::max)(skin.pinyin_margin.right,
+                               skin.candidate_margin.right))
+            : horizontal_padding,
         Scale(kHeaderTextGap));
     RECT composing_rect {header.composing_left, vertical.composing_top,
                          header.composing_right, vertical.composing_bottom};
     HGDIOBJ old_font = SelectObject(hdc, font_comp_);
-    SetTextColor(hdc, RGB(15, 23, 42));
+    SetTextColor(hdc, skin.pinyin_color);
     std::wstring comp_draw = composing_;
     if (comp_draw.empty()) {
         comp_draw = english_mode_ ? L"[EN]" : L"";
@@ -929,7 +1044,7 @@ void CandidateWindow::DrawContent(
 
     // 右侧只显示当日字数和紧随其后的展开/收起箭头。
     SelectObject(hdc, font_meta_);
-    SetTextColor(hdc, RGB(90, 100, 115));
+    SetTextColor(hdc, skin.status_text_color);
     RECT status_rect {header.page_left, vertical.composing_top,
                       header.page_left + status_width,
                       vertical.composing_bottom};
@@ -959,7 +1074,7 @@ void CandidateWindow::DrawContent(
             chevron[2] = POINT {center_x + half_width, center_y - half_height};
         }
         HPEN arrow_pen = CreatePen(
-            PS_SOLID, (std::max)(1, Scale(1)), RGB(90, 100, 115));
+            PS_SOLID, (std::max)(1, Scale(1)), skin.status_text_color);
         HGDIOBJ old_arrow_pen = SelectObject(hdc, arrow_pen);
         Polyline(hdc, chevron, ARRAYSIZE(chevron));
         SelectObject(hdc, old_arrow_pen);
@@ -967,12 +1082,14 @@ void CandidateWindow::DrawContent(
     }
 
     // 分隔线
-    HPEN sep = CreatePen(PS_SOLID, 1, RGB(230, 233, 238));
-    HGDIOBJ old_sep = SelectObject(hdc, sep);
-    MoveToEx(hdc, Scale(8), vertical.separator_y, nullptr);
-    LineTo(hdc, rc.right - Scale(8), vertical.separator_y);
-    SelectObject(hdc, old_sep);
-    DeleteObject(sep);
+    if (skin.show_separator) {
+        HPEN sep = CreatePen(PS_SOLID, 1, skin.separator_color);
+        HGDIOBJ old_sep = SelectObject(hdc, sep);
+        MoveToEx(hdc, Scale(8), vertical.separator_y, nullptr);
+        LineTo(hdc, width_ - Scale(8), vertical.separator_y);
+        SelectObject(hdc, old_sep);
+        DeleteObject(sep);
+    }
 
     // 候选：逐项绘制，选中高亮
     SelectObject(hdc, font_);
@@ -998,7 +1115,7 @@ void CandidateWindow::DrawContent(
             RECT item_rc {item_rows_[row][slot].hit_left, row_top,
                           item_rows_[row][slot].hit_right, row_bottom};
 
-            if (i == selected_) {
+            if (i == selected_ && !skin.native_appearance) {
                 RECT hl {item_rc.left + Scale(2), item_rc.top + Scale(3),
                          item_rc.right - Scale(2), item_rc.bottom - Scale(3)};
                 GdiFlush();
@@ -1006,13 +1123,15 @@ void CandidateWindow::DrawContent(
                     bitmap_width, bitmap_height,
                     content_offset + hl.left, content_offset + hl.top,
                     hl.right - hl.left, hl.bottom - hl.top,
-                    Scale(kCornerRadius));
+                    Scale(skin.corner_radius));
                 BlendSolidColor(
                     pixels, highlight_mask, bitmap_width, bitmap_height,
-                    RGB(22, 119, 255));
-                SetTextColor(hdc, RGB(255, 255, 255));
+                    skin.highlight_bg_color);
+                SetTextColor(hdc, skin.highlight_color);
+            } else if (i == selected_) {
+                SetTextColor(hdc, skin.highlight_color);
             } else {
-                SetTextColor(hdc, RGB(30, 30, 30));
+                SetTextColor(hdc, skin.candidate_color);
             }
 
             RECT text_rc_item {item_rows_[row][slot].text_left, row_top,
@@ -1028,7 +1147,7 @@ void CandidateWindow::DrawContent(
 bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
     if (hwnd_ == nullptr || width_ <= 0 || height_ <= 0) return false;
 
-    const int shadow_margin = Scale(kShadowMargin);
+    const int shadow_margin = ShadowMargin();
     const int bitmap_width = width_ + shadow_margin * 2;
     const int bitmap_height = height_ + shadow_margin * 2;
     const size_t pixel_count =
@@ -1065,34 +1184,47 @@ bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
     if (saved_dc != 0) RestoreDC(memory_dc, saved_dc);
     GdiFlush();
 
-    const std::vector<uint8_t> card_mask = BuildRoundedCardMask(
-        bitmap_width, bitmap_height, shadow_margin, shadow_margin,
-        width_, height_, Scale(kCornerRadius));
-    std::vector<uint8_t> shadow_mask(pixel_count, 0);
-    const int shadow_offset = Scale(2);
-    for (int y = 0; y < bitmap_height - shadow_offset; ++y) {
-        const size_t source_row = static_cast<size_t>(y) * bitmap_width;
-        const size_t destination_row =
-            static_cast<size_t>(y + shadow_offset) * bitmap_width;
-        for (int x = 0; x < bitmap_width; ++x) {
-            shadow_mask[destination_row + x] = card_mask[source_row + x];
-        }
-    }
-    BlurMask(&shadow_mask, bitmap_width, bitmap_height,
-             (std::max)(1, Scale(4)), kShadowBlurPasses);
-
     auto* pixels = static_cast<uint8_t*>(bitmap_bits);
-    for (size_t i = 0; i < pixel_count; ++i) {
-        const uint32_t card_alpha = card_mask[i];
-        const uint32_t shadow_alpha =
-            (static_cast<uint32_t>(shadow_mask[i]) * kShadowOpacity + 127) / 255;
-        const uint32_t final_alpha = card_alpha +
-            ((255 - card_alpha) * shadow_alpha + 127) / 255;
-        uint8_t* pixel = pixels + i * 4;
-        pixel[0] = static_cast<uint8_t>((pixel[0] * card_alpha + 127) / 255);
-        pixel[1] = static_cast<uint8_t>((pixel[1] * card_alpha + 127) / 255);
-        pixel[2] = static_cast<uint8_t>((pixel[2] * card_alpha + 127) / 255);
-        pixel[3] = static_cast<uint8_t>(final_alpha);
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    const auto& skin = SkinManager::Instance().CurrentTheme();
+    if (skin.native_appearance) {
+        // GDI+ 已将图片以预乘 BGRA 写入 DIB；文字由 GDI 写入时 alpha
+        // 仍为零，因此只补齐有颜色但无 alpha 的文本像素，保留素材异形透明边缘。
+        for (size_t index = 0; index < pixel_count; ++index) {
+            uint8_t* pixel = pixels + index * 4;
+            if (pixel[3] == 0 && (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)) {
+                pixel[3] = 255;
+            }
+        }
+    } else {
+        const std::vector<uint8_t> card_mask = BuildRoundedCardMask(
+            bitmap_width, bitmap_height, shadow_margin, shadow_margin,
+            width_, height_, Scale(kCornerRadius));
+        std::vector<uint8_t> shadow_mask(pixel_count, 0);
+        const int shadow_offset = Scale(2);
+        for (int y = 0; y < bitmap_height - shadow_offset; ++y) {
+            const size_t source_row = static_cast<size_t>(y) * bitmap_width;
+            const size_t destination_row =
+                static_cast<size_t>(y + shadow_offset) * bitmap_width;
+            for (int x = 0; x < bitmap_width; ++x) {
+                shadow_mask[destination_row + x] = card_mask[source_row + x];
+            }
+        }
+        BlurMask(&shadow_mask, bitmap_width, bitmap_height,
+                 (std::max)(1, Scale(4)), kShadowBlurPasses);
+
+        for (size_t i = 0; i < pixel_count; ++i) {
+            const uint32_t card_alpha = card_mask[i];
+            const uint32_t shadow_alpha =
+                (static_cast<uint32_t>(shadow_mask[i]) * kShadowOpacity + 127) / 255;
+            const uint32_t final_alpha = card_alpha +
+                ((255 - card_alpha) * shadow_alpha + 127) / 255;
+            uint8_t* pixel = pixels + i * 4;
+            pixel[0] = static_cast<uint8_t>((pixel[0] * card_alpha + 127) / 255);
+            pixel[1] = static_cast<uint8_t>((pixel[1] * card_alpha + 127) / 255);
+            pixel[2] = static_cast<uint8_t>((pixel[2] * card_alpha + 127) / 255);
+            pixel[3] = static_cast<uint8_t>(final_alpha);
+        }
     }
 
     POINT destination_origin = window_origin;
@@ -1146,22 +1278,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         return 1;
     case WM_DPICHANGED: {
         // 字体和布局尺寸依赖窗口所在显示器的 DPI，跨屏移动后立即重建。
-        if (self->font_ != nullptr) {
-            DeleteObject(self->font_);
-            self->font_ = nullptr;
-        }
-        if (self->font_comp_ != nullptr) {
-            DeleteObject(self->font_comp_);
-            self->font_comp_ = nullptr;
-        }
-        if (self->font_meta_ != nullptr) {
-            DeleteObject(self->font_meta_);
-            self->font_meta_ = nullptr;
-        }
-        if (self->font_utility_ != nullptr) {
-            DeleteObject(self->font_utility_);
-            self->font_utility_ = nullptr;
-        }
+        self->ResetFonts();
         self->layout_dirty_ = true;
         self->paint_dirty_ = true;
         self->RecalcSize();
@@ -1174,7 +1291,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         if (!GetWindowRect(hwnd, &window_rect)) break;
         const int x = static_cast<short>(LOWORD(lparam)) - window_rect.left;
         const int y = static_cast<short>(HIWORD(lparam)) - window_rect.top;
-        const int shadow_margin = self->Scale(kShadowMargin);
+        const int shadow_margin = self->ShadowMargin();
         if (x < shadow_margin || x >= shadow_margin + self->width_ ||
             y < shadow_margin || y >= shadow_margin + self->height_) {
             return HTTRANSPARENT;
@@ -1184,6 +1301,20 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
     case WM_TIMER:
+        if (wparam == kSkinAnimationTimerId) {
+            self->skin_animation_timer_active_ = false;
+            auto& manager = SkinManager::Instance();
+            if (self->visible_ && manager.AdvanceFrame()) {
+                RECT window_rect {};
+                self->paint_dirty_ = true;
+                if (GetWindowRect(hwnd, &window_rect)) {
+                    self->UpdateLayeredWindowContent(
+                        POINT {window_rect.left, window_rect.top});
+                }
+                self->SyncSkinAnimation();
+            }
+            return 0;
+        }
         if (wparam == kVModeTimerId) {
             KillTimer(hwnd, kVModeTimerId);
             self->vmode_timer_active_ = false;
@@ -1215,7 +1346,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         break;
     }
     case WM_LBUTTONDOWN: {
-        const int shadow_margin = self->Scale(kShadowMargin);
+        const int shadow_margin = self->ShadowMargin();
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
         const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
@@ -1276,7 +1407,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         return 0;
     }
     case WM_MOUSEMOVE: {
-        const int shadow_margin = self->Scale(kShadowMargin);
+        const int shadow_margin = self->ShadowMargin();
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
         const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
@@ -1376,7 +1507,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         if (was_dragging) {
             RECT wr {};
             if (GetWindowRect(hwnd, &wr) && self->on_drag_) {
-                const int shadow_margin = self->Scale(kShadowMargin);
+                const int shadow_margin = self->ShadowMargin();
                 self->on_drag_(POINT {
                     wr.left + shadow_margin, wr.top + shadow_margin});
             }

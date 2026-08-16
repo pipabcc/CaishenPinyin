@@ -17,13 +17,15 @@ public sealed record AppSettings(
     int CandidateFontSize = 19,
     string DisplayName = SettingsStore.DefaultDisplayName,
     bool VModeOpenWindow = false,
-    bool VvModeOpenWindow = false)
+    bool VvModeOpenWindow = false,
+    string SkinId = "classic_blue")
 {
     public AppSettings Validated() => this with
     {
         CandidateCount = CandidateCount is >= 3 and <= 9 ? CandidateCount : 9,
         CandidateFontSize = CandidateFontSize is >= 14 and <= 32 ? CandidateFontSize : 19,
-        DisplayName = SettingsStore.NormalizeDisplayName(DisplayName) ?? SettingsStore.DefaultDisplayName
+        DisplayName = SettingsStore.NormalizeDisplayName(DisplayName) ?? SettingsStore.DefaultDisplayName,
+        SkinId = string.IsNullOrWhiteSpace(SkinId) ? "classic_blue" : SkinId.Trim()
     };
 }
 
@@ -65,7 +67,8 @@ public static class SettingsStore
                 I("CandidateFontSize", defaults.CandidateFontSize),
                 S("DisplayName", defaults.DisplayName),
                 B("VModeOpenWindow", defaults.VModeOpenWindow),
-                B("VvModeOpenWindow", defaults.VvModeOpenWindow)).Validated();
+                B("VvModeOpenWindow", defaults.VvModeOpenWindow),
+                S("SkinId", defaults.SkinId)).Validated();
         }
         catch (IOException) { return defaults; }
         catch (UnauthorizedAccessException) { return defaults; }
@@ -96,6 +99,7 @@ public static class SettingsStore
             $"DisplayName={settings.DisplayName}",
             $"VModeOpenWindow={Bit(settings.VModeOpenWindow)}",
             $"VvModeOpenWindow={Bit(settings.VvModeOpenWindow)}",
+            $"SkinId={settings.SkinId}",
             ""
         });
         try

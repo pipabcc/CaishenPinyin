@@ -22,6 +22,7 @@ struct RuntimeConfig {
     std::wstring tray_text = L"财";  // 任务栏语言指示按钮上的自定义字符
     bool v_mode_open_window = false;  // 按 v 是否直接打开剪贴板搜索窗口
     bool vv_mode_open_window = false; // 按 vv 是否直接打开自定义短语搜索窗口
+    std::wstring skin_id = L"classic_blue"; // 当前选中的皮肤ID（默认原版经典蓝调）
 };
 
 // Thread-safe, process-cached settings. Values are read from

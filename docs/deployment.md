@@ -20,11 +20,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action Cleanup
 ```
 
-程序安装到 `%ProgramFiles%\CaishenPinyin\versions\<version>`，每个版本包含 `ShuruIme.dll`、`ShuruSettings.exe`、`ShuruSettings.dll`、`ShuruSettings.deps.json` 和 `ShuruSettings.runtimeconfig.json`。安装脚本在公共开始菜单创建“财神输入法设置”快捷方式，并在升级或回滚时同步到当前版本。
+程序安装到 `%ProgramFiles%\CaishenPinyin\versions\<version>`，每个版本包含 `ShuruIme.dll`、`ShuruSettings.exe`、`ShuruSettings.dll`、`ShuruSettings.deps.json`、`ShuruSettings.runtimeconfig.json` 和发布包内的 `data\skins` 内置皮肤资源。安装脚本把资源哈希写入组件清单并在健康检查时验证，同时在公共开始菜单创建“财神输入法设置”快捷方式，并在升级或回滚时同步到当前版本。
 
 所有原生 C++ 目标均使用静态 MSVC 运行库（Release 为 `/MT`，Debug 为 `/MTd`）。`ShuruIme.dll` 不依赖目标机器的 `MSVCP140.dll`、`VCRUNTIME140.dll` 或 `VCRUNTIME140_1.dll`，因此输入法注入不同宿主进程时无需单独安装 VC++ Redistributable。设置程序仍是 .NET 8 WPF 应用，需要 .NET 8 Desktop Runtime。
 
-当前版和上一版并存。应用与词库版本目录均不可变：同版本文件完全一致时直接复用，内容冲突时拒绝覆盖。重复安装当前版本不会改写上一版本指针。脚本不会终止占用 DLL 的应用，旧目录只在显式执行 `Cleanup` 时清理。日志写入安装根 `logs`。错误码：10/11 参数，20-29 包、哈希或签名，30-33 健康检查或版本冲突，40 注册，50 无可回滚版本。
+当前版和上一版并存。应用版本目录不可变，同版本文件完全一致时直接复用，内容冲突时拒绝覆盖；词库物理目录使用 `<逻辑版本>-<manifest 哈希前缀>`，因此同一逻辑版本的完整包可以旁路残缺或被占用的历史目录。重复安装当前版本不会改写上一版本指针。脚本不会终止占用 DLL 的应用，旧目录只在显式执行 `Cleanup` 时清理。日志写入安装根 `logs`。错误码：10/11 参数，20-29 包、哈希或签名，30-33 健康检查或版本冲突，40 注册，50 无可回滚版本。
 
 正式发布入口为 `scripts\build.ps1`：Release configure/build 后强制运行完整 CTest，任一失败立即停止，并输出到显式 `-OutputDir`。发布包 `release-manifest.json` 记录 DLL/词库的 SHA-256、大小和 DLL 文件版本。当前没有代码签名证书；开发构建使用 `IfPresent`，正式发布必须传 `-SigningPolicy Required`，未签名会 fail closed，脚本不会伪造签名。
 

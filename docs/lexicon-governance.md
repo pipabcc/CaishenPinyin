@@ -51,7 +51,8 @@ python scripts/lexicon_manifest.py validate
 根单元、单元上限和精确文件长度。清单还固定每个文件的大小和 SHA-256。英文词库来源同样保持
 `NOASSERTION`，不得据此推断或伪造许可证。
 
-部署使用 `scripts/install_ime.ps1`。系统包安装到稳定数据根的 `versions/<version>`，
+部署使用 `scripts/install_ime.ps1`。系统包安装到稳定数据根的
+`versions/<version>-<manifest 哈希前缀>`，
 通过小型 `current` 指针原子切换；默认机器根为
 `%ProgramData%\CaishenPinyin\data\lexicon`。引擎优先读取该包，缺失或损坏指针时兼容
 DLL 旁 `data\lexicon`。运行时依次尝试完整墨奇、`system_ngram.bin` 和旧版小

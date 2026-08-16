@@ -33,10 +33,30 @@ public partial class MainWindow : Window
             Icon = new System.Windows.Media.Imaging.BitmapImage(iconUri);
         }
         catch { }
-        ApplySettings(SettingsStore.Load());
+        var settings = SettingsStore.Load();
+        TryNormalizeSelectedSkin(settings.SkinId);
+        ApplySettings(settings);
         phrases_.AddRange(CustomPhraseStore.Load());
         RefreshPhraseGrid();
         RefreshStatus();
+    }
+
+    private static void TryNormalizeSelectedSkin(string skinId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(skinId) ||
+                !string.Equals(Path.GetFileName(skinId), skinId,
+                    StringComparison.Ordinal)) return;
+            var directory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CaishenPinyin", "skins", skinId);
+            SsfConverter.NormalizeInstalledSkin(directory, skinId);
+        }
+        catch (Exception ex)
+        {
+            CrashLogger.Log("MainWindow.NormalizeSelectedSkin", ex);
+        }
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e) =>
@@ -66,12 +86,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private string currentSkinId_ = "classic_blue";
+
     private async void NavigationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (GeneralPage is null || InputPage is null || PhrasePage is null || ClipboardPage is null || DictionaryPage is null)
+        if (GeneralPage is null || InputPage is null || PhrasePage is null || ClipboardPage is null || SkinPage is null || DictionaryPage is null)
             return;
 
-        var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, ClipboardPage, DictionaryPage };
+        var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, ClipboardPage, SkinPage, DictionaryPage };
         for (var index = 0; index < pages.Length; ++index)
         {
             pages[index].Visibility = NavigationList.SelectedIndex == index
@@ -103,7 +125,110 @@ public partial class MainWindow : Window
         DisplayNameBox.Text = settings.DisplayName;
         if (PhraseDirectWindowBox != null) PhraseDirectWindowBox.IsChecked = settings.VvModeOpenWindow;
         if (ClipboardDirectWindowBox != null) ClipboardDirectWindowBox.IsChecked = settings.VModeOpenWindow;
+        currentSkinId_ = settings.SkinId;
+        UpdateSkinButtons();
         UpdateFuzzyChildren();
+    }
+
+    private void UpdateSkinButtons()
+    {
+        var buttons = new[] { BtnSkinClassicBlue, BtnSkinClassicGold, BtnSkinMinimalLight, BtnSkinCyberDark, BtnSkinSakuraPink, BtnSkinCeladonJade };
+        foreach (var btn in buttons)
+        {
+            if (btn == null) continue;
+            var skinTag = btn.Tag?.ToString();
+            if (string.Equals(skinTag, currentSkinId_, StringComparison.OrdinalIgnoreCase))
+            {
+                btn.Content = "✓ 使用中";
+                btn.IsEnabled = false;
+            }
+            else
+            {
+                btn.Content = "应用此皮肤";
+                btn.IsEnabled = true;
+            }
+        }
+    }
+
+    private void ApplySkin_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is string skinId && !string.IsNullOrEmpty(skinId))
+        {
+            currentSkinId_ = skinId;
+            UpdateSkinButtons();
+            try
+            {
+                var updated = ReadSettings().Validated();
+                SettingsStore.Save(updated);
+                StatusText.Text = $"已切换至皮肤【{btn.Tag}】，下次敲击输入即时生效。";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"保存皮肤失败：{ex.Message}", "财神输入法", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+    }
+
+    private void ResetDefaultSkin_Click(object sender, RoutedEventArgs e)
+    {
+        currentSkinId_ = "classic_blue";
+        UpdateSkinButtons();
+        try
+        {
+            var updated = ReadSettings().Validated();
+            SettingsStore.Save(updated);
+            StatusText.Text = "已恢复为默认皮肤【经典蓝调】，下次敲击输入即时生效。";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"恢复默认皮肤失败：{ex.Message}", "财神输入法", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void OpenSkinFolder_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var skinsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CaishenPinyin", "skins");
+            Directory.CreateDirectory(skinsDir);
+            Process.Start(new ProcessStartInfo { FileName = skinsDir, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"打开皮肤目录失败：{ex.Message}", "财神输入法", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ImportSkin_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "选择皮肤文件（.ssf 或 .zip）",
+            Filter = "皮肤文件 (*.ssf;*.zip;*.csks)|*.ssf;*.zip;*.csks|所有文件 (*.*)|*.*"
+        };
+        if (dlg.ShowDialog(this) == true)
+        {
+            try
+            {
+                var skinName = Path.GetFileNameWithoutExtension(dlg.FileName);
+                var targetDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "CaishenPinyin", "skins", skinName);
+                skinName = SsfConverter.ConvertAndInstall(dlg.FileName, targetDir);
+
+                currentSkinId_ = skinName;
+                UpdateSkinButtons();
+                var updated = ReadSettings().Validated();
+                SettingsStore.Save(updated);
+                StatusText.Text = $"已成功导入并自动转换为标准皮肤，当前使用【{skinName}】！";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"导入并转换皮肤失败：{ex.Message}", "财神输入法", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
     }
 
     private static void SelectComboValue(ComboBox box, int value)
@@ -138,7 +263,8 @@ public partial class MainWindow : Window
             ReadComboValue(CandidateFontSizeBox, "候选字体大小"),
             displayName,
             ClipboardDirectWindowBox?.IsChecked == true,
-            PhraseDirectWindowBox?.IsChecked == true);
+            PhraseDirectWindowBox?.IsChecked == true,
+            currentSkinId_);
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -857,6 +983,14 @@ public partial class MainWindow : Window
             new ClipboardRecord { Type = ClipboardItemType.Image }.OpenOrEditLabel != "打开" ||
             new ClipboardRecord { Type = ClipboardItemType.File }.OpenOrEditLabel != "打开")
             throw new InvalidOperationException("剪贴板行操作名称不正确");
+        var skinButtons = new[]
+        {
+            BtnSkinClassicBlue, BtnSkinClassicGold, BtnSkinMinimalLight,
+            BtnSkinCyberDark, BtnSkinSakuraPink, BtnSkinCeladonJade
+        };
+        if (skinButtons.Any(button => button.MinWidth < 120 ||
+            button.Padding.Left < 18 || button.Padding.Right < 18))
+            throw new InvalidOperationException("皮肤应用按钮无法完整容纳文字");
     }
 
     protected override void OnClosed(EventArgs e)

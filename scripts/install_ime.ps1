@@ -27,6 +27,7 @@ $SettingsFiles = @(
     'ShuruSettings.deps.json',
     'ShuruSettings.runtimeconfig.json'
 )
+$ApplicationResourceDirectory = 'data\skins'
 $SettingsShortcutName = -join @(
     [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
     [char]0x8BBE, [char]0x7F6E
@@ -100,6 +101,35 @@ function Test-Lexicon([string]$Path) {
     return $manifest
 }
 
+function Test-LexiconHealthy([string]$Path) {
+    $manifestPath = Join-Path $Path 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
+    try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
+    catch { return $false }
+
+    foreach ($file in $manifest.files) {
+        $filePath = Join-Path $Path $file.path
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            if ($file.PSObject.Properties.Name -contains 'runtimeOptional' -and
+                $file.runtimeOptional -eq $true) {
+                continue
+            }
+            return $false
+        }
+        try {
+            $actualHash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash
+            if ($actualHash.ToLowerInvariant() -ne ([string]$file.sha256).ToLowerInvariant()) {
+                return $false
+            }
+            if ($file.PSObject.Properties.Name -contains 'size' -and
+                (Get-Item -LiteralPath $filePath).Length -ne [int64]$file.size) {
+                return $false
+            }
+        } catch { return $false }
+    }
+    return $true
+}
+
 function Assert-ReusableLexicon([string]$Source, [string]$Installed) {
     [void](Test-Lexicon $Installed)
     $sourceHash = (Get-FileHash (Join-Path $Source 'manifest.json') -Algorithm SHA256).Hash
@@ -110,7 +140,48 @@ function Assert-ReusableLexicon([string]$Source, [string]$Installed) {
     Write-DeployLog "reusing verified lexicon $Installed"
 }
 
-function Assert-ReusableApplication([string]$SourceDll, [string]$SettingsDirectory, [string]$Installed) {
+function Get-ApplicationResourceFiles([string]$Root) {
+    $resourceRoot = Join-Path $Root $ApplicationResourceDirectory
+    if (-not (Test-Path -LiteralPath $resourceRoot -PathType Container)) { return @() }
+    $resourceMarker = "\$ApplicationResourceDirectory\"
+    return @(
+        Get-ChildItem -LiteralPath $resourceRoot -Recurse -File | ForEach-Object {
+            $markerIndex = $_.FullName.LastIndexOf(
+                $resourceMarker, [StringComparison]::OrdinalIgnoreCase)
+            if ($markerIndex -lt 0) {
+                Stop-Deployment 25 "application resource path is invalid: $($_.FullName)"
+            }
+            [pscustomobject]@{
+                Source = $_.FullName
+                RelativePath = $_.FullName.Substring($markerIndex + 1).Replace('\', '/')
+            }
+        }
+    )
+}
+
+function Test-ApplicationResources([string]$Root, $ReleaseManifest = $null) {
+    $resourceFiles = @(Get-ApplicationResourceFiles $Root)
+    if ($null -eq $ReleaseManifest) { return $resourceFiles }
+
+    $manifestEntries = @($ReleaseManifest.files | Where-Object {
+        ([string]$_.path).Replace('\', '/').StartsWith('data/skins/')
+    })
+    foreach ($entry in $manifestEntries) {
+        $relativePath = ([string]$entry.path).Replace('\', '/')
+        Test-ReleaseFile (Join-Path $Root $relativePath.Replace('/', '\')) `
+            $relativePath $ReleaseManifest
+    }
+    foreach ($resource in $resourceFiles) {
+        Test-ReleaseFile $resource.Source $resource.RelativePath $ReleaseManifest
+    }
+    return $resourceFiles
+}
+
+function Assert-ReusableApplication(
+    [string]$SourceDll,
+    [string]$SettingsDirectory,
+    [object[]]$ResourceFiles,
+    [string]$Installed) {
     Test-InstalledApplication $Installed
     $pairs = @(
         [pscustomobject]@{ Source = $SourceDll; Installed = (Join-Path $Installed 'ShuruIme.dll') }
@@ -121,12 +192,30 @@ function Assert-ReusableApplication([string]$SourceDll, [string]$SettingsDirecto
             Installed = (Join-Path $Installed $name)
         }
     }
+    foreach ($resource in $ResourceFiles) {
+        $pairs += [pscustomobject]@{
+            Source = $resource.Source
+            Installed = (Join-Path $Installed $resource.RelativePath.Replace('/', '\'))
+        }
+    }
     foreach ($pair in $pairs) {
         if (-not (Test-Path -LiteralPath $pair.Installed -PathType Leaf) -or
             (Get-FileHash -LiteralPath $pair.Source -Algorithm SHA256).Hash -ne
             (Get-FileHash -LiteralPath $pair.Installed -Algorithm SHA256).Hash) {
             Stop-Deployment 33 'installed application version conflicts with release files'
         }
+    }
+    $componentManifest = Get-Content -LiteralPath `
+        (Join-Path $Installed 'install-components.json') -Raw | ConvertFrom-Json
+    $installedResourcePaths = @()
+    if ($componentManifest.PSObject.Properties.Name -contains 'resourceFiles') {
+        $installedResourcePaths = @($componentManifest.resourceFiles | ForEach-Object {
+            ([string]$_.path).Replace('\', '/')
+        })
+    }
+    $sourceResourcePaths = @($ResourceFiles | ForEach-Object { $_.RelativePath })
+    if (@(Compare-Object $installedResourcePaths $sourceResourcePaths).Count -ne 0) {
+        Stop-Deployment 33 'installed application resources conflict with release files'
     }
     Write-DeployLog "reusing verified application $Installed"
 }
@@ -203,6 +292,20 @@ function Test-InstalledApplication([string]$Directory) {
     try { $components = Get-Content -LiteralPath $componentManifest -Raw | ConvertFrom-Json }
     catch { Stop-Deployment 31 'installed component manifest invalid' }
     if ($components.settingsRequired -eq $true) { Test-SettingsDirectory $Directory }
+    if ($components.PSObject.Properties.Name -contains 'resourceFiles') {
+        foreach ($resource in $components.resourceFiles) {
+            $relativePath = ([string]$resource.path).Replace('/', '\')
+            $resourcePath = Join-Path $Directory $relativePath
+            if (-not (Test-Path -LiteralPath $resourcePath -PathType Leaf)) {
+                Stop-Deployment 31 "installed resource missing: $relativePath"
+            }
+            if ((Get-FileHash -LiteralPath $resourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+                ([string]$resource.sha256).ToLowerInvariant() -or
+                (Get-Item -LiteralPath $resourcePath).Length -ne [int64]$resource.size) {
+                Stop-Deployment 31 "installed resource invalid: $relativePath"
+            }
+        }
+    }
 }
 
 function Register-Dll([string]$Path) {
@@ -305,17 +408,26 @@ try {
         $lexiconManifest = Test-Lexicon $PackagePath
         if (-not $Version) { $Version = [string]$lexiconManifest.version }
         if ($Version -notmatch '^[0-9A-Za-z._-]+$') { Stop-Deployment 11 'invalid version' }
+        $lexiconManifestHash = (Get-FileHash `
+            -LiteralPath (Join-Path $PackagePath 'manifest.json') -Algorithm SHA256).Hash
+        $dataVersion = '{0}-{1}' -f `
+            ([string]$lexiconManifest.version), $lexiconManifestHash.Substring(0, 12).ToLowerInvariant()
 
         $releaseManifest = Read-ReleaseManifest $DllPath
         Test-Dll $DllPath $releaseManifest
         Test-SettingsDirectory $SettingsPath $releaseManifest
+        $packageRoot = Split-Path -Parent $DllPath
+        $applicationResources = @(Test-ApplicationResources $packageRoot $releaseManifest)
+        Write-DeployLog "application resources=$($applicationResources.Count) root=$packageRoot"
 
         $oldInstallVersion = Read-Pointer (Join-Path $InstallRoot 'current')
         $oldDataVersion = Read-Pointer (Join-Path $DataRoot 'current')
+        $oldDataHealthy = $oldDataVersion -and (Test-LexiconHealthy `
+            (Join-Path $DataRoot "versions\$oldDataVersion"))
         $stage = Join-Path $InstallRoot ".stage-$Version-$PID"
-        $dataStage = Join-Path $DataRoot ".stage-$($lexiconManifest.version)-$PID"
+        $dataStage = Join-Path $DataRoot ".stage-$dataVersion-$PID"
         $target = Join-Path $InstallRoot "versions\$Version"
-        $dataTarget = Join-Path $DataRoot "versions\$($lexiconManifest.version)"
+        $dataTarget = Join-Path $DataRoot "versions\$dataVersion"
         $reuseApplication = Test-Path -LiteralPath $target -PathType Container
         $reuseLexicon = Test-Path -LiteralPath $dataTarget -PathType Container
         if ((Test-Path -LiteralPath $target) -and -not $reuseApplication) {
@@ -325,7 +437,7 @@ try {
             Stop-Deployment 33 'lexicon version target is not a directory'
         }
         if ($reuseApplication) {
-            Assert-ReusableApplication $DllPath $SettingsPath $target
+            Assert-ReusableApplication $DllPath $SettingsPath $applicationResources $target
         }
         if ($reuseLexicon) { Assert-ReusableLexicon $PackagePath $dataTarget }
 
@@ -342,7 +454,23 @@ try {
                     Copy-Item -LiteralPath (Join-Path $SettingsPath $name) `
                         -Destination (Join-Path $stage $name)
                 }
-                [ordered]@{ schemaVersion = 1; settingsRequired = $true } |
+                $resourceManifest = @()
+                foreach ($resource in $applicationResources) {
+                    $destination = Join-Path $stage $resource.RelativePath.Replace('/', '\')
+                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) |
+                        Out-Null
+                    Copy-Item -LiteralPath $resource.Source -Destination $destination
+                    $resourceManifest += [pscustomobject][ordered]@{
+                        path = $resource.RelativePath
+                        sha256 = (Get-FileHash -LiteralPath $resource.Source -Algorithm SHA256).Hash.ToLowerInvariant()
+                        size = [int64](Get-Item -LiteralPath $resource.Source).Length
+                    }
+                }
+                [ordered]@{
+                    schemaVersion = 2
+                    settingsRequired = $true
+                    resourceFiles = @($resourceManifest)
+                } |
                     ConvertTo-Json | Set-Content `
                     -LiteralPath (Join-Path $stage 'install-components.json') -Encoding UTF8
             }
@@ -367,7 +495,7 @@ try {
             Register-Dll (Join-Path $target 'ShuruIme.dll')
             Invoke-FailureInjection 'AfterRegister'
             Set-Pointer (Join-Path $InstallRoot 'current') $Version
-            Set-Pointer (Join-Path $DataRoot 'current') ([string]$lexiconManifest.version)
+            Set-Pointer (Join-Path $DataRoot 'current') $dataVersion
             Sync-SettingsShortcut $target
             Invoke-FailureInjection 'AfterPointer'
             Test-CurrentInstallation
@@ -375,7 +503,10 @@ try {
             if ($oldInstallVersion -and $oldInstallVersion -ne $Version) {
                 Set-Pointer (Join-Path $InstallRoot 'previous') $oldInstallVersion
             }
-            if ($oldDataVersion) { Set-Pointer (Join-Path $DataRoot 'previous') $oldDataVersion }
+            if ($oldDataVersion) {
+                $rollbackDataVersion = if ($oldDataHealthy) { $oldDataVersion } else { $dataVersion }
+                Set-Pointer (Join-Path $DataRoot 'previous') $rollbackDataVersion
+            }
             Write-DeployLog "install complete $Version"
             exit 0
         } catch {

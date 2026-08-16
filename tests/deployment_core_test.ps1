@@ -7,7 +7,12 @@ try {
     $installRoot = Join-Path $temporaryRoot 'app'
     $dataRoot = Join-Path $temporaryRoot 'data'
     $startMenuRoot = Join-Path $temporaryRoot 'start-menu'
-    $dummyDll = Join-Path $temporaryRoot 'ShuruIme.dll'
+    $packageRoot = Join-Path $temporaryRoot 'package'
+    $skinSource = Join-Path $packageRoot 'data\skins\classic_blue'
+    New-Item -ItemType Directory -Force -Path $skinSource | Out-Null
+    Set-Content -LiteralPath (Join-Path $skinSource 'skin.ini') -Value '[General]'
+    [IO.File]::WriteAllBytes((Join-Path $skinSource 'cand_bg.png'), [byte[]](5, 6, 7, 8))
+    $dummyDll = Join-Path $packageRoot 'ShuruIme.dll'
     [IO.File]::WriteAllBytes($dummyDll, [byte[]](1, 2, 3, 4))
 
     $settingsRoot = Join-Path $temporaryRoot 'settings'
@@ -30,6 +35,12 @@ try {
         SigningPolicy = 'Off'
         NoRegister = $true
     }
+    $lexiconVersion = [string](
+        Get-Content -LiteralPath (Join-Path $root 'data\lexicon\manifest.json') -Raw |
+            ConvertFrom-Json).version
+    $legacyLexicon = Join-Path $dataRoot "versions\$lexiconVersion"
+    New-Item -ItemType Directory -Force -Path $legacyLexicon | Out-Null
+    Set-Content -LiteralPath (Join-Path $legacyLexicon 'incomplete.txt') -Value 'keep-incomplete'
     & (Join-Path $root 'scripts\install_ime.ps1') -Action Install -Version test-1 @commonArguments
     if ($LASTEXITCODE -ne 0) { throw 'non-admin install failed' }
 
@@ -38,10 +49,16 @@ try {
         -SigningPolicy Off -NoRegister
     if ($LASTEXITCODE -ne 0) { throw 'health check failed' }
 
-    $lexiconVersion = [string](
-        Get-Content -LiteralPath (Join-Path $root 'data\lexicon\manifest.json') -Raw |
-            ConvertFrom-Json).version
-    $installedLexicon = Join-Path $dataRoot "versions\$lexiconVersion"
+    $installedDataVersion = (Get-Content -LiteralPath (Join-Path $dataRoot 'current') -Raw).Trim()
+    if ($installedDataVersion -eq $lexiconVersion -or
+        -not $installedDataVersion.StartsWith("$lexiconVersion-")) {
+        throw "lexicon pointer is not content-addressed: $installedDataVersion"
+    }
+    if ((Get-Content -LiteralPath (Join-Path $legacyLexicon 'incomplete.txt') -Raw).Trim() -ne
+        'keep-incomplete') {
+        throw 'incomplete legacy lexicon directory was modified'
+    }
+    $installedLexicon = Join-Path $dataRoot "versions\$installedDataVersion"
     Remove-Item -LiteralPath (Join-Path $installedLexicon 'rime-moqi-zh.gram') -Force
     & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck `
         -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
@@ -54,6 +71,22 @@ try {
     if (-not (Test-Path -LiteralPath $installedSettings -PathType Leaf)) {
         throw 'settings application was not deployed'
     }
+    $installedSkin = Join-Path $installRoot 'versions\test-1\data\skins\classic_blue\skin.ini'
+    if (-not (Test-Path -LiteralPath $installedSkin -PathType Leaf)) {
+        $installedFiles = @(Get-ChildItem -LiteralPath (Join-Path $installRoot 'versions\test-1') `
+            -Recurse -File | ForEach-Object { $_.FullName }) -join ', '
+        throw "built-in skin resources were not deployed; installed=$installedFiles"
+    }
+    Remove-Item -LiteralPath $installedSkin -Force
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck `
+        -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
+        -SigningPolicy Off -NoRegister
+    if ($LASTEXITCODE -eq 0) { throw 'health check accepted a missing built-in skin resource' }
+    Copy-Item -LiteralPath (Join-Path $skinSource 'skin.ini') -Destination $installedSkin
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck `
+        -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
+        -SigningPolicy Off -NoRegister
+    if ($LASTEXITCODE -ne 0) { throw 'health check failed after restoring built-in skin resource' }
     $shortcutName = -join @(
         [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
         [char]0x8BBE, [char]0x7F6E

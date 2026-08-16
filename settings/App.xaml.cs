@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,6 +38,30 @@ public partial class App : Application
         base.OnStartup(e);
 
         TextPasteRequestStore.CleanupExpired();
+
+        var normalizeSkin = ArgumentValue(e.Args, "-normalize-skin");
+        if (!string.IsNullOrWhiteSpace(normalizeSkin))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            var exitCode = 1;
+            try
+            {
+                if (!string.Equals(Path.GetFileName(normalizeSkin), normalizeSkin,
+                        StringComparison.Ordinal))
+                    throw new InvalidDataException("皮肤标识无效。");
+                var directory = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "CaishenPinyin", "skins", normalizeSkin);
+                SsfConverter.NormalizeInstalledSkin(directory, normalizeSkin);
+                exitCode = 0;
+            }
+            catch (Exception ex)
+            {
+                CrashLogger.Log("SsfConverter.NormalizeInstalledSkin", ex);
+            }
+            Shutdown(exitCode);
+            return;
+        }
 
         var pasteTextRequest = ArgumentValue(e.Args, "-paste-text-request");
         if (!string.IsNullOrWhiteSpace(pasteTextRequest))

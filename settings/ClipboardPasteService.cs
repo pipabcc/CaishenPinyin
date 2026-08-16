@@ -49,13 +49,19 @@ internal static class ClipboardPasteService
     {
         if (targetWindow == IntPtr.Zero || !IsWindow(targetWindow))
             return false;
-        await Task.Delay(120, cancellationToken).ConfigureAwait(true);
-        ShowWindow(targetWindow, ShowRestore);
-        SetForegroundWindow(targetWindow);
+        await Task.Delay(80, cancellationToken).ConfigureAwait(true);
+
+        var rootWindow = GetAncestor(targetWindow, 2); // GA_ROOT = 2
+        var activateTarget = rootWindow != IntPtr.Zero ? rootWindow : targetWindow;
+
+        SetForegroundWindow(activateTarget);
+        SetFocus(targetWindow);
         await Task.Delay(60, cancellationToken).ConfigureAwait(true);
 
         var inputs = new[]
         {
+            KeyboardInput(0x10, KeyEventKeyUp), // Shift Up
+            KeyboardInput(0x12, KeyEventKeyUp), // Alt Up
             KeyboardInput(VirtualKeyControl, 0),
             KeyboardInput(VirtualKeyV, 0),
             KeyboardInput(VirtualKeyV, KeyEventKeyUp),
@@ -133,6 +139,12 @@ internal static class ClipboardPasteService
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

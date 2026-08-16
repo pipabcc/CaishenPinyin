@@ -9,5 +9,6 @@
     <Compile Include="..\..\settings\ClipboardMonitor.cs" Link="ClipboardMonitor.cs" />
     <Compile Include="..\..\settings\TextPasteRequestStore.cs" Link="TextPasteRequestStore.cs" />
     <Compile Include="..\..\settings\CrashLogger.cs" Link="CrashLogger.cs" />
+    <Compile Include="..\..\settings\SsfConverter.cs" Link="SsfConverter.cs" />
   </ItemGroup>
 </Project>

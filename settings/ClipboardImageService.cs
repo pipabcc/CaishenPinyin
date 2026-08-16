@@ -75,10 +75,11 @@ internal static class ClipboardImageService
         if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
             throw new FileNotFoundException("剪贴板图片文件不存在", imagePath);
 
-        var original = File.ReadAllBytes(imagePath);
+        var fullPath = Path.GetFullPath(imagePath);
+        var original = File.ReadAllBytes(fullPath);
         var normalized = NormalizePngAlpha(original);
         if (normalized.AlphaRepaired)
-            RepairImageFileAtomically(imagePath, normalized.PngBytes);
+            RepairImageFileAtomically(fullPath, normalized.PngBytes);
 
         var bitmap = DecodeBitmap(normalized.PngBytes);
         var dataObject = new DataObject();
@@ -87,7 +88,23 @@ internal static class ClipboardImageService
             NativePngFormat,
             new MemoryStream(normalized.PngBytes, writable: false));
         dataObject.SetImage(bitmap);
-        Clipboard.SetDataObject(dataObject, copy: true);
+
+        var fileDropList = new System.Collections.Specialized.StringCollection { fullPath };
+        dataObject.SetFileDropList(fileDropList);
+
+        for (var retry = 0; retry < 5; retry++)
+        {
+            try
+            {
+                Clipboard.SetDataObject(dataObject, copy: true);
+                break;
+            }
+            catch
+            {
+                if (retry == 4) throw;
+                Thread.Sleep(30);
+            }
+        }
     }
 
     internal static void SetClipboardText(string text)
@@ -95,7 +112,20 @@ internal static class ClipboardImageService
         var dataObject = new DataObject();
         dataObject.SetData(InternalPasteFormat, "1");
         dataObject.SetData(DataFormats.UnicodeText, text ?? string.Empty);
-        Clipboard.SetDataObject(dataObject, copy: true);
+
+        for (var retry = 0; retry < 5; retry++)
+        {
+            try
+            {
+                Clipboard.SetDataObject(dataObject, copy: true);
+                break;
+            }
+            catch
+            {
+                if (retry == 4) throw;
+                Thread.Sleep(30);
+            }
+        }
     }
 
     private static BitmapSource NormalizeBitmapAlpha(BitmapSource bitmap) =>
