@@ -71,6 +71,11 @@ public:
     // 获取当前皮肤配置
     const SkinTheme& CurrentTheme() const { return current_theme_; }
 
+    // 绘制九宫格背景到 Gdiplus::Graphics（目标矩形从 (0,0) 到 (width, height)）
+    // 返回 true 表示使用背景图成功绘制，false 表示应使用默认矢量渲染
+    bool DrawBackground(
+        void* graphics, int width, int height, UINT dpi = 96);
+
     // 绘制九宫格背景到目标 DC（目标矩形从 (0,0) 到 (width, height)）
     // 返回 true 表示使用背景图成功绘制，false 表示应使用默认矢量渲染
     bool DrawBackground(

@@ -22,7 +22,7 @@ void SetCaretToRangeEnd(ITfContext* context, TfEditCookie ec, ITfRange* range) {
     clone->Collapse(ec, TF_ANCHOR_END);
     TF_SELECTION selection {};
     selection.range = clone;
-    selection.style.ase = TF_AE_NONE;
+    selection.style.ase = TF_AE_END;
     selection.style.fInterimChar = FALSE;
     context->SetSelection(ec, 1, &selection);
     clone->Release();
@@ -238,16 +238,8 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
 
     ApplyCompositionDisplayAttribute(context_, ec, range, display_atom_);
 
-    // 选中整段组合串，并标记 interim，多数应用会显示为“正在组合”样式
-    ITfRange* sel_range = nullptr;
-    if (SUCCEEDED(range->Clone(&sel_range)) && sel_range != nullptr) {
-        TF_SELECTION selection {};
-        selection.range = sel_range;
-        selection.style.ase = TF_AE_NONE;
-        selection.style.fInterimChar = TRUE;
-        context_->SetSelection(ec, 1, &selection);
-        sel_range->Release();
-    }
+    // 组合过程中将光标移动到当前组合串末尾，确保编辑器光标实时跟随输入
+    SetCaretToRangeEnd(context_, ec, range);
 
     range->Release();
     return S_OK;

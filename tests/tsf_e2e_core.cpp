@@ -95,6 +95,53 @@ private:
     std::wstring* output_ = nullptr;
 };
 
+class ReadSelectionEditSession final : public ITfEditSession {
+public:
+    ReadSelectionEditSession(ITfContext* context, bool* is_empty, bool* is_interim, TfActiveSelEnd* ase)
+        : context_(context), is_empty_(is_empty), is_interim_(is_interim), ase_(ase) {
+        if (context_ != nullptr) context_->AddRef();
+    }
+    ~ReadSelectionEditSession() {
+        if (context_ != nullptr) context_->Release();
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (object == nullptr) return E_INVALIDARG;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_ITfEditSession) {
+            *object = static_cast<ITfEditSession*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs_); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG refs = InterlockedDecrement(&refs_);
+        if (refs == 0) delete this;
+        return static_cast<ULONG>(refs);
+    }
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie ec) override {
+        if (context_ == nullptr) return E_INVALIDARG;
+        TF_SELECTION sel {};
+        ULONG fetched = 0;
+        HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &sel, &fetched);
+        if (FAILED(hr) || fetched == 0 || sel.range == nullptr) return FAILED(hr) ? hr : E_FAIL;
+        BOOL empty = FALSE;
+        sel.range->IsEmpty(ec, &empty);
+        if (is_empty_) *is_empty_ = (empty != FALSE);
+        if (is_interim_) *is_interim_ = (sel.style.fInterimChar != FALSE);
+        if (ase_) *ase_ = sel.style.ase;
+        sel.range->Release();
+        return S_OK;
+    }
+private:
+    LONG refs_ = 1;
+    ITfContext* context_ = nullptr;
+    bool* is_empty_ = nullptr;
+    bool* is_interim_ = nullptr;
+    TfActiveSelEnd* ase_ = nullptr;
+};
+
 bool RunEditSession(
     ITfContext* context,
     TfClientId client_id,
@@ -149,8 +196,26 @@ int wmain() {
     if (!RunEditSession(
             context, client_id,
             new shuru::SetCompositionEditSession(
-                context, client_id, sink, &composition, L"suixinshuru")) ||
-        !RunEditSession(
+                context, client_id, sink, &composition, L"suixinshuru"))) {
+        goto cleanup;
+    }
+
+    {
+        bool is_empty = false;
+        bool is_interim = true;
+        TfActiveSelEnd ase = TF_AE_NONE;
+        if (!RunEditSession(
+                context, client_id,
+                new ReadSelectionEditSession(context, &is_empty, &is_interim, &ase),
+                TF_ES_SYNC | TF_ES_READ) ||
+            !is_empty || is_interim || ase != TF_AE_END) {
+            std::fwprintf(stderr, L"composition caret not collapsed to end: empty=%d interim=%d ase=%d\n",
+                          is_empty, is_interim, ase);
+            goto cleanup;
+        }
+    }
+
+    if (!RunEditSession(
             context, client_id,
             new shuru::InsertTextEditSession(
                 context, client_id, &composition, L"\u968f\u5fc3"))) {

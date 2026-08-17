@@ -365,12 +365,8 @@ bool SkinManager::AdvanceFrame() noexcept {
 }
 
 bool SkinManager::DrawBackground(
-    HDC hdc, int width, int height, UINT dpi,
-    uint8_t* destination_pixels,
-    int destination_bitmap_width,
-    int destination_bitmap_height,
-    int destination_offset) {
-    if (bg_frames_.empty() || !current_theme_.has_bg_image || width <= 0 || height <= 0) {
+    void* graphics_ptr, int width, int height, UINT dpi) {
+    if (graphics_ptr == nullptr || bg_frames_.empty() || !current_theme_.has_bg_image || width <= 0 || height <= 0) {
         return false;
     }
 
@@ -380,32 +376,7 @@ bool SkinManager::DrawBackground(
     const int src_h = static_cast<int>(bmp->GetHeight());
     if (src_w <= 0 || src_h <= 0) return false;
 
-    Gdiplus::Graphics hdc_graphics(hdc);
-    std::unique_ptr<Gdiplus::Bitmap> destination_bitmap;
-    std::unique_ptr<Gdiplus::Graphics> alpha_graphics;
-    Gdiplus::Graphics* graphics = &hdc_graphics;
-    if (destination_pixels != nullptr &&
-        destination_bitmap_width > 0 && destination_bitmap_height > 0 &&
-        destination_offset >= 0 &&
-        destination_offset + width <= destination_bitmap_width &&
-        destination_offset + height <= destination_bitmap_height) {
-        destination_bitmap = std::make_unique<Gdiplus::Bitmap>(
-            destination_bitmap_width, destination_bitmap_height,
-            destination_bitmap_width * 4,
-            PixelFormat32bppPARGB, destination_pixels);
-        alpha_graphics = std::make_unique<Gdiplus::Graphics>(
-            destination_bitmap.get());
-        alpha_graphics->SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
-        alpha_graphics->SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
-        alpha_graphics->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-        alpha_graphics->SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
-        alpha_graphics->TranslateTransform(
-            static_cast<Gdiplus::REAL>(destination_offset),
-            static_cast<Gdiplus::REAL>(destination_offset));
-        // 所有皮肤都直接写入预乘 Alpha DIB，保留素材自身的抗锯齿边缘。
-        graphics = alpha_graphics.get();
-    }
-    Gdiplus::Graphics& g = *graphics;
+    auto& g = *reinterpret_cast<Gdiplus::Graphics*>(graphics_ptr);
     g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
     g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
@@ -464,6 +435,44 @@ bool SkinManager::DrawBackground(
     }
 
     return true;
+}
+
+bool SkinManager::DrawBackground(
+    HDC hdc, int width, int height, UINT dpi,
+    uint8_t* destination_pixels,
+    int destination_bitmap_width,
+    int destination_bitmap_height,
+    int destination_offset) {
+    if (bg_frames_.empty() || !current_theme_.has_bg_image || width <= 0 || height <= 0) {
+        return false;
+    }
+
+    if (destination_pixels != nullptr &&
+        destination_bitmap_width > 0 && destination_bitmap_height > 0 &&
+        destination_offset >= 0 &&
+        destination_offset + width <= destination_bitmap_width &&
+        destination_offset + height <= destination_bitmap_height) {
+        Gdiplus::Bitmap destination_bitmap(
+            destination_bitmap_width, destination_bitmap_height,
+            destination_bitmap_width * 4,
+            PixelFormat32bppPARGB, destination_pixels);
+        Gdiplus::Graphics alpha_graphics(&destination_bitmap);
+        alpha_graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+        alpha_graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+        alpha_graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        alpha_graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        alpha_graphics.TranslateTransform(
+            static_cast<Gdiplus::REAL>(destination_offset),
+            static_cast<Gdiplus::REAL>(destination_offset));
+        return DrawBackground(&alpha_graphics, width, height, dpi);
+    }
+
+    if (hdc != nullptr) {
+        Gdiplus::Graphics hdc_graphics(hdc);
+        return DrawBackground(&hdc_graphics, width, height, dpi);
+    }
+
+    return false;
 }
 
 }  // namespace shuru

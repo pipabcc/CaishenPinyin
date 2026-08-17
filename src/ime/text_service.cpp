@@ -863,9 +863,26 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
         }
         return S_OK;
     }
-    // Shift 按住期间到达的任何其它键（Shift+字母等）都取消「单独 Shift」语义；
-    // 未武装时取消是无害的空操作，因此无需查询物理键态。
-    shift_tap_.CancelAction();
+    // 补偿机制：部分终端/宿主（如 Git Bash mintty / IMM 桥接层）会跳过未消费 Shift 的 OnKeyUp。
+    // 若此前武装了 ShiftTap，且到达当前非 Shift 键时物理 Shift 键已完全弹起，则判定先前的 Shift 单击已完成，
+    // 立即就地结算中英切换 / 原始拼音提交，然后再以最新状态处理当前到达的按键。
+    if (shift_tap_.HasPendingKey()) {
+        const bool shift_physically_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
+                                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (!shift_physically_down) {
+            const ShiftTapRelease release = shift_tap_.Release(
+                !composing_pinyin_.empty(), IsPasswordContext(pic));
+            if (release.action == ShiftTapAction::CommitRawComposition) {
+                CommitRawComposition(pic);
+            } else if (release.action == ShiftTapAction::ToggleEnglishMode) {
+                ToggleEnglishMode();
+            }
+        } else {
+            shift_tap_.CancelAction();
+        }
+    } else {
+        shift_tap_.CancelAction();
+    }
     *pfEaten = IsKeyEaten(pic, wParam, shortcut_modifier) ? TRUE : FALSE;
     if (*pfEaten) {
         // TSF 仅在测试回调声明吃键时保证继续调用 OnKeyDown。只缓存这类
@@ -966,7 +983,23 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         *eaten = shift_tap_.ShouldEatKeyUp();
         return true;
     }
-    shift_tap_.CancelAction();
+    if (shift_tap_.HasPendingKey()) {
+        const bool shift_physically_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
+                                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (!shift_physically_down) {
+            const ShiftTapRelease release = shift_tap_.Release(
+                !composing_pinyin_.empty(), IsPasswordContext(context));
+            if (release.action == ShiftTapAction::CommitRawComposition) {
+                CommitRawComposition(context);
+            } else if (release.action == ShiftTapAction::ToggleEnglishMode) {
+                ToggleEnglishMode();
+            }
+        } else {
+            shift_tap_.CancelAction();
+        }
+    } else {
+        shift_tap_.CancelAction();
+    }
 
     // Ctrl+A/C/V 等：绝不当拼音字母处理
     if (shortcut_modifier) {

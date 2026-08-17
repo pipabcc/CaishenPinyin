@@ -110,6 +110,11 @@ private:
     HFONT font_meta_ = nullptr;
     HFONT font_header_title_ = nullptr;
     HFONT font_utility_ = nullptr;
+    void* gdip_font_ = nullptr;
+    void* gdip_font_comp_ = nullptr;
+    void* gdip_font_meta_ = nullptr;
+    void* gdip_font_header_title_ = nullptr;
+    void* gdip_font_utility_ = nullptr;
     bool visible_ = false;
     bool english_mode_ = false;
     bool expanded_ = false;
@@ -172,7 +177,7 @@ private:
     void RefreshTypingStats();
     void OpenSettings();
     void DrawContent(
-        HDC hdc, uint8_t* pixels, int bitmap_width, int bitmap_height,
+        void* graphics, uint8_t* pixels, int bitmap_width, int bitmap_height,
         int content_offset);
     bool UpdateLayeredWindowContent(const POINT& window_origin);
     LRESULT OnPaint();

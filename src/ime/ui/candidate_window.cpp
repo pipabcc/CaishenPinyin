@@ -2,14 +2,47 @@
 #include "skin_manager.h"
 #include "common/runtime_config.h"
 
+#include <Windows.h>
+#include <objbase.h>
+#include <gdiplus.h>
+
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
+#pragma comment(lib, "gdiplus.lib")
+
 namespace shuru {
+namespace {
+
+Gdiplus::Color ToGdiplusColor(COLORREF c, BYTE alpha = 255) noexcept {
+    return Gdiplus::Color(alpha, GetRValue(c), GetGValue(c), GetBValue(c));
+}
+
+void AddRoundedRectangleToPath(
+    Gdiplus::GraphicsPath& path,
+    const Gdiplus::RectF& rect,
+    float radius) {
+    if (radius <= 0.0f) {
+        path.AddRectangle(rect);
+        return;
+    }
+    const float max_r = (std::min)(rect.Width, rect.Height) / 2.0f;
+    if (radius > max_r) radius = max_r;
+    const float d = radius * 2.0f;
+    path.AddArc(rect.X, rect.Y, d, d, 180.0f, 90.0f);
+    path.AddArc(rect.GetRight() - d, rect.Y, d, d, 270.0f, 90.0f);
+    path.AddArc(rect.GetRight() - d, rect.GetBottom() - d, d, d, 0.0f, 90.0f);
+    path.AddArc(rect.X, rect.GetBottom() - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+}  // namespace
+
 constexpr int kMaskSamplesPerAxis = 4;
 
 std::uint8_t RoundedRectanglePixelCoverage(
@@ -326,6 +359,13 @@ void CandidateWindow::ResetFonts() {
             *font = nullptr;
         }
     }
+    for (void** font : {&gdip_font_, &gdip_font_comp_, &gdip_font_meta_,
+                        &gdip_font_header_title_, &gdip_font_utility_}) {
+        if (*font != nullptr) {
+            delete static_cast<Gdiplus::Font*>(*font);
+            *font = nullptr;
+        }
+    }
     font_signature_.clear();
 }
 
@@ -393,6 +433,55 @@ void CandidateWindow::EnsureFonts() {
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, font_quality,
             DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+    }
+
+    if (gdip_font_ == nullptr) {
+        Gdiplus::FontFamily font_family(family.c_str());
+        if (!font_family.IsAvailable()) {
+            gdip_font_ = new Gdiplus::Font(
+                L"Microsoft YaHei UI",
+                static_cast<Gdiplus::REAL>(Scale(candidate_size)),
+                Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        } else {
+            gdip_font_ = new Gdiplus::Font(
+                &font_family,
+                static_cast<Gdiplus::REAL>(Scale(candidate_size)),
+                Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        }
+    }
+    if (gdip_font_comp_ == nullptr) {
+        Gdiplus::FontFamily font_family(family.c_str());
+        if (!font_family.IsAvailable()) {
+            gdip_font_comp_ = new Gdiplus::Font(
+                L"Microsoft YaHei UI",
+                static_cast<Gdiplus::REAL>(Scale(candidate_size + 1)),
+                Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        } else {
+            gdip_font_comp_ = new Gdiplus::Font(
+                &font_family,
+                static_cast<Gdiplus::REAL>(Scale(candidate_size + 1)),
+                Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        }
+    }
+    if (gdip_font_meta_ == nullptr) {
+        const int meta_size = CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size);
+        gdip_font_meta_ = new Gdiplus::Font(
+            L"Microsoft YaHei UI",
+            static_cast<Gdiplus::REAL>(Scale(meta_size)),
+            Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    }
+    if (gdip_font_header_title_ == nullptr) {
+        const int meta_size = CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size);
+        gdip_font_header_title_ = new Gdiplus::Font(
+            L"Microsoft YaHei UI",
+            static_cast<Gdiplus::REAL>(Scale(meta_size)),
+            Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+    }
+    if (gdip_font_utility_ == nullptr) {
+        gdip_font_utility_ = new Gdiplus::Font(
+            L"Microsoft YaHei UI",
+            static_cast<Gdiplus::REAL>(Scale(kUtilityFontSize)),
+            Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     }
 }
 
@@ -731,20 +820,33 @@ void CandidateWindow::OpenSettings() {
 }
 
 void CandidateWindow::RecalcSize() {
-    HDC hdc = GetDC(nullptr);
     EnsureFonts();
     const auto& skin = SkinManager::Instance().CurrentTheme();
 
-    if (hdc == nullptr || font_ == nullptr || font_comp_ == nullptr ||
-        font_meta_ == nullptr || font_utility_ == nullptr) {
-        if (hdc != nullptr) {
-            ReleaseDC(nullptr, hdc);
-        }
+    if (gdip_font_ == nullptr || gdip_font_comp_ == nullptr ||
+        gdip_font_meta_ == nullptr || gdip_font_utility_ == nullptr) {
         width_ = Scale(kMinWidth);
         height_ = Scale(kVerticalPadding * 2 + kLineHeight * 2 + kRowGap);
         layout_dirty_ = false;
         return;
     }
+
+    auto* font = static_cast<Gdiplus::Font*>(gdip_font_);
+    auto* font_comp = static_cast<Gdiplus::Font*>(gdip_font_comp_);
+    auto* font_meta = static_cast<Gdiplus::Font*>(gdip_font_meta_);
+
+    Gdiplus::Bitmap dummy(1, 1, PixelFormat32bppPARGB);
+    Gdiplus::Graphics g(&dummy);
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    Gdiplus::StringFormat format(Gdiplus::StringFormat::GenericTypographic());
+    format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces | Gdiplus::StringFormatFlagsNoWrap);
+
+    const auto measure_str = [&](Gdiplus::Font* f, const std::wstring& text) -> int {
+        if (f == nullptr || text.empty()) return 0;
+        Gdiplus::RectF bbox;
+        g.MeasureString(text.c_str(), static_cast<INT>(text.size()), f, Gdiplus::PointF(0, 0), &format, &bbox);
+        return static_cast<int>(std::ceil(bbox.Width));
+    };
 
     const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
 
@@ -755,16 +857,14 @@ void CandidateWindow::RecalcSize() {
         const size_t visible_count = candidates_.empty() ? 1 : (std::min)(candidates_.size(), static_cast<size_t>(kVerticalMaxVisible));
         height_ = top_bar_h + static_cast<int>(visible_count) * row_h + Scale(10);
         layout_dirty_ = false;
-        ReleaseDC(nullptr, hdc);
         return;
     }
 
-    const int comp_w = MeasureText(
-        hdc, font_comp_, composing_.empty() ? L" " : composing_);
+    const int comp_w = measure_str(font_comp, composing_.empty() ? L" " : composing_);
     const std::wstring status_text = BuildTypingStatisticsText(
         typing_stats_.daily_count);
     const bool can_expand = candidates_.size() > page_size_;
-    const int header_right_w = MeasureText(hdc, font_meta_, status_text) +
+    const int header_right_w = measure_str(font_meta, status_text) +
         (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     int cand_w = 0;
     const int padding = skin.native_appearance
@@ -796,7 +896,7 @@ void CandidateWindow::RecalcSize() {
                 item = std::to_wstring(i - begin + 1) + L".";
             }
             item += candidates_[i].text;
-            item_widths.push_back(MeasureText(hdc, font_, item));
+            item_widths.push_back(measure_str(font, item));
         }
         item_rows_.push_back(BuildCandidateRowLayout(
             item_widths, begin,
@@ -805,7 +905,6 @@ void CandidateWindow::RecalcSize() {
         cand_w = (std::max)(cand_w,
             CandidateRowRequiredWidth(item_rows_.back(), candidate_right_padding));
     }
-    ReleaseDC(nullptr, hdc);
 
     const int header_left = skin.native_appearance
         ? Scale(skin.pinyin_margin.left) : padding + Scale(4);
@@ -882,25 +981,55 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
 }
 
 void CandidateWindow::DrawContent(
-    HDC hdc, uint8_t* pixels, int bitmap_width, int bitmap_height,
-    int content_offset) {
+    void* graphics_ptr, uint8_t* /*pixels*/, int /*bitmap_width*/, int /*bitmap_height*/,
+    int /*content_offset*/) {
+    if (graphics_ptr == nullptr) return;
+    auto& g = *reinterpret_cast<Gdiplus::Graphics*>(graphics_ptr);
+
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
 
-    // 绘制背景：优先使用皮肤 9-Slice 位图切片，否则使用默认白底
-    if (!SkinManager::Instance().DrawBackground(
-            hdc, width_, height_, hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_),
-            pixels, bitmap_width, bitmap_height, content_offset)) {
-        RECT rc {0, 0, width_, height_};
-        HBRUSH bg = CreateSolidBrush(RGB(255, 255, 255));
-        FillRect(hdc, &rc, bg);
-        DeleteObject(bg);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+
+    // 绘制背景：优先使用皮肤 9-Slice 位图切片，否则使用默认白底圆角矩形
+    bool drew_bg = false;
+    if (skin.has_bg_image) {
+        drew_bg = SkinManager::Instance().DrawBackground(
+            &g, width_, height_, hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_));
+    }
+    if (!drew_bg) {
+        Gdiplus::GraphicsPath bg_path;
+        Gdiplus::RectF bg_rect(0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_));
+        AddRoundedRectangleToPath(bg_path, bg_rect, static_cast<float>(Scale(skin.corner_radius)));
+        Gdiplus::SolidBrush bg_brush(Gdiplus::Color(255, 255, 255, 255));
+        g.FillPath(&bg_brush, &bg_path);
+        Gdiplus::Pen border_pen(Gdiplus::Color(255, 226, 232, 240), 1.0f);
+        g.DrawPath(&border_pen, &bg_path);
     }
 
     EnsureFonts();
-    if (font_ == nullptr || font_comp_ == nullptr || font_meta_ == nullptr ||
-        font_utility_ == nullptr) return;
-    SetBkMode(hdc, TRANSPARENT);
+    if (gdip_font_ == nullptr || gdip_font_comp_ == nullptr ||
+        gdip_font_meta_ == nullptr || gdip_font_utility_ == nullptr) return;
+
+    auto* font = static_cast<Gdiplus::Font*>(gdip_font_);
+    auto* font_comp = static_cast<Gdiplus::Font*>(gdip_font_comp_);
+    auto* font_meta = static_cast<Gdiplus::Font*>(gdip_font_meta_);
+    auto* font_header_title = static_cast<Gdiplus::Font*>(gdip_font_header_title_);
+    auto* font_utility = static_cast<Gdiplus::Font*>(gdip_font_utility_);
+
+    Gdiplus::StringFormat format(Gdiplus::StringFormat::GenericTypographic());
+    format.SetAlignment(Gdiplus::StringAlignmentNear);
+    format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
+    format.SetTrimming(Gdiplus::StringTrimmingEllipsisCharacter);
+
+    Gdiplus::StringFormat format_center(Gdiplus::StringFormat::GenericTypographic());
+    format_center.SetAlignment(Gdiplus::StringAlignmentCenter);
+    format_center.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    format_center.SetFormatFlags(format_center.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
 
     const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
 
@@ -911,11 +1040,12 @@ void CandidateWindow::DrawContent(
         const int padding = Scale(12);
 
         // 1. 顶部标题 (字号适中精致)
-        SelectObject(hdc, font_header_title_);
-        SetTextColor(hdc, skin.pinyin_color);
+        Gdiplus::SolidBrush title_brush(ToGdiplusColor(skin.pinyin_color));
         std::wstring title = composing_.rfind(L"vv", 0) == 0 ? L"自定义短语" : L"复制记录";
-        RECT title_rc {padding, Scale(4), padding + Scale(120), top_bar_h};
-        DrawTextW(hdc, title.c_str(), -1, &title_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        Gdiplus::RectF title_rc(
+            static_cast<float>(padding), static_cast<float>(Scale(4)),
+            static_cast<float>(Scale(120)), static_cast<float>(top_bar_h));
+        g.DrawString(title.c_str(), -1, font_header_title, title_rc, &format, &title_brush);
 
         // 2. 右侧可点击搜索框胶囊
         std::wstring search_query;
@@ -925,46 +1055,53 @@ void CandidateWindow::DrawContent(
         const int box_w = Scale(145);
         search_box_rect_ = RECT {width_ - padding - box_w, Scale(6), width_ - padding, top_bar_h - Scale(6)};
 
-        HPEN cap_pen = CreatePen(PS_SOLID, 1, RGB(226, 232, 240));
-        HBRUSH cap_brush = CreateSolidBrush(RGB(248, 250, 252));
-        HGDIOBJ old_pen = SelectObject(hdc, cap_pen);
-        HGDIOBJ old_brush = SelectObject(hdc, cap_brush);
-        RoundRect(hdc, search_box_rect_.left, search_box_rect_.top, search_box_rect_.right, search_box_rect_.bottom, Scale(6), Scale(6));
-        SelectObject(hdc, old_brush);
-        SelectObject(hdc, old_pen);
-        DeleteObject(cap_brush);
-        DeleteObject(cap_pen);
+        Gdiplus::RectF search_rf(
+            static_cast<float>(search_box_rect_.left),
+            static_cast<float>(search_box_rect_.top),
+            static_cast<float>(search_box_rect_.right - search_box_rect_.left),
+            static_cast<float>(search_box_rect_.bottom - search_box_rect_.top));
+        Gdiplus::GraphicsPath search_path;
+        AddRoundedRectangleToPath(search_path, search_rf, static_cast<float>(Scale(6)));
+        Gdiplus::SolidBrush search_bg(Gdiplus::Color(255, 248, 250, 252));
+        Gdiplus::Pen search_pen(Gdiplus::Color(255, 226, 232, 240), 1.0f);
+        g.FillPath(&search_bg, &search_path);
+        g.DrawPath(&search_pen, &search_path);
 
-        SelectObject(hdc, font_meta_);
         std::wstring search_text = search_query.empty() ? L"🔍 搜索..." : (L"🔍 " + search_query);
-        SetTextColor(hdc, search_query.empty() ? RGB(148, 163, 184) : RGB(30, 41, 59));
-        RECT text_rc = search_box_rect_;
-        text_rc.left += Scale(8);
-        text_rc.right -= search_query.empty() ? Scale(6) : Scale(20);
-        DrawTextW(hdc, search_text.c_str(), -1, &text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        Gdiplus::SolidBrush search_text_brush(search_query.empty() ? Gdiplus::Color(255, 148, 163, 184) : Gdiplus::Color(255, 30, 41, 59));
+        Gdiplus::RectF search_text_rf(
+            static_cast<float>(search_box_rect_.left + Scale(8)),
+            static_cast<float>(search_box_rect_.top),
+            static_cast<float>(search_box_rect_.right - search_box_rect_.left - (search_query.empty() ? Scale(14) : Scale(28))),
+            static_cast<float>(search_box_rect_.bottom - search_box_rect_.top));
+        g.DrawString(search_text.c_str(), -1, font_meta, search_text_rf, &format, &search_text_brush);
 
         if (!search_query.empty()) {
             search_clear_rect_ = RECT {search_box_rect_.right - Scale(20), search_box_rect_.top, search_box_rect_.right - Scale(2), search_box_rect_.bottom};
-            SetTextColor(hdc, RGB(148, 163, 184));
-            DrawTextW(hdc, L"✕", -1, &search_clear_rect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            Gdiplus::SolidBrush clear_brush(Gdiplus::Color(255, 148, 163, 184));
+            Gdiplus::RectF clear_rf(
+                static_cast<float>(search_clear_rect_.left),
+                static_cast<float>(search_clear_rect_.top),
+                static_cast<float>(search_clear_rect_.right - search_clear_rect_.left),
+                static_cast<float>(search_clear_rect_.bottom - search_clear_rect_.top));
+            g.DrawString(L"✕", -1, font_meta, clear_rf, &format_center, &clear_brush);
         } else {
             search_clear_rect_ = {};
         }
 
         // 3. 分隔线
-        HPEN sep = CreatePen(PS_SOLID, 1, skin.separator_color);
-        old_pen = SelectObject(hdc, sep);
-        MoveToEx(hdc, Scale(6), top_bar_h, nullptr);
-        LineTo(hdc, width_ - Scale(6), top_bar_h);
-        SelectObject(hdc, old_pen);
-        DeleteObject(sep);
+        Gdiplus::Pen sep_pen(ToGdiplusColor(skin.separator_color), 1.0f);
+        g.DrawLine(&sep_pen,
+            static_cast<float>(Scale(6)), static_cast<float>(top_bar_h),
+            static_cast<float>(width_ - Scale(6)), static_cast<float>(top_bar_h));
 
         // 4. 竖向候选列表
-        SelectObject(hdc, font_utility_);
         if (candidates_.empty()) {
-            SetTextColor(hdc, skin.status_text_color);
-            RECT empty_rc {padding, top_bar_h + Scale(16), width_ - padding, top_bar_h + Scale(50)};
-            DrawTextW(hdc, L"暂无记录", -1, &empty_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            Gdiplus::SolidBrush empty_brush(ToGdiplusColor(skin.status_text_color));
+            Gdiplus::RectF empty_rf(
+                static_cast<float>(padding), static_cast<float>(top_bar_h + Scale(16)),
+                static_cast<float>(width_ - padding * 2), static_cast<float>(Scale(34)));
+            g.DrawString(L"暂无记录", -1, font_utility, empty_rf, &format_center, &empty_brush);
         } else {
             const size_t start_idx = static_cast<size_t>(scroll_offset_);
             const size_t end_idx = (std::min)(candidates_.size(), start_idx + static_cast<size_t>(kVerticalMaxVisible));
@@ -978,62 +1115,55 @@ void CandidateWindow::DrawContent(
                 const bool is_selected = (i == selected_);
 
                 if (is_selected || is_hovered) {
-                    GdiFlush();
-                    const std::vector<uint8_t> row_mask =
-                        BuildRoundedCardMask(
-                            bitmap_width, bitmap_height,
-                            content_offset + row_rc.left,
-                            content_offset + row_rc.top + Scale(1),
-                            row_rc.right - row_rc.left,
-                            row_rc.bottom - row_rc.top - Scale(2),
-                            Scale(6));
-                    BlendSolidColor(
-                        pixels, row_mask, bitmap_width, bitmap_height,
-                        is_selected
-                            ? RGB(238, 242, 255)
-                            : RGB(248, 250, 252));
+                    Gdiplus::RectF row_rf(
+                        static_cast<float>(row_rc.left),
+                        static_cast<float>(row_rc.top + Scale(1)),
+                        static_cast<float>(row_rc.right - row_rc.left),
+                        static_cast<float>(row_rc.bottom - row_rc.top - Scale(2)));
+                    Gdiplus::GraphicsPath row_path;
+                    AddRoundedRectangleToPath(row_path, row_rf, static_cast<float>(Scale(6)));
+                    Gdiplus::SolidBrush row_bg(is_selected
+                        ? Gdiplus::Color(255, 238, 242, 255)
+                        : Gdiplus::Color(255, 248, 250, 252));
+                    g.FillPath(&row_bg, &row_path);
                 }
 
                 // 绘制圆点 •
-                SetTextColor(hdc, is_selected ? skin.highlight_bg_color : skin.index_color);
-                RECT dot_rc {Scale(14), row_y, Scale(26), row_y + row_h};
-                DrawTextW(hdc, L"•", -1, &dot_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                COLORREF dot_color = is_selected ? skin.highlight_bg_color : skin.index_color;
+                Gdiplus::SolidBrush dot_brush(ToGdiplusColor(dot_color));
+                Gdiplus::RectF dot_rf(
+                    static_cast<float>(Scale(14)), static_cast<float>(row_y),
+                    static_cast<float>(Scale(12)), static_cast<float>(row_h));
+                g.DrawString(L"•", -1, font_utility, dot_rf, &format, &dot_brush);
 
                 // 绘制文本
-                SetTextColor(hdc, is_selected ? skin.highlight_bg_color : skin.candidate_color);
-                RECT item_text_rc {Scale(26), row_y, row_rc.right - Scale(30), row_y + row_h};
-                DrawTextW(hdc, candidates_[i].text.c_str(), -1, &item_text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                COLORREF item_text_color = is_selected ? skin.highlight_bg_color : skin.candidate_color;
+                Gdiplus::SolidBrush item_text_brush(ToGdiplusColor(item_text_color));
+                Gdiplus::RectF item_text_rf(
+                    static_cast<float>(Scale(26)), static_cast<float>(row_y),
+                    static_cast<float>(row_rc.right - Scale(56)), static_cast<float>(row_h));
+                g.DrawString(candidates_[i].text.c_str(), -1, font_utility, item_text_rf, &format, &item_text_brush);
 
                 // 悬停显示精致矢量简约垃圾桶
                 if (is_hovered) {
-                    const int btn_x = row_rc.right - Scale(22);
-                    const int btn_y = row_y + (row_h - Scale(14)) / 2;
-                    const int icon_w = Scale(11);
-                    const int icon_h = Scale(13);
-                    COLORREF trash_color = hovered_delete_ ? RGB(239, 68, 68) : RGB(156, 163, 175);
-                    HPEN trash_pen = CreatePen(PS_SOLID, 1, trash_color);
-                    HGDIOBJ old_trash_pen = SelectObject(hdc, trash_pen);
-                    HGDIOBJ old_trash_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+                    const float btn_x = static_cast<float>(row_rc.right - Scale(22));
+                    const float btn_y = static_cast<float>(row_y + (row_h - Scale(14)) / 2);
+                    const float icon_w = static_cast<float>(Scale(11));
+                    const float icon_h = static_cast<float>(Scale(13));
+                    Gdiplus::Color trash_color = hovered_delete_ ? Gdiplus::Color(255, 239, 68, 68) : Gdiplus::Color(255, 156, 163, 175);
+                    Gdiplus::Pen trash_pen(trash_color, 1.0f);
 
-                    MoveToEx(hdc, btn_x + Scale(4), btn_y, nullptr);
-                    LineTo(hdc, btn_x + Scale(7), btn_y);
-                    MoveToEx(hdc, btn_x + Scale(1), btn_y + Scale(2), nullptr);
-                    LineTo(hdc, btn_x + icon_w - Scale(1), btn_y + Scale(2));
-                    const POINT body_pts[4] = {
-                        {btn_x + Scale(2), btn_y + Scale(3)},
-                        {btn_x + icon_w - Scale(2), btn_y + Scale(3)},
-                        {btn_x + icon_w - Scale(3), btn_y + icon_h},
-                        {btn_x + Scale(3), btn_y + icon_h}
+                    g.DrawLine(&trash_pen, btn_x + Scale(4), btn_y, btn_x + Scale(7), btn_y);
+                    g.DrawLine(&trash_pen, btn_x + Scale(1), btn_y + Scale(2), btn_x + icon_w - Scale(1), btn_y + Scale(2));
+                    const Gdiplus::PointF body_pts[4] = {
+                        Gdiplus::PointF(btn_x + Scale(2), btn_y + Scale(3)),
+                        Gdiplus::PointF(btn_x + icon_w - Scale(2), btn_y + Scale(3)),
+                        Gdiplus::PointF(btn_x + icon_w - Scale(3), btn_y + icon_h),
+                        Gdiplus::PointF(btn_x + Scale(3), btn_y + icon_h)
                     };
-                    Polygon(hdc, body_pts, 4);
-                    MoveToEx(hdc, btn_x + Scale(4), btn_y + Scale(5), nullptr);
-                    LineTo(hdc, btn_x + Scale(4), btn_y + icon_h - Scale(2));
-                    MoveToEx(hdc, btn_x + Scale(6), btn_y + Scale(5), nullptr);
-                    LineTo(hdc, btn_x + Scale(6), btn_y + icon_h - Scale(2));
-
-                    SelectObject(hdc, old_trash_brush);
-                    SelectObject(hdc, old_trash_pen);
-                    DeleteObject(trash_pen);
+                    g.DrawPolygon(&trash_pen, body_pts, 4);
+                    g.DrawLine(&trash_pen, btn_x + Scale(4), btn_y + Scale(5), btn_x + Scale(4), btn_y + icon_h - Scale(2));
+                    g.DrawLine(&trash_pen, btn_x + Scale(6), btn_y + Scale(5), btn_x + Scale(6), btn_y + icon_h - Scale(2));
                 }
             }
         }
@@ -1050,17 +1180,16 @@ void CandidateWindow::DrawContent(
             const int thumb_w = Scale(scrollbar_hovered_ || scrollbar_dragging_ ? 7 : 3);
             const int thumb_x = width_ - Scale(3) - thumb_w;
 
-            RECT thumb_rc {thumb_x, thumb_y, thumb_x + thumb_w, thumb_y + thumb_h};
-            COLORREF thumb_color = (scrollbar_hovered_ || scrollbar_dragging_) ? RGB(148, 163, 184) : RGB(226, 232, 240);
-            HBRUSH thumb_brush = CreateSolidBrush(thumb_color);
-            HPEN thumb_pen = CreatePen(PS_SOLID, 1, thumb_color);
-            old_pen = SelectObject(hdc, thumb_pen);
-            old_brush = SelectObject(hdc, thumb_brush);
-            RoundRect(hdc, thumb_rc.left, thumb_rc.top, thumb_rc.right, thumb_rc.bottom, Scale(3), Scale(3));
-            SelectObject(hdc, old_brush);
-            SelectObject(hdc, old_pen);
-            DeleteObject(thumb_brush);
-            DeleteObject(thumb_pen);
+            Gdiplus::RectF thumb_rf(
+                static_cast<float>(thumb_x), static_cast<float>(thumb_y),
+                static_cast<float>(thumb_w), static_cast<float>(thumb_h));
+            Gdiplus::GraphicsPath thumb_path;
+            AddRoundedRectangleToPath(thumb_path, thumb_rf, static_cast<float>(Scale(3)));
+            Gdiplus::Color thumb_color = (scrollbar_hovered_ || scrollbar_dragging_)
+                ? Gdiplus::Color(255, 148, 163, 184)
+                : Gdiplus::Color(255, 226, 232, 240);
+            Gdiplus::SolidBrush thumb_brush(thumb_color);
+            g.FillPath(&thumb_brush, &thumb_path);
         }
 
         return;
@@ -1089,7 +1218,11 @@ void CandidateWindow::DrawContent(
     const std::wstring status_text = BuildTypingStatisticsText(
         typing_stats_.daily_count);
     const bool can_expand = candidates_.size() > page_size_;
-    const int status_width = MeasureText(hdc, font_meta_, status_text);
+
+    Gdiplus::RectF status_bbox;
+    g.MeasureString(status_text.c_str(), static_cast<INT>(status_text.size()), font_meta, Gdiplus::PointF(0, 0), &format, &status_bbox);
+    const int status_width = static_cast<int>(std::ceil(status_bbox.Width));
+
     const int header_right_width = status_width +
         (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     const auto header = BuildCandidateHeaderLayout(
@@ -1102,68 +1235,65 @@ void CandidateWindow::DrawContent(
                                skin.candidate_margin.right))
             : horizontal_padding,
         Scale(kHeaderTextGap));
-    RECT composing_rect {header.composing_left, vertical.composing_top,
-                         header.composing_right, vertical.composing_bottom};
-    HGDIOBJ old_font = SelectObject(hdc, font_comp_);
-    SetTextColor(hdc, skin.pinyin_color);
+
+    // 绘制拼音
+    Gdiplus::SolidBrush pinyin_brush(ToGdiplusColor(skin.pinyin_color));
     std::wstring comp_draw = composing_;
     if (comp_draw.empty()) {
         comp_draw = english_mode_ ? L"[EN]" : L"";
     }
-    DrawTextW(hdc, comp_draw.c_str(), -1, &composing_rect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    Gdiplus::RectF composing_rect(
+        static_cast<float>(header.composing_left),
+        static_cast<float>(vertical.composing_top),
+        static_cast<float>(header.composing_right - header.composing_left),
+        static_cast<float>(vertical.composing_bottom - vertical.composing_top));
+    g.DrawString(comp_draw.c_str(), -1, font_comp, composing_rect, &format, &pinyin_brush);
 
-    // 右侧只显示当日字数和紧随其后的展开/收起箭头。
-    SelectObject(hdc, font_meta_);
-    SetTextColor(hdc, skin.status_text_color);
-    RECT status_rect {header.page_left, vertical.composing_top,
-                      header.page_left + status_width,
-                      vertical.composing_bottom};
-    DrawTextW(hdc, status_text.c_str(), -1, &status_rect,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    // 绘制字数统计
+    Gdiplus::SolidBrush status_brush(ToGdiplusColor(skin.status_text_color));
+    Gdiplus::RectF status_rect(
+        static_cast<float>(header.page_left),
+        static_cast<float>(vertical.composing_top),
+        static_cast<float>(status_width),
+        static_cast<float>(vertical.composing_bottom - vertical.composing_top));
+    g.DrawString(status_text.c_str(), -1, font_meta, status_rect, &format, &status_brush);
+
+    // 绘制展开/收起折线箭头
     expand_toggle_rect_ = {};
     if (can_expand) {
-        const int toggle_left = status_rect.right + Scale(kExpandToggleGap);
+        const int toggle_left = static_cast<int>(status_rect.GetRight()) + Scale(kExpandToggleGap);
         expand_toggle_rect_ = RECT {
             toggle_left, vertical.composing_top,
             toggle_left + Scale(kExpandToggleWidth),
             vertical.composing_bottom};
-        const int center_x =
-            (expand_toggle_rect_.left + expand_toggle_rect_.right) / 2;
-        const int center_y =
-            (expand_toggle_rect_.top + expand_toggle_rect_.bottom) / 2;
-        const int half_width = Scale(4);
-        const int half_height = Scale(2);
-        POINT chevron[3] {};
+        const float center_x = static_cast<float>(expand_toggle_rect_.left + expand_toggle_rect_.right) / 2.0f;
+        const float center_y = static_cast<float>(expand_toggle_rect_.top + expand_toggle_rect_.bottom) / 2.0f;
+        const float half_width = static_cast<float>(Scale(4));
+        const float half_height = static_cast<float>(Scale(2));
+        Gdiplus::PointF chevron[3];
         if (expanded_) {
-            chevron[0] = POINT {center_x - half_width, center_y + half_height};
-            chevron[1] = POINT {center_x, center_y - half_height};
-            chevron[2] = POINT {center_x + half_width, center_y + half_height};
+            chevron[0] = Gdiplus::PointF(center_x - half_width, center_y + half_height);
+            chevron[1] = Gdiplus::PointF(center_x, center_y - half_height);
+            chevron[2] = Gdiplus::PointF(center_x + half_width, center_y + half_height);
         } else {
-            chevron[0] = POINT {center_x - half_width, center_y - half_height};
-            chevron[1] = POINT {center_x, center_y + half_height};
-            chevron[2] = POINT {center_x + half_width, center_y - half_height};
+            chevron[0] = Gdiplus::PointF(center_x - half_width, center_y - half_height);
+            chevron[1] = Gdiplus::PointF(center_x, center_y + half_height);
+            chevron[2] = Gdiplus::PointF(center_x + half_width, center_y - half_height);
         }
-        HPEN arrow_pen = CreatePen(
-            PS_SOLID, (std::max)(1, Scale(1)), skin.status_text_color);
-        HGDIOBJ old_arrow_pen = SelectObject(hdc, arrow_pen);
-        Polyline(hdc, chevron, ARRAYSIZE(chevron));
-        SelectObject(hdc, old_arrow_pen);
-        DeleteObject(arrow_pen);
+        Gdiplus::Pen arrow_pen(ToGdiplusColor(skin.status_text_color), static_cast<float>((std::max)(1, Scale(1))));
+        arrow_pen.SetLineJoin(Gdiplus::LineJoinMiter);
+        g.DrawLines(&arrow_pen, chevron, 3);
     }
 
     // 分隔线
     if (skin.show_separator) {
-        HPEN sep = CreatePen(PS_SOLID, 1, skin.separator_color);
-        HGDIOBJ old_sep = SelectObject(hdc, sep);
-        MoveToEx(hdc, Scale(8), vertical.separator_y, nullptr);
-        LineTo(hdc, width_ - Scale(8), vertical.separator_y);
-        SelectObject(hdc, old_sep);
-        DeleteObject(sep);
+        Gdiplus::Pen sep_pen(ToGdiplusColor(skin.separator_color), 1.0f);
+        g.DrawLine(&sep_pen,
+            static_cast<float>(Scale(8)), static_cast<float>(vertical.separator_y),
+            static_cast<float>(width_ - Scale(8)), static_cast<float>(vertical.separator_y));
     }
 
     // 候选：逐项绘制，选中高亮
-    SelectObject(hdc, font_);
     const size_t first_page = expanded_
         ? CandidateExpandedFirstPage(page_, kExpandedMaxRows)
         : page_;
@@ -1177,42 +1307,60 @@ void CandidateWindow::DrawContent(
         for (size_t slot = 0; slot < item_rows_[row].size(); ++slot) {
             const size_t i = item_rows_[row][slot].index;
             if (i >= candidates_.size()) continue;
-            std::wstring item;
+
+            const bool is_selected = (i == selected_);
+            const int hit_left = item_rows_[row][slot].hit_left;
+            const int hit_right = item_rows_[row][slot].hit_right;
+            const int text_left = item_rows_[row][slot].text_left;
+
+            // 绘制选中高亮胶囊背景
+            if (is_selected && !skin.native_appearance) {
+                Gdiplus::RectF hl_rf(
+                    static_cast<float>(hit_left + Scale(2)),
+                    static_cast<float>(row_top + Scale(3)),
+                    static_cast<float>(hit_right - hit_left - Scale(4)),
+                    static_cast<float>(row_bottom - row_top - Scale(6)));
+                Gdiplus::GraphicsPath hl_path;
+                AddRoundedRectangleToPath(hl_path, hl_rf, static_cast<float>(Scale(skin.corner_radius)));
+                Gdiplus::SolidBrush hl_brush(ToGdiplusColor(skin.highlight_bg_color));
+                g.FillPath(&hl_brush, &hl_path);
+            }
+
+            COLORREF num_color = is_selected ? skin.highlight_color : skin.index_color;
+            COLORREF txt_color = is_selected ? skin.highlight_color : skin.candidate_color;
+
             if (numbered) {
-                item = std::to_wstring(i - begin + 1) + L".";
-            }
-            item += candidates_[i].text;
+                std::wstring num_str = std::to_wstring(i - begin + 1) + L".";
+                Gdiplus::SolidBrush num_brush(ToGdiplusColor(num_color));
+                Gdiplus::RectF num_bbox;
+                g.MeasureString(num_str.c_str(), static_cast<INT>(num_str.size()), font, Gdiplus::PointF(0, 0), &format, &num_bbox);
+                const float num_w = num_bbox.Width;
 
-            RECT item_rc {item_rows_[row][slot].hit_left, row_top,
-                          item_rows_[row][slot].hit_right, row_bottom};
+                Gdiplus::RectF num_rf(
+                    static_cast<float>(text_left),
+                    static_cast<float>(row_top),
+                    num_w,
+                    static_cast<float>(row_bottom - row_top));
+                g.DrawString(num_str.c_str(), -1, font, num_rf, &format, &num_brush);
 
-            if (i == selected_ && !skin.native_appearance) {
-                RECT hl {item_rc.left + Scale(2), item_rc.top + Scale(3),
-                         item_rc.right - Scale(2), item_rc.bottom - Scale(3)};
-                GdiFlush();
-                const std::vector<uint8_t> highlight_mask = BuildRoundedCardMask(
-                    bitmap_width, bitmap_height,
-                    content_offset + hl.left, content_offset + hl.top,
-                    hl.right - hl.left, hl.bottom - hl.top,
-                    Scale(skin.corner_radius));
-                BlendSolidColor(
-                    pixels, highlight_mask, bitmap_width, bitmap_height,
-                    skin.highlight_bg_color);
-                SetTextColor(hdc, skin.highlight_color);
-            } else if (i == selected_) {
-                SetTextColor(hdc, skin.highlight_color);
+                Gdiplus::SolidBrush txt_brush(ToGdiplusColor(txt_color));
+                Gdiplus::RectF txt_rf(
+                    static_cast<float>(text_left) + num_w,
+                    static_cast<float>(row_top),
+                    static_cast<float>(hit_right - text_left) - num_w,
+                    static_cast<float>(row_bottom - row_top));
+                g.DrawString(candidates_[i].text.c_str(), -1, font, txt_rf, &format, &txt_brush);
             } else {
-                SetTextColor(hdc, skin.candidate_color);
+                Gdiplus::SolidBrush txt_brush(ToGdiplusColor(txt_color));
+                Gdiplus::RectF txt_rf(
+                    static_cast<float>(text_left),
+                    static_cast<float>(row_top),
+                    static_cast<float>(hit_right - text_left),
+                    static_cast<float>(row_bottom - row_top));
+                g.DrawString(candidates_[i].text.c_str(), -1, font, txt_rf, &format, &txt_brush);
             }
-
-            RECT text_rc_item {item_rows_[row][slot].text_left, row_top,
-                               item_rows_[row][slot].hit_right, row_bottom};
-            DrawTextW(hdc, item.c_str(), -1, &text_rc_item,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
     }
-
-    SelectObject(hdc, old_font);
 }
 
 bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
@@ -1247,46 +1395,49 @@ bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
 
     std::memset(bitmap_bits, 0, pixel_count * 4);
     HGDIOBJ old_bitmap = SelectObject(memory_dc, bitmap);
-    const int saved_dc = SaveDC(memory_dc);
-    SetViewportOrgEx(memory_dc, shadow_margin, shadow_margin, nullptr);
-    DrawContent(
-        memory_dc, static_cast<uint8_t*>(bitmap_bits),
-        bitmap_width, bitmap_height, shadow_margin);
-    if (saved_dc != 0) RestoreDC(memory_dc, saved_dc);
-    GdiFlush();
+
+    // 在 32 位 PARGB DIB 上创建 Gdiplus Graphics 完成高保真绘制
+    {
+        Gdiplus::Bitmap surface_bitmap(
+            bitmap_width, bitmap_height, bitmap_width * 4,
+            PixelFormat32bppPARGB, static_cast<BYTE*>(bitmap_bits));
+        Gdiplus::Graphics graphics(&surface_bitmap);
+        graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+        graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+
+        graphics.TranslateTransform(
+            static_cast<Gdiplus::REAL>(shadow_margin),
+            static_cast<Gdiplus::REAL>(shadow_margin));
+
+        DrawContent(
+            &graphics, static_cast<uint8_t*>(bitmap_bits),
+            bitmap_width, bitmap_height, shadow_margin);
+    }
 
     auto* pixels = static_cast<uint8_t*>(bitmap_bits);
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
-    std::vector<uint8_t> surface_alpha(pixel_count, 0);
-    if (skin.has_bg_image) {
-        for (size_t index = 0; index < pixel_count; ++index) {
-            uint8_t* pixel = pixels + index * 4;
-            surface_alpha[index] = pixel[3];
-            // GDI 文本不会写 Alpha。仅补齐确实有颜色但素材完全透明的像素。
-            if (surface_alpha[index] == 0 &&
-                (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)) {
-                surface_alpha[index] = 255;
+
+    if (skin.has_shadow && shadow_margin > 0) {
+        std::vector<uint8_t> surface_alpha(pixel_count, 0);
+        if (skin.has_bg_image) {
+            for (size_t index = 0; index < pixel_count; ++index) {
+                surface_alpha[index] = pixels[index * 4 + 3];
             }
+        } else {
+            surface_alpha = BuildRoundedCardMask(
+                bitmap_width, bitmap_height, shadow_margin, shadow_margin,
+                width_, height_, Scale(skin.corner_radius));
         }
-    } else {
-        surface_alpha = BuildRoundedCardMask(
-            bitmap_width, bitmap_height, shadow_margin, shadow_margin,
-            width_, height_, Scale(skin.corner_radius));
-        for (size_t index = 0; index < pixel_count; ++index) {
-            const uint32_t alpha = surface_alpha[index];
-            uint8_t* pixel = pixels + index * 4;
-            pixel[0] = static_cast<uint8_t>((pixel[0] * alpha + 127) / 255);
-            pixel[1] = static_cast<uint8_t>((pixel[1] * alpha + 127) / 255);
-            pixel[2] = static_cast<uint8_t>((pixel[2] * alpha + 127) / 255);
-        }
+        CompositeCandidateSurfaceAndShadow(
+            pixels, surface_alpha, bitmap_width, bitmap_height,
+            Scale(2), (std::max)(1, Scale(4)),
+            kShadowBlurPasses, kShadowOpacity);
     }
-    CompositeCandidateSurfaceAndShadow(
-        pixels, surface_alpha, bitmap_width, bitmap_height,
-        skin.has_shadow ? Scale(2) : 0,
-        skin.has_shadow ? (std::max)(1, Scale(4)) : 0,
-        skin.has_shadow ? kShadowBlurPasses : 0,
-        skin.has_shadow ? kShadowOpacity : 0);
 
     POINT destination_origin = window_origin;
     SIZE window_size {bitmap_width, bitmap_height};
