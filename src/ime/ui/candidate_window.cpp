@@ -412,7 +412,7 @@ void CandidateWindow::EnsureFonts() {
     }
     if (font_comp_ == nullptr) {
         font_comp_ = CreateFontW(
-            -Scale(candidate_size + 1), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            -Scale(candidate_size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             font_quality, DEFAULT_PITCH | FF_DONTCARE,
             family.c_str());
@@ -460,13 +460,13 @@ void CandidateWindow::EnsureFonts() {
         if (!font_family.IsAvailable()) {
             gdip_font_comp_ = new Gdiplus::Font(
                 L"Microsoft YaHei UI",
-                static_cast<Gdiplus::REAL>(Scale(candidate_size + 1)),
-                Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+                static_cast<Gdiplus::REAL>(Scale(candidate_size)),
+                Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         } else {
             gdip_font_comp_ = new Gdiplus::Font(
                 &font_family,
-                static_cast<Gdiplus::REAL>(Scale(candidate_size + 1)),
-                Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+                static_cast<Gdiplus::REAL>(Scale(candidate_size)),
+                Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         }
     }
     if (gdip_font_meta_ == nullptr) {
@@ -504,8 +504,9 @@ int CandidateWindow::Scale(int value) const {
 
 int CandidateWindow::ShadowMargin() const {
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
-    return SkinManager::Instance().CurrentTheme().has_shadow
-        ? Scale(kShadowMargin) : 0;
+    const auto& skin = SkinManager::Instance().CurrentTheme();
+    const bool has_shadow = vertical_utility_mode_ || skin.has_shadow;
+    return has_shadow ? Scale(kShadowMargin) : 0;
 }
 
 bool CandidateWindow::UsesPlainUtilityBackground() const {
@@ -888,8 +889,8 @@ void CandidateWindow::RecalcSize() {
         family, static_cast<float>(candidate_size),
         CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
     const CandidateTextStyle composing_style {
-        family, static_cast<float>(candidate_size + 1),
-        CandidateTextWeight::SemiBold, CandidateTextAlignment::Near, true};
+        family, static_cast<float>(candidate_size),
+        CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
     const CandidateTextStyle metadata_style {
         L"Microsoft YaHei UI",
         static_cast<float>(CandidateMetadataFontSize(
@@ -1044,7 +1045,9 @@ void CandidateWindow::DrawContent(
     if (!drew_bg) {
         Gdiplus::GraphicsPath bg_path;
         Gdiplus::RectF bg_rect(0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_));
-        AddRoundedRectangleToPath(bg_path, bg_rect, static_cast<float>(Scale(skin.corner_radius)));
+        const int corner_radius = vertical_utility_mode_
+            ? 8 : skin.corner_radius;
+        AddRoundedRectangleToPath(bg_path, bg_rect, static_cast<float>(Scale(corner_radius)));
         const COLORREF background = plain_utility_background
             ? skin.utility_background_color : RGB(255, 255, 255);
         Gdiplus::SolidBrush bg_brush(ToGdiplusColor(background));
@@ -1361,8 +1364,8 @@ void CandidateWindow::DrawContent(
     const RECT composing_rect {header.composing_left, vertical.composing_top,
                                header.composing_right, vertical.composing_bottom};
     const CandidateTextStyle composing_style {
-        candidate_family, static_cast<float>(candidate_size + 1),
-        CandidateTextWeight::SemiBold, CandidateTextAlignment::Near, true};
+        candidate_family, static_cast<float>(candidate_size),
+        CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
     const COLORREF composing_color = plain_utility_background
         ? EnsureCandidateTextContrast(
             skin.pinyin_color, skin.utility_background_color)
@@ -1557,16 +1560,20 @@ bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
 
-    if (skin.has_shadow && shadow_margin > 0) {
+    const bool has_shadow = vertical_utility_mode_ || skin.has_shadow;
+    const bool plain_utility_background = UsesPlainUtilityBackground();
+    if (has_shadow && shadow_margin > 0) {
         std::vector<uint8_t> surface_alpha(pixel_count, 0);
-        if (skin.has_bg_image) {
+        if (skin.has_bg_image && !plain_utility_background) {
             for (size_t index = 0; index < pixel_count; ++index) {
                 surface_alpha[index] = pixels[index * 4 + 3];
             }
         } else {
+            const int corner_radius = vertical_utility_mode_
+                ? 8 : skin.corner_radius;
             surface_alpha = BuildRoundedCardMask(
                 bitmap_width, bitmap_height, shadow_margin, shadow_margin,
-                width_, height_, Scale(skin.corner_radius));
+                width_, height_, Scale(corner_radius));
         }
         CompositeCandidateSurfaceAndShadow(
             pixels, surface_alpha, bitmap_width, bitmap_height,

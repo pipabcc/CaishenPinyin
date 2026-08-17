@@ -190,6 +190,7 @@ public:
         const DWRITE_GLYPH_RUN* run,
         const DWRITE_GLYPH_RUN_DESCRIPTION*, IUnknown*) override {
         const FLOAT pixels_per_dip = target_->GetPixelsPerDip();
+        x = std::round(x * pixels_per_dip) / pixels_per_dip;
         y = std::round(y * pixels_per_dip) / pixels_per_dip;
         return target_->DrawGlyphRun(
             x, y, mode, run, params_, color_, nullptr);
@@ -326,7 +327,7 @@ bool DirectWriteTextRenderer::BeginFrame(int width, int height, UINT dpi) {
     }
     IDWriteRenderingParams* params = nullptr;
     if (FAILED(Factory(factory_)->CreateCustomRenderingParams(
-            2.0f, 1.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+            1.8f, 0.0f, 0.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
             DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, &params))) {
         target->Release();
         return false;

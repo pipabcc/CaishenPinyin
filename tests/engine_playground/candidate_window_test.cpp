@@ -540,6 +540,16 @@ int wmain(int argc, wchar_t** argv) {
     native_window.SetContent(L"v", candidates, 0, 0, 9, true, true);
     native_window.Show(POINT {40, 40});
     const SIZE imported_v_size = native_window.WindowSize();
+    RECT imported_v_rect {};
+    GetWindowRect(native_window.GetHwnd(), &imported_v_rect);
+    const int expected_v_shadow = MulDiv(16, static_cast<int>(dpi), 96);
+    if (imported_v_rect.right - imported_v_rect.left !=
+            imported_v_size.cx + expected_v_shadow * 2 ||
+        imported_v_rect.bottom - imported_v_rect.top !=
+            imported_v_size.cy + expected_v_shadow * 2) {
+        std::fwprintf(stderr, L"imported skin v-mode shadow margin is invalid\n");
+        return 44;
+    }
     native_window.SetContent(L"vvv1+2", candidates, 0, 0, 9, true, false);
     native_window.Show(POINT {40, 40});
     const SIZE imported_vvv_size = native_window.WindowSize();
@@ -556,9 +566,13 @@ int wmain(int argc, wchar_t** argv) {
     }
     native_window.SetContent(L"bao", candidates, 0, 0, 9, false, false);
     native_window.Show(POINT {40, 40});
+    RECT restored_rect {};
+    GetWindowRect(native_window.GetHwnd(), &restored_rect);
     if (native_window.UsesPlainUtilityBackgroundForTesting() ||
-        !native_window.IsSkinAnimationTimerActiveForTesting()) {
-        std::fwprintf(stderr, L"normal imported skin lost image animation\n");
+        !native_window.IsSkinAnimationTimerActiveForTesting() ||
+        restored_rect.right - restored_rect.left != native_window.WindowSize().cx ||
+        restored_rect.bottom - restored_rect.top != native_window.WindowSize().cy) {
+        std::fwprintf(stderr, L"normal imported skin did not restore shadowless layout\n");
         return 43;
     }
 
