@@ -11,6 +11,7 @@ namespace ShuruSettings;
 
 public static class SsfConverter
 {
+    private const int NormalizedFormatVersion = 2;
     private const long MaxSourceBytes = 128L * 1024 * 1024;
     private const long MaxExtractedBytes = 256L * 1024 * 1024;
     private const int MaxArchiveEntries = 512;
@@ -220,25 +221,46 @@ public static class SsfConverter
             FindFallbackBackground(skinDirectory);
         if (backgroundPath == null)
             throw new InvalidDataException("皮肤包没有可用的候选框背景图片。");
+        var previewPath = ResolveAsset(skinDirectory,
+            FirstValue(GetValue(general, "preview_comp", "preview_image")));
 
-        var overlayPath = FindAnimatedOverlay(skinDirectory, original, backgroundPath);
-        var animation = ApngDecoder.Decode(backgroundPath, overlayPath,
-            Path.Combine(skinDirectory, "frames"), out var extraTopOffset, out var extraLeftOffset);
-        var backgroundRelative = animation.Count > 1
+        var backgroundFramesDirectory = Path.Combine(skinDirectory, "frames");
+        var overlayFramesRoot = Path.Combine(skinDirectory, "overlay_frames");
+        if (isSogouLayout)
+        {
+            TryDeleteDirectory(backgroundFramesDirectory);
+            TryDeleteDirectory(overlayFramesRoot);
+        }
+        var backgroundAnimation = ApngDecoder.Decode(
+            backgroundPath, backgroundFramesDirectory);
+        var backgroundRelative = backgroundAnimation.Count > 1
             ? Path.Combine("frames", "frame_000.png")
             : Path.GetRelativePath(skinDirectory, backgroundPath);
+        var overlays = new List<AnimatedOverlay>();
+        if (backgroundAnimation.Count == 1)
+        {
+            var detectedOverlays = FindAnimatedOverlays(skinDirectory, original);
+            for (var index = 0; index < detectedOverlays.Count; ++index)
+            {
+                var overlay = detectedOverlays[index];
+                var frames = ApngDecoder.Decode(overlay.SourcePath,
+                    Path.Combine(overlayFramesRoot, index.ToString()));
+                if (frames.Count > 1)
+                {
+                    overlays.Add(overlay with { Frames = frames });
+                }
+            }
+        }
+        var previewSize = overlays.Count > 0 && previewPath != null
+            ? ApngDecoder.TryGetDimensions(previewPath)
+            : null;
 
-        var rawPinyinMargin = NormalizeIntList(GetValue(scheme, "pinyin_margin", "pinyin_marge"),
+        var pinyinMargin = NormalizeIntList(GetValue(scheme, "pinyin_margin", "pinyin_marge"),
             "10,6,16,16", 4);
-        var rawCandidateMargin = NormalizeIntList(GetValue(scheme, "candidate_margin", "zhongwen_marge"),
+        var candidateMargin = NormalizeIntList(GetValue(scheme, "candidate_margin", "zhongwen_marge"),
             "6,10,16,16", 4);
-        var rawHorizontal = NormalizeIntList(GetValue(scheme, "layout_horizontal"), "0,16,16", 3);
-        var rawVertical = NormalizeIntList(GetValue(scheme, "layout_vertical"), "0,16,16", 3);
-
-        var pinyinMargin = AdjustMargin(rawPinyinMargin, extraTopOffset, extraLeftOffset, isVertical: false);
-        var candidateMargin = AdjustMargin(rawCandidateMargin, extraTopOffset, extraLeftOffset, isVertical: false);
-        var horizontal = AdjustSlice(rawHorizontal, extraLeftOffset);
-        var vertical = AdjustSlice(rawVertical, extraTopOffset);
+        var horizontal = NormalizeIntList(GetValue(scheme, "layout_horizontal"), "0,16,16", 3);
+        var vertical = NormalizeIntList(GetValue(scheme, "layout_vertical"), "0,16,16", 3);
 
         var name = GetValue(general, "skin_name", "name") ?? fallbackName;
         var author = GetValue(general, "skin_author", "author") ?? "转换导入";
@@ -253,10 +275,15 @@ public static class SsfConverter
         var builder = new StringBuilder();
         builder.AppendLine("[General]");
         builder.AppendLine("format=caishen-skin-v1");
+        builder.AppendLine($"format_version={NormalizedFormatVersion}");
         builder.AppendLine($"name={CleanIniValue(name)}");
         builder.AppendLine($"author={CleanIniValue(author)}");
         builder.AppendLine($"info={CleanIniValue(info)}");
         builder.AppendLine("version=1.0");
+        if (previewPath != null)
+        {
+            builder.AppendLine($"preview_image={Path.GetRelativePath(skinDirectory, previewPath).Replace('/', '\\')}");
+        }
         builder.AppendLine();
         builder.AppendLine("[Display]");
         builder.AppendLine($"font_family={CleanIniValue(fontFamily)}");
@@ -279,16 +306,46 @@ public static class SsfConverter
         builder.AppendLine($"show_separator={(isSogouLayout && !HasValue(scheme, "separator") ? 0 : 1)}");
         builder.AppendLine($"has_shadow={(isSogouLayout ? 0 : 1)}");
         builder.AppendLine($"corner_radius={(isSogouLayout ? 0 : 8)}");
+        if (previewSize != null)
+        {
+            builder.AppendLine($"native_min_width={previewSize.Value.Width}");
+            builder.AppendLine($"native_min_height={previewSize.Value.Height}");
+        }
 
-        if (animation.Count > 1)
+        if (backgroundAnimation.Count > 1)
         {
             builder.AppendLine();
             builder.AppendLine("[Animation]");
-            builder.AppendLine($"frame_count={animation.Count}");
-            for (var index = 0; index < animation.Count; ++index)
+            builder.AppendLine($"frame_count={backgroundAnimation.Count}");
+            for (var index = 0; index < backgroundAnimation.Count; ++index)
             {
                 builder.AppendLine($"frame_{index}=frames\\frame_{index:D3}.png");
-                builder.AppendLine($"delay_{index}={animation[index].DelayMilliseconds}");
+                builder.AppendLine($"delay_{index}={backgroundAnimation[index].DelayMilliseconds}");
+            }
+        }
+
+        if (overlays.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("[AnimationOverlays]");
+            builder.AppendLine($"count={overlays.Count}");
+            for (var overlayIndex = 0; overlayIndex < overlays.Count; ++overlayIndex)
+            {
+                var overlay = overlays[overlayIndex];
+                builder.AppendLine();
+                builder.AppendLine($"[AnimationOverlay{overlayIndex}]");
+                builder.AppendLine($"frame_count={overlay.Frames.Count}");
+                builder.AppendLine($"horizontal_anchor={AnchorName(overlay.HorizontalAnchor)}");
+                builder.AppendLine($"vertical_anchor={AnchorName(overlay.VerticalAnchor)}");
+                builder.AppendLine($"margin_left={overlay.MarginLeft}");
+                builder.AppendLine($"margin_top={overlay.MarginTop}");
+                builder.AppendLine($"margin_right={overlay.MarginRight}");
+                builder.AppendLine($"margin_bottom={overlay.MarginBottom}");
+                for (var frameIndex = 0; frameIndex < overlay.Frames.Count; ++frameIndex)
+                {
+                    builder.AppendLine($"frame_{frameIndex}=overlay_frames\\{overlayIndex}\\frame_{frameIndex:D3}.png");
+                    builder.AppendLine($"delay_{frameIndex}={overlay.Frames[frameIndex].DelayMilliseconds}");
+                }
             }
         }
 
@@ -314,16 +371,17 @@ public static class SsfConverter
         var document = IniDocument.Parse(DecodeText(File.ReadAllBytes(iniPath)));
         var general = document.Section("General");
         var scheme = document.Section("Scheme_H1");
-        var hasAnimation = document.Section("Animation") != null;
         var dir = Path.GetDirectoryName(iniPath) ?? string.Empty;
         var sourceIni = Path.Combine(dir, "source_skin.ini");
-        if (File.Exists(sourceIni) && !hasAnimation)
+        if (File.Exists(sourceIni))
         {
             var origDoc = IniDocument.Parse(DecodeText(File.ReadAllBytes(sourceIni)));
             var bgName = FirstValue(GetValue(origDoc.Section("Scheme_H1"), "pic", "bg_image", "background_image"));
             var bgPath = ResolveAsset(dir, bgName) ?? FindFallbackBackground(dir);
-            if (bgPath != null && FindAnimatedOverlay(dir, origDoc, bgPath) != null)
-                return false; // 存在未导出的挂件 APNG 动画，需重新规范化
+            if (bgPath != null && !ApngDecoder.IsApng(bgPath) &&
+                FindAnimatedOverlays(dir, origDoc).Count > 0 &&
+                document.Section("AnimationOverlays") == null)
+                return false;
         }
         return string.Equals(GetValue(general, "format"), "caishen-skin-v1",
                    StringComparison.OrdinalIgnoreCase) ||
@@ -331,73 +389,72 @@ public static class SsfConverter
                 scheme.ContainsKey("bg_image") && !scheme.ContainsKey("pic"));
     }
 
-    private static string AdjustMargin(string marginList, int extraTop, int extraLeft, bool isVertical)
+    private static IReadOnlyList<AnimatedOverlay> FindAnimatedOverlays(
+        string skinDirectory,
+        IniDocument? original)
     {
-        var parts = marginList.Split(',').Select(int.Parse).ToArray();
-        if (parts.Length < 4) return marginList;
-        parts[0] += extraTop;
-        parts[2] += extraLeft;
-        return string.Join(',', parts);
-    }
-
-    private static string AdjustSlice(string sliceList, int extraTopOrLeft)
-    {
-        var parts = sliceList.Split(',').Select(int.Parse).ToArray();
-        if (parts.Length < 3) return sliceList;
-        parts[1] += extraTopOrLeft;
-        return string.Join(',', parts);
-    }
-
-    private static string? FindAnimatedOverlay(string skinDirectory, IniDocument? original, string backgroundPath)
-    {
-        if (ApngDecoder.IsApng(backgroundPath)) return null;
-
         var schemeH1 = original?.Section("Scheme_H1");
-        if (schemeH1 != null)
-        {
-            for (var i = 0; i < 10; ++i)
-            {
-                var custom = ResolveAsset(skinDirectory, GetValue(schemeH1, $"custom{i}"));
-                if (custom != null && File.Exists(custom) && ApngDecoder.IsApng(custom))
-                    return custom;
-            }
-        }
+        if (schemeH1 == null) return Array.Empty<AnimatedOverlay>();
 
-        var schemeH2 = original?.Section("Scheme_H2");
-        if (schemeH2 != null)
+        var candidates = new List<(AnimatedOverlay Overlay, bool DisplayExplicit)>();
+        for (var index = 0; index < 10; ++index)
         {
-            for (var i = 0; i < 10; ++i)
-            {
-                var cand = ResolveAsset(skinDirectory, GetValue(schemeH2, $"cand_custom{i}"));
-                if (cand != null && File.Exists(cand) && ApngDecoder.IsApng(cand))
-                    return cand;
-                var comp = ResolveAsset(skinDirectory, GetValue(schemeH2, $"comp_custom{i}"));
-                if (comp != null && File.Exists(comp) && ApngDecoder.IsApng(comp))
-                    return comp;
-            }
+            var sourcePath = ResolveAsset(skinDirectory,
+                GetValue(schemeH1, $"custom{index}"));
+            if (sourcePath == null || !ApngDecoder.IsApng(sourcePath)) continue;
+            var displayValue = GetValue(schemeH1, $"custom{index}_display");
+            if (displayValue != null && !ParseBool(displayValue)) continue;
+            var alignment = ParseOverlayAlignment(
+                GetValue(schemeH1, $"custom{index}_align"));
+            candidates.Add((new AnimatedOverlay(
+                sourcePath,
+                alignment?.HorizontalAnchor ?? OverlayAnchor.End,
+                alignment?.VerticalAnchor ?? OverlayAnchor.Start,
+                alignment?.MarginLeft ?? 0,
+                alignment?.MarginTop ?? 0,
+                alignment?.MarginRight ?? 0,
+                alignment?.MarginBottom ?? 0,
+                Array.Empty<AnimationFrameInfo>()),
+                displayValue != null));
         }
-
-        var pngs = Directory.GetFiles(skinDirectory, "*.png", SearchOption.TopDirectoryOnly);
-        string? bestCandidate = null;
-        var maxFrames = 1;
-        foreach (var file in pngs)
-        {
-            if (string.Equals(file, backgroundPath, StringComparison.OrdinalIgnoreCase)) continue;
-            var fileName = Path.GetFileName(file).ToLowerInvariant();
-            if (fileName.StartsWith("bar") || fileName.StartsWith("preview") || fileName.Contains("mask") || fileName.Contains("former"))
-                continue;
-            if (ApngDecoder.IsApng(file))
-            {
-                var count = ApngDecoder.GetFrameCount(file);
-                if (count > maxFrames)
-                {
-                    maxFrames = count;
-                    bestCandidate = file;
-                }
-            }
-        }
-        return bestCandidate;
+        var hasExplicitDisplay = candidates.Any(candidate => candidate.DisplayExplicit);
+        return candidates
+            .Where(candidate => !hasExplicitDisplay || candidate.DisplayExplicit)
+            .Select(candidate => candidate.Overlay)
+            .ToList();
     }
+
+    private static OverlayAlignment? ParseOverlayAlignment(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var values = value.Split(',')
+            .Select(item => int.TryParse(item.Trim(), out var parsed)
+                ? parsed : int.MinValue)
+            .ToArray();
+        if (values.Length < 8 || values.Take(8).Any(item => item == int.MinValue))
+            return null;
+        return new OverlayAlignment(
+            values[2], values[0], values[3], values[1],
+            ParseAnchor(values[5]), ParseAnchor(values[7]));
+    }
+
+    private static OverlayAnchor ParseAnchor(int value) => value switch
+    {
+        0 => OverlayAnchor.Start,
+        1 => OverlayAnchor.Center,
+        2 => OverlayAnchor.End,
+        _ => OverlayAnchor.Start
+    };
+
+    private static string AnchorName(OverlayAnchor anchor) => anchor switch
+    {
+        OverlayAnchor.Center => "center",
+        OverlayAnchor.End => "end",
+        _ => "start"
+    };
+
+    private static bool ParseBool(string value) =>
+        value.Trim() is "1" or "true" or "True" or "TRUE" or "yes" or "Yes" or "YES";
 
     private static string? ResolveAsset(string root, string? configuredName)
     {
@@ -577,6 +634,31 @@ public static class SsfConverter
         }
     }
 
+    private enum OverlayAnchor
+    {
+        Start,
+        Center,
+        End
+    }
+
+    private sealed record OverlayAlignment(
+        int MarginLeft,
+        int MarginTop,
+        int MarginRight,
+        int MarginBottom,
+        OverlayAnchor HorizontalAnchor,
+        OverlayAnchor VerticalAnchor);
+
+    private sealed record AnimatedOverlay(
+        string SourcePath,
+        OverlayAnchor HorizontalAnchor,
+        OverlayAnchor VerticalAnchor,
+        int MarginLeft,
+        int MarginTop,
+        int MarginRight,
+        int MarginBottom,
+        IReadOnlyList<AnimationFrameInfo> Frames);
+
     public sealed record AnimationFrameInfo(int DelayMilliseconds);
 
     private static class ApngDecoder
@@ -598,143 +680,25 @@ public static class SsfConverter
             catch { return false; }
         }
 
-        public static int GetFrameCount(string pngPath)
+        public static (int Width, int Height)? TryGetDimensions(string pngPath)
         {
             try
             {
                 var bytes = File.ReadAllBytes(pngPath);
-                if (bytes.Length < 8 || !bytes.AsSpan().StartsWith(PngSignature)) return 1;
-                return CollectFrames(ReadChunks(bytes)).Count;
+                if (bytes.Length < 24 || !bytes.AsSpan().StartsWith(PngSignature))
+                    return null;
+                var chunks = ReadChunks(bytes);
+                var header = chunks.FirstOrDefault(chunk => chunk.Type == "IHDR");
+                if (header == null) return null;
+                var width = ReadBigEndianInt(header.Data, 0);
+                var height = ReadBigEndianInt(header.Data, 4);
+                ValidateDimensions(width, height);
+                return (width, height);
             }
-            catch { return 1; }
-        }
-
-        public static IReadOnlyList<AnimationFrameInfo> Decode(
-            string backgroundPath,
-            string? overlayPath,
-            string framesDirectory,
-            out int extraTopOffset,
-            out int extraLeftOffset)
-        {
-            extraTopOffset = 0;
-            extraLeftOffset = 0;
-            if (string.IsNullOrWhiteSpace(overlayPath) ||
-                string.Equals(backgroundPath, overlayPath, StringComparison.OrdinalIgnoreCase) ||
-                IsApng(backgroundPath))
+            catch
             {
-                return Decode(backgroundPath, framesDirectory);
+                return null;
             }
-
-            var bgBytes = File.ReadAllBytes(backgroundPath);
-            if (!bgBytes.AsSpan().StartsWith(PngSignature))
-                return Decode(backgroundPath, framesDirectory);
-
-            var bgChunks = ReadChunks(bgBytes);
-            var bgHeader = bgChunks.FirstOrDefault(chunk => chunk.Type == "IHDR") ??
-                throw new InvalidDataException("PNG 缺少 IHDR 数据块。");
-            var bgWidth = ReadBigEndianInt(bgHeader.Data, 0);
-            var bgHeight = ReadBigEndianInt(bgHeader.Data, 4);
-
-            var overlayBytes = File.ReadAllBytes(overlayPath);
-            if (!overlayBytes.AsSpan().StartsWith(PngSignature))
-                return Decode(backgroundPath, framesDirectory);
-
-            var overlayChunks = ReadChunks(overlayBytes);
-            if (!overlayChunks.Any(chunk => chunk.Type == "acTL"))
-                return Decode(backgroundPath, framesDirectory);
-
-            var overlayHeader = overlayChunks.FirstOrDefault(chunk => chunk.Type == "IHDR") ??
-                throw new InvalidDataException("PNG 缺少 IHDR 数据块。");
-            var overlayWidth = ReadBigEndianInt(overlayHeader.Data, 0);
-            var overlayHeight = ReadBigEndianInt(overlayHeader.Data, 4);
-
-            var sharedChunks = overlayChunks.TakeWhile(chunk => chunk.Type is not "IDAT" and not "fdAT")
-                .Where(chunk => chunk.Type is not "IHDR" and not "acTL" and not "fcTL")
-                .ToList();
-            var frames = CollectFrames(overlayChunks);
-            if (frames.Count is 0 or > MaxFrames)
-                return Decode(backgroundPath, framesDirectory);
-
-            var bgPixels = DecodePixels(BuildStaticPng(bgHeader.Data, bgChunks), bgWidth, bgHeight);
-            var canvasWidth = Math.Max(bgWidth, overlayWidth);
-            var canvasHeight = Math.Max(bgHeight, overlayHeight);
-            ValidateDimensions(canvasWidth, canvasHeight);
-
-            extraTopOffset = canvasHeight - bgHeight;
-            extraLeftOffset = 0;
-
-            Directory.CreateDirectory(framesDirectory);
-            var overlayCanvas = new byte[checked(overlayWidth * overlayHeight * 4)];
-            var result = new List<AnimationFrameInfo>(frames.Count);
-
-            for (var index = 0; index < frames.Count; ++index)
-            {
-                var frame = frames[index];
-                ValidateFrame(frame.Control, overlayWidth, overlayHeight);
-                var framePng = BuildFramePng(overlayHeader.Data, sharedChunks, frame);
-                var sourcePixels = DecodePixels(framePng, frame.Control.Width, frame.Control.Height);
-                var previous = frame.Control.DisposeOperation == 2 ? overlayCanvas.ToArray() : null;
-                Composite(overlayCanvas, overlayWidth, sourcePixels, frame.Control);
-
-                var compositeCanvas = new byte[checked(canvasWidth * canvasHeight * 4)];
-
-                // 1. 贴底图（底部对齐）
-                var bgOffsetY = canvasHeight - bgHeight;
-                for (var by = 0; by < bgHeight; ++by)
-                {
-                    var srcIdx = by * bgWidth * 4;
-                    var dstIdx = ((by + bgOffsetY) * canvasWidth) * 4;
-                    Buffer.BlockCopy(bgPixels, srcIdx, compositeCanvas, dstIdx, bgWidth * 4);
-                }
-
-                // 2. 贴挂件（根据挂件位置，居左或居右对齐）
-                var overlayOffsetX = 0;
-                var overlayOffsetY = 0;
-                for (var oy = 0; oy < overlayHeight; ++oy)
-                for (var ox = 0; ox < overlayWidth; ++ox)
-                {
-                    var srcIdx = (oy * overlayWidth + ox) * 4;
-                    var dstIdx = ((oy + overlayOffsetY) * canvasWidth + (ox + overlayOffsetX)) * 4;
-                    var srcAlpha = overlayCanvas[srcIdx + 3];
-                    if (srcAlpha == 0) continue;
-                    if (srcAlpha == 255)
-                    {
-                        Buffer.BlockCopy(overlayCanvas, srcIdx, compositeCanvas, dstIdx, 4);
-                        continue;
-                    }
-                    var dstAlpha = compositeCanvas[dstIdx + 3];
-                    var outAlpha = srcAlpha + (dstAlpha * (255 - srcAlpha) + 127) / 255;
-                    if (outAlpha == 0) continue;
-                    for (var channel = 0; channel < 3; ++channel)
-                    {
-                        var num = overlayCanvas[srcIdx + channel] * srcAlpha * 255 +
-                            compositeCanvas[dstIdx + channel] * dstAlpha * (255 - srcAlpha);
-                        compositeCanvas[dstIdx + channel] = (byte)Math.Clamp((num + outAlpha * 127) / (outAlpha * 255), 0, 255);
-                    }
-                    compositeCanvas[dstIdx + 3] = (byte)outAlpha;
-                }
-
-                WritePng(Path.Combine(framesDirectory, $"frame_{index:D3}.png"), compositeCanvas, canvasWidth, canvasHeight);
-                result.Add(new AnimationFrameInfo(frame.Control.DelayMilliseconds));
-
-                if (frame.Control.DisposeOperation == 1) ClearFrameArea(overlayCanvas, overlayWidth, frame.Control);
-                else if (frame.Control.DisposeOperation == 2 && previous != null) overlayCanvas = previous;
-            }
-
-            return result;
-        }
-
-        private static byte[] BuildStaticPng(byte[] canvasHeader, List<PngChunk> chunks)
-        {
-            using var stream = new MemoryStream();
-            stream.Write(PngSignature);
-            WriteChunk(stream, "IHDR", canvasHeader);
-            foreach (var chunk in chunks.Where(c => c.Type is not "IHDR" and not "IEND"))
-            {
-                WriteChunk(stream, chunk.Type, chunk.Data);
-            }
-            WriteChunk(stream, "IEND", Array.Empty<byte>());
-            return stream.ToArray();
         }
 
         public static IReadOnlyList<AnimationFrameInfo> Decode(string pngPath, string framesDirectory)

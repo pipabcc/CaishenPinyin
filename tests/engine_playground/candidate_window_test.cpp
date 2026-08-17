@@ -78,6 +78,17 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"candidate-area background sampling failed\n");
         return 41;
     }
+    if (shuru::ResolveSkinOverlayPosition(
+            shuru::SkinOverlayAnchor::End, 507, 150, 7, 15) != 342 ||
+        shuru::ResolveSkinOverlayPosition(
+            shuru::SkinOverlayAnchor::End, 175, 150, 0, 9) != 16 ||
+        shuru::ResolveSkinOverlayPosition(
+            shuru::SkinOverlayAnchor::End, 1014, 300, 14, 30) != 684 ||
+        shuru::ResolveSkinOverlayPosition(
+            shuru::SkinOverlayAnchor::Start, 507, 150, 7, 15) != 7) {
+        std::fwprintf(stderr, L"overlay anchor resolution is invalid\n");
+        return 45;
+    }
 
     shuru::DirectWriteTextRenderer directwrite_text;
     if (!directwrite_text.IsAvailable() ||
@@ -478,30 +489,40 @@ int wmain(int argc, wchar_t** argv) {
         L"LOCALAPPDATA", local_app_data, ARRAYSIZE(local_app_data));
     const std::wstring skin_root = std::wstring(local_app_data, local_length) +
         L"\\CaishenPinyin\\skins\\candidate-test-native";
-    const std::wstring frames_root = skin_root + L"\\frames";
+    const std::wstring overlay_root = skin_root + L"\\overlay_frames";
+    const std::wstring overlay_frames_root = overlay_root + L"\\0";
     CreateDirectoryW((std::wstring(local_app_data, local_length) +
         L"\\CaishenPinyin").c_str(), nullptr);
     CreateDirectoryW((std::wstring(local_app_data, local_length) +
         L"\\CaishenPinyin\\skins").c_str(), nullptr);
     CreateDirectoryW(skin_root.c_str(), nullptr);
-    CreateDirectoryW(frames_root.c_str(), nullptr);
+    CreateDirectoryW(overlay_root.c_str(), nullptr);
+    CreateDirectoryW(overlay_frames_root.c_str(), nullptr);
     wchar_t module_path[MAX_PATH] {};
     GetModuleFileNameW(nullptr, module_path, ARRAYSIZE(module_path));
     std::wstring module_directory(module_path);
     module_directory.resize(module_directory.find_last_of(L"\\/"));
     const std::wstring source_frame =
         module_directory + L"\\data\\skins\\classic_blue\\cand_bg.png";
-    CopyFileW(source_frame.c_str(), (frames_root + L"\\frame_000.png").c_str(), FALSE);
-    CopyFileW(source_frame.c_str(), (frames_root + L"\\frame_001.png").c_str(), FALSE);
+    CopyFileW(source_frame.c_str(), (skin_root + L"\\background.png").c_str(), FALSE);
+    CopyFileW(source_frame.c_str(),
+        (overlay_frames_root + L"\\frame_000.png").c_str(), FALSE);
+    CopyFileW(source_frame.c_str(),
+        (overlay_frames_root + L"\\frame_001.png").c_str(), FALSE);
     {
         std::ofstream ini(skin_root + L"\\skin.ini", std::ios::binary);
         ini << "[Display]\nfont_family=Microsoft YaHei UI\nfont_size=18\n"
-               "[Scheme_H1]\nbg_image=frames\\frame_000.png\n"
+               "[Scheme_H1]\nbg_image=background.png\n"
                "layout_horizontal=0,16,16\nlayout_vertical=0,16,16\n"
                "pinyin_margin=20,2,24,20\ncandidate_margin=4,8,24,70\n"
                "native_appearance=1\nhas_shadow=0\nshow_separator=0\n"
-               "[Animation]\nframe_count=2\nframe_0=frames\\frame_000.png\n"
-               "delay_0=80\nframe_1=frames\\frame_001.png\ndelay_1=80\n";
+               "native_min_width=420\nnative_min_height=120\n"
+               "[AnimationOverlays]\ncount=1\n"
+               "[AnimationOverlay0]\nframe_count=2\n"
+               "horizontal_anchor=end\nvertical_anchor=end\n"
+               "margin_left=0\nmargin_top=0\nmargin_right=10\nmargin_bottom=5\n"
+               "frame_0=overlay_frames\\0\\frame_000.png\ndelay_0=80\n"
+               "frame_1=overlay_frames\\0\\frame_001.png\ndelay_1=80\n";
     }
     const std::wstring settings_path = std::wstring(local_app_data, local_length) +
         L"\\CaishenPinyin\\settings.ini";
@@ -518,8 +539,10 @@ int wmain(int argc, wchar_t** argv) {
     if (!native_skin.CurrentTheme().native_appearance ||
         !native_skin.CurrentTheme().is_user_skin ||
         native_skin.CurrentTheme().has_shadow || !native_skin.HasAnimation() ||
+        native_skin.CurrentTheme().native_width != 420 ||
+        native_skin.CurrentTheme().native_height != 120 ||
         native_skin.CurrentFrameDelayMs() != 80 || !native_skin.AdvanceFrame()) {
-        std::fwprintf(stderr, L"native skin animation metadata is invalid\n");
+        std::fwprintf(stderr, L"native overlay animation metadata is invalid\n");
         return 26;
     }
     const SIZE native_size = native_window.WindowSize();
@@ -597,10 +620,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     native_window.Destroy();
     DeleteFileW(settings_path.c_str());
-    DeleteFileW((frames_root + L"\\frame_000.png").c_str());
-    DeleteFileW((frames_root + L"\\frame_001.png").c_str());
+    DeleteFileW((skin_root + L"\\background.png").c_str());
+    DeleteFileW((overlay_frames_root + L"\\frame_000.png").c_str());
+    DeleteFileW((overlay_frames_root + L"\\frame_001.png").c_str());
     DeleteFileW((skin_root + L"\\skin.ini").c_str());
-    RemoveDirectoryW(frames_root.c_str());
+    RemoveDirectoryW(overlay_frames_root.c_str());
+    RemoveDirectoryW(overlay_root.c_str());
     RemoveDirectoryW(skin_root.c_str());
     RemoveDirectoryW((std::wstring(local_app_data, local_length) +
         L"\\CaishenPinyin\\skins").c_str());

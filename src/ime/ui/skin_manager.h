@@ -22,6 +22,23 @@ struct SkinSlice {
     int bottom = 16;
 };
 
+enum class SkinOverlayAnchor {
+    Start,
+    Center,
+    End
+};
+
+struct SkinAnimationOverlay {
+    SkinOverlayAnchor horizontal_anchor = SkinOverlayAnchor::Start;
+    SkinOverlayAnchor vertical_anchor = SkinOverlayAnchor::Start;
+    int margin_left = 0;
+    int margin_top = 0;
+    int margin_right = 0;
+    int margin_bottom = 0;
+    std::vector<void*> frames;
+    std::vector<UINT> frame_delays_ms;
+};
+
 struct SkinTheme {
     std::wstring id = L"classic_gold";
     std::wstring name = L"财神金韵";
@@ -61,6 +78,13 @@ COLORREF EstimateCandidateBackgroundColorFromPixels(
     int stride,
     const SkinTheme& theme) noexcept;
 
+int ResolveSkinOverlayPosition(
+    SkinOverlayAnchor anchor,
+    int extent,
+    int item_extent,
+    int start_margin,
+    int end_margin) noexcept;
+
 class SkinManager {
 public:
     static SkinManager& Instance();
@@ -95,7 +119,7 @@ public:
         int destination_bitmap_height = 0,
         int destination_offset = 0);
 
-    bool HasAnimation() const noexcept { return bg_frames_.size() > 1; }
+    bool HasAnimation() const noexcept;
     UINT CurrentFrameDelayMs() const noexcept;
     bool AdvanceFrame() noexcept;
     void ResetAnimation() noexcept { current_frame_ = 0; }
@@ -114,6 +138,7 @@ private:
     void* gdiplus_token_ = nullptr;
     std::vector<void*> bg_frames_; // Gdiplus::Bitmap*
     std::vector<UINT> frame_delays_ms_;
+    std::vector<SkinAnimationOverlay> animation_overlays_;
     size_t current_frame_ = 0;
 };
 

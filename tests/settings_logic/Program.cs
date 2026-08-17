@@ -242,11 +242,41 @@ static void TestSsfConversion(string root)
         Require(SsfConverter.NormalizeInstalledSkin(wsscTarget, "wssc-test"),
             "挂件型皮肤 wssc 应当成功规范化并补充提取动画");
         var wsscIni = File.ReadAllText(Path.Combine(wsscTarget, "skin.ini"));
-        Require(wsscIni.Contains("[Animation]") && wsscIni.Contains("frame_count=23") &&
-                wsscIni.Contains("bg_image=frames\\frame_000.png"),
-            "挂件型皮肤 wssc 未能提取 23 帧动画与生成 Animation 节点");
-        Require(Directory.GetFiles(Path.Combine(wsscTarget, "frames"), "frame_*.png").Length == 23,
-            "挂件型皮肤 wssc frames 目录未能完整保存 23 帧");
+        Require(wsscIni.Contains("format_version=2") &&
+                wsscIni.Contains("bg_image=skin1.png") &&
+                wsscIni.Contains("native_min_width=507") &&
+                wsscIni.Contains("native_min_height=175") &&
+                wsscIni.Contains("pinyin_margin=110,2,66,12") &&
+                wsscIni.Contains("candidate_margin=2,20,66,1") &&
+                wsscIni.Contains("[AnimationOverlays]") &&
+                wsscIni.Contains("count=1") &&
+                wsscIni.Contains("[AnimationOverlay0]") &&
+                wsscIni.Contains("frame_count=23") &&
+                wsscIni.Contains("horizontal_anchor=end") &&
+                wsscIni.Contains("vertical_anchor=end") &&
+                wsscIni.Contains("margin_right=15") &&
+                wsscIni.Contains("margin_bottom=9") &&
+                wsscIni.Contains("frame_0=overlay_frames\\0\\frame_000.png"),
+            "挂件型皮肤 wssc 未按原始 SSF 布局输出独立动画挂件");
+        var wsscFrames = Path.Combine(wsscTarget, "overlay_frames", "0");
+        Require(Directory.GetFiles(wsscFrames, "frame_*.png").Length == 23,
+            "挂件型皮肤 wssc 未能完整保存 23 帧独立挂件动画");
+        using (var overlayFrame = new FileStream(
+            Path.Combine(wsscFrames, "frame_000.png"),
+            FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var overlayDecoder = new PngBitmapDecoder(
+                overlayFrame, BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad);
+            Require(overlayDecoder.Frames[0].PixelWidth == 150 &&
+                    overlayDecoder.Frames[0].PixelHeight == 150,
+                "wssc 错误地选择了 300x300 的未显示挂件资源");
+        }
+        Require(DecodeBgra(File.ReadAllBytes(
+                    Path.Combine(wsscFrames, "frame_000.png")))
+                .SequenceEqual(DecodeBgra(File.ReadAllBytes(
+                    Path.Combine(wsscTarget, "oh_custom11.png")))),
+            "wssc 输出帧不是 SSF 明确启用的 oh_custom11 挂件");
 
         var wsscBefore = File.ReadAllText(Path.Combine(wsscTarget, "skin.ini"));
         Require(!SsfConverter.NormalizeInstalledSkin(wsscTarget, "wssc-test") &&

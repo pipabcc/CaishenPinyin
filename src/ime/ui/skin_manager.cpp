@@ -71,6 +71,17 @@ bool ParseBool(const std::string& value, bool fallback) {
     return fallback;
 }
 
+SkinOverlayAnchor ParseOverlayAnchor(const std::string& value) {
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+    if (normalized == "center") return SkinOverlayAnchor::Center;
+    if (normalized == "end") return SkinOverlayAnchor::End;
+    return SkinOverlayAnchor::Start;
+}
+
 bool IsValidSkinId(const std::wstring& value) {
     if (value.empty() || value.size() > 128 || value == L"." || value == L"..") {
         return false;
@@ -223,6 +234,23 @@ COLORREF EstimateCandidateBackgroundColorFromPixels(
     return DominantColor(buckets);
 }
 
+int ResolveSkinOverlayPosition(
+    SkinOverlayAnchor anchor,
+    int extent,
+    int item_extent,
+    int start_margin,
+    int end_margin) noexcept {
+    switch (anchor) {
+    case SkinOverlayAnchor::Center:
+        return start_margin +
+            (extent - start_margin - end_margin - item_extent) / 2;
+    case SkinOverlayAnchor::End:
+        return extent - end_margin - item_extent;
+    default:
+        return start_margin;
+    }
+}
+
 SkinManager& SkinManager::Instance() {
     static SkinManager s_instance;
     return s_instance;
@@ -250,6 +278,14 @@ void SkinManager::CleanupGdiResources() {
     }
     bg_frames_.clear();
     frame_delays_ms_.clear();
+    for (auto& overlay : animation_overlays_) {
+        for (void* frame : overlay.frames) {
+            delete reinterpret_cast<Gdiplus::Bitmap*>(frame);
+        }
+        overlay.frames.clear();
+        overlay.frame_delays_ms.clear();
+    }
+    animation_overlays_.clear();
     current_frame_ = 0;
     current_theme_.has_bg_image = false;
 }
@@ -427,6 +463,14 @@ void SkinManager::LoadFromDirectory(
             current_theme_.show_separator = ParseBool(
                 s["show_separator"], current_theme_.show_separator);
         }
+        if (s.count("native_min_width")) {
+            current_theme_.native_width = ParseBoundedInt(
+                s["native_min_width"], 0, 0, 8192);
+        }
+        if (s.count("native_min_height")) {
+            current_theme_.native_height = ParseBoundedInt(
+                s["native_min_height"], 0, 0, 8192);
+        }
     }
 
     std::vector<std::pair<std::string, UINT>> configured_frames;
@@ -456,12 +500,75 @@ void SkinManager::LoadFromDirectory(
             delete bitmap;
             continue;
         }
-        if (bg_frames_.empty()) {
+        if (bg_frames_.empty() && current_theme_.native_width <= 0) {
             current_theme_.native_width = static_cast<int>(bitmap->GetWidth());
             current_theme_.native_height = static_cast<int>(bitmap->GetHeight());
         }
         bg_frames_.push_back(bitmap);
         frame_delays_ms_.push_back(delay);
+    }
+
+    const int overlay_count = ini.count("AnimationOverlays") &&
+            ini["AnimationOverlays"].count("count")
+        ? ParseBoundedInt(ini["AnimationOverlays"]["count"], 0, 0, 16)
+        : 0;
+    for (int overlay_index = 0; overlay_index < overlay_count; ++overlay_index) {
+        const std::string section_name =
+            "AnimationOverlay" + std::to_string(overlay_index);
+        if (!ini.count(section_name)) continue;
+        const auto& overlay_section = ini[section_name];
+        SkinAnimationOverlay overlay;
+        if (overlay_section.count("horizontal_anchor")) {
+            overlay.horizontal_anchor =
+                ParseOverlayAnchor(overlay_section.at("horizontal_anchor"));
+        }
+        if (overlay_section.count("vertical_anchor")) {
+            overlay.vertical_anchor =
+                ParseOverlayAnchor(overlay_section.at("vertical_anchor"));
+        }
+        if (overlay_section.count("margin_left")) {
+            overlay.margin_left =
+                ParseBoundedInt(overlay_section.at("margin_left"), 0, 0, 8192);
+        }
+        if (overlay_section.count("margin_top")) {
+            overlay.margin_top =
+                ParseBoundedInt(overlay_section.at("margin_top"), 0, 0, 8192);
+        }
+        if (overlay_section.count("margin_right")) {
+            overlay.margin_right =
+                ParseBoundedInt(overlay_section.at("margin_right"), 0, 0, 8192);
+        }
+        if (overlay_section.count("margin_bottom")) {
+            overlay.margin_bottom =
+                ParseBoundedInt(overlay_section.at("margin_bottom"), 0, 0, 8192);
+        }
+        const int frame_count = overlay_section.count("frame_count")
+            ? ParseBoundedInt(overlay_section.at("frame_count"), 0, 0, 240)
+            : 0;
+        for (int frame_index = 0; frame_index < frame_count; ++frame_index) {
+            const std::string frame_key = "frame_" + std::to_string(frame_index);
+            if (!overlay_section.count(frame_key)) break;
+            const std::wstring image_path =
+                dir_path + L"\\" + Utf8ToWide(overlay_section.at(frame_key));
+            if (GetFileAttributesW(image_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                break;
+            }
+            auto* bitmap = new Gdiplus::Bitmap(image_path.c_str());
+            if (bitmap->GetLastStatus() != Gdiplus::Ok ||
+                bitmap->GetWidth() == 0 || bitmap->GetHeight() == 0) {
+                delete bitmap;
+                break;
+            }
+            const std::string delay_key = "delay_" + std::to_string(frame_index);
+            const UINT delay = static_cast<UINT>(overlay_section.count(delay_key)
+                ? ParseBoundedInt(overlay_section.at(delay_key), 100, 10, 10000)
+                : 100);
+            overlay.frames.push_back(bitmap);
+            overlay.frame_delays_ms.push_back(delay);
+        }
+        if (!overlay.frames.empty()) {
+            animation_overlays_.push_back(std::move(overlay));
+        }
     }
     current_theme_.has_bg_image = !bg_frames_.empty();
     if (current_theme_.is_user_skin && !bg_frames_.empty()) {
@@ -472,14 +579,29 @@ void SkinManager::LoadFromDirectory(
     }
 }
 
+bool SkinManager::HasAnimation() const noexcept {
+    if (bg_frames_.size() > 1) return true;
+    return std::any_of(animation_overlays_.begin(), animation_overlays_.end(),
+        [](const auto& overlay) { return overlay.frames.size() > 1; });
+}
+
 UINT SkinManager::CurrentFrameDelayMs() const noexcept {
-    if (frame_delays_ms_.empty()) return 100;
-    return frame_delays_ms_[(std::min)(current_frame_, frame_delays_ms_.size() - 1)];
+    if (bg_frames_.size() > 1 && !frame_delays_ms_.empty()) {
+        return frame_delays_ms_[current_frame_ % frame_delays_ms_.size()];
+    }
+    const auto found = std::find_if(
+        animation_overlays_.begin(), animation_overlays_.end(),
+        [](const auto& overlay) {
+            return overlay.frames.size() > 1 && !overlay.frame_delays_ms.empty();
+        });
+    if (found == animation_overlays_.end()) return 100;
+    return found->frame_delays_ms[
+        current_frame_ % found->frame_delays_ms.size()];
 }
 
 bool SkinManager::AdvanceFrame() noexcept {
-    if (bg_frames_.size() <= 1) return false;
-    current_frame_ = (current_frame_ + 1) % bg_frames_.size();
+    if (!HasAnimation()) return false;
+    ++current_frame_;
     return true;
 }
 
@@ -490,7 +612,7 @@ bool SkinManager::DrawBackground(
     }
 
     auto* bmp = reinterpret_cast<Gdiplus::Bitmap*>(
-        bg_frames_[(std::min)(current_frame_, bg_frames_.size() - 1)]);
+        bg_frames_[current_frame_ % bg_frames_.size()]);
     const int src_w = static_cast<int>(bmp->GetWidth());
     const int src_h = static_cast<int>(bmp->GetHeight());
     if (src_w <= 0 || src_h <= 0) return false;
@@ -552,6 +674,37 @@ bool SkinManager::DrawBackground(
     if (mid_dst_w > 0 && mid_dst_h > 0 && mid_src_w > 0 && mid_src_h > 0) {
         g.DrawImage(bmp, Gdiplus::Rect(sl, st, mid_dst_w, mid_dst_h), source_left, source_top, mid_src_w, mid_src_h, Gdiplus::UnitPixel);
     }
+
+    const auto previous_compositing_mode = g.GetCompositingMode();
+    g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+    for (const auto& overlay : animation_overlays_) {
+        if (overlay.frames.empty()) continue;
+        auto* overlay_bitmap = reinterpret_cast<Gdiplus::Bitmap*>(
+            overlay.frames[current_frame_ % overlay.frames.size()]);
+        const int overlay_width = scaled(
+            static_cast<int>(overlay_bitmap->GetWidth()));
+        const int overlay_height = scaled(
+            static_cast<int>(overlay_bitmap->GetHeight()));
+        if (overlay_width <= 0 || overlay_height <= 0) continue;
+        const int margin_left = scaled(overlay.margin_left);
+        const int margin_top = scaled(overlay.margin_top);
+        const int margin_right = scaled(overlay.margin_right);
+        const int margin_bottom = scaled(overlay.margin_bottom);
+        const int x = ResolveSkinOverlayPosition(
+            overlay.horizontal_anchor, width, overlay_width,
+            margin_left, margin_right);
+        const int y = ResolveSkinOverlayPosition(
+            overlay.vertical_anchor, height, overlay_height,
+            margin_top, margin_bottom);
+        g.DrawImage(
+            overlay_bitmap,
+            Gdiplus::Rect(x, y, overlay_width, overlay_height),
+            0, 0,
+            static_cast<int>(overlay_bitmap->GetWidth()),
+            static_cast<int>(overlay_bitmap->GetHeight()),
+            Gdiplus::UnitPixel);
+    }
+    g.SetCompositingMode(previous_compositing_mode);
 
     return true;
 }

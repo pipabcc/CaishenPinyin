@@ -325,6 +325,19 @@ public static class SkinCatalog
             var id = Path.GetFileName(directory);
             if (id.StartsWith(".skin-", StringComparison.OrdinalIgnoreCase) ||
                 !IsValidSkinId(id) || entries.ContainsKey(id)) continue;
+            if (!isBuiltIn)
+            {
+                try
+                {
+                    SsfConverter.NormalizeInstalledSkin(directory, id);
+                }
+                catch (Exception exception) when (exception is IOException or
+                    UnauthorizedAccessException or InvalidDataException or
+                    ArgumentException)
+                {
+                    CrashLogger.Log("SsfConverter.NormalizeInstalledSkin", exception);
+                }
+            }
             entries[id] = ReadDescriptor(directory, id, isBuiltIn);
         }
     }
@@ -349,7 +362,11 @@ public static class SkinCatalog
                 scheme, "bg_image", "pic", "background_image"));
             if (string.IsNullOrWhiteSpace(configuredBackground))
                 return Invalid("皮肤配置缺少候选框背景图");
-            var preview = ResolveAsset(directory, configuredBackground);
+            var configuredPreview = FirstValue(Value(
+                general, "preview_image", "preview_comp"));
+            var preview = (configuredPreview == null
+                    ? null : ResolveAsset(directory, configuredPreview)) ??
+                ResolveAsset(directory, configuredBackground);
             if (preview == null)
                 return Invalid("候选框背景图不存在或路径无效");
             return new SkinDescriptor(
