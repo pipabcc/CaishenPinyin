@@ -1,4 +1,5 @@
 #include "ime/ui/candidate_window.h"
+#include "ime/ui/directwrite_text_renderer.h"
 #include "ime/ui/skin_manager.h"
 #include "common/runtime_config.h"
 
@@ -45,6 +46,80 @@ int wmain(int argc, wchar_t** argv) {
         shuru::CandidateLayeredFontQuality() == CLEARTYPE_QUALITY) {
         std::fwprintf(stderr, L"layered candidate window uses subpixel font quality\n");
         return 34;
+    }
+
+    if (shuru::CandidateVModeListFontSize(19) != 15 ||
+        shuru::CandidateVModeListFontSize(14) != 14) {
+        std::fwprintf(stderr, L"V-mode font hierarchy is invalid\n");
+        return 35;
+    }
+
+    shuru::SkinTheme sampled_theme;
+    sampled_theme.font_size = 18;
+    sampled_theme.pinyin_margin = {1, 1, 1, 1};
+    sampled_theme.candidate_margin = {1, 1, 1, 1};
+    constexpr int sample_width = 24;
+    constexpr int sample_height = 40;
+    std::vector<std::uint8_t> sample_pixels(
+        sample_width * sample_height * 4, 255);
+    for (int y = 27; y < 39; ++y) {
+        for (int x = 1; x < 23; ++x) {
+            auto* pixel = sample_pixels.data() +
+                (static_cast<size_t>(y) * sample_width + x) * 4;
+            pixel[0] = 51;
+            pixel[1] = 102;
+            pixel[2] = 153;
+            pixel[3] = 255;
+        }
+    }
+    if (shuru::EstimateCandidateBackgroundColorFromPixels(
+            sample_pixels.data(), sample_width, sample_height,
+            sample_width * 4, sampled_theme) != RGB(153, 102, 51)) {
+        std::fwprintf(stderr, L"candidate-area background sampling failed\n");
+        return 41;
+    }
+
+    shuru::DirectWriteTextRenderer directwrite_text;
+    if (!directwrite_text.IsAvailable() ||
+        directwrite_text.ResolveFontFamily(L"font-that-does-not-exist") !=
+            L"Microsoft YaHei UI") {
+        std::fwprintf(stderr, L"DirectWrite or font fallback is unavailable\n");
+        return 36;
+    }
+    const shuru::CandidateTextStyle render_style {
+        L"Microsoft YaHei UI", 19.0f,
+        shuru::CandidateTextWeight::Regular,
+        shuru::CandidateTextAlignment::Near, true};
+    for (const UINT render_dpi : {96U, 104U, 120U, 144U, 192U}) {
+        constexpr int render_width = 180;
+        constexpr int render_height = 48;
+        std::vector<std::uint8_t> rendered(
+            render_width * render_height * 4, 0);
+        const RECT render_rect {0, 0, render_width, render_height};
+        if (!directwrite_text.DrawText(
+                rendered.data(), render_width, render_height, render_rect,
+                L"候选文字 Abc", RGB(17, 24, 39), render_style,
+                render_dpi)) {
+            std::fwprintf(stderr, L"DirectWrite failed at %u DPI\n", render_dpi);
+            return 37;
+        }
+        bool found_coverage = false;
+        for (size_t index = 0; index < rendered.size() / 4; ++index) {
+            const auto blue = rendered[index * 4];
+            const auto green = rendered[index * 4 + 1];
+            const auto red = rendered[index * 4 + 2];
+            const auto alpha = rendered[index * 4 + 3];
+            found_coverage = found_coverage || alpha != 0;
+            if (blue > alpha || green > alpha || red > alpha) {
+                std::fwprintf(stderr, L"text layer is not premultiplied\n");
+                return 38;
+            }
+        }
+        if (!found_coverage || directwrite_text.MeasureText(
+                L"候选文字 Abc", render_style, render_dpi) <= 0.0f) {
+            std::fwprintf(stderr, L"DirectWrite output is empty\n");
+            return 39;
+        }
     }
 
     bool found_antialiased_corner = false;
@@ -124,6 +199,19 @@ int wmain(int argc, wchar_t** argv) {
     if (required_width != 284) {
         std::fwprintf(stderr, L"candidate header width=%d expected=284\n", required_width);
         return 1;
+    }
+    const auto diary_row = shuru::BuildCandidateRowLayout(
+        std::vector<int>(9, 36), 0, 46, 4, 8, 16);
+    const int diary_window_width = shuru::CandidateRowRequiredWidth(
+        diary_row, 140);
+    for (const auto& item : diary_row) {
+        const int text_right = shuru::CandidateItemTextRight(
+            diary_window_width, item.hit_right, 140);
+        if (text_right <= item.text_left) {
+            std::fwprintf(stderr,
+                L"native skin right margin clipped candidate text\n");
+            return 40;
+        }
     }
     const auto header = shuru::BuildCandidateHeaderLayout(
         required_width, 50, 13, 9, 12);
@@ -298,7 +386,7 @@ int wmain(int argc, wchar_t** argv) {
     window.SetSelectionHandler([&clicked_index](size_t index) {
         clicked_index = index;
     });
-    window.SetContent(L"v", candidates, 17, 0, 9);
+    window.SetContent(L"v", candidates, 17, 0, 9, true, true);
     const SIZE vertical_size = window.WindowSize();
     const int expected_vertical_height =
         MulDiv(38, static_cast<int>(dpi), 96) +
@@ -325,7 +413,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     clicked_index = static_cast<size_t>(-1);
-    window.SetContent(L"vv", candidates, 0, 0, 9);
+    window.SetContent(L"vv", candidates, 0, 0, 9, true, true);
     SendMessageW(
         handle, WM_MOUSEWHEEL,
         MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)), 0);
@@ -352,7 +440,7 @@ int wmain(int argc, wchar_t** argv) {
     int clear_clicks = 0;
     window.SetSearchHandler([&search_clicks]() { ++search_clicks; });
     window.SetClearSearchHandler([&clear_clicks]() { ++clear_clicks; });
-    window.SetContent(L"vfilter", candidates, 0, 0, 9);
+    window.SetContent(L"vfilter", candidates, 0, 0, 9, true, true);
     window.Show(POINT {40, 40});
     const SIZE search_size = window.WindowSize();
     const int search_right = search_size.cx -
@@ -428,6 +516,7 @@ int wmain(int argc, wchar_t** argv) {
     native_window.Show(POINT {40, 40});
     auto& native_skin = shuru::SkinManager::Instance();
     if (!native_skin.CurrentTheme().native_appearance ||
+        !native_skin.CurrentTheme().is_user_skin ||
         native_skin.CurrentTheme().has_shadow || !native_skin.HasAnimation() ||
         native_skin.CurrentFrameDelayMs() != 80 || !native_skin.AdvanceFrame()) {
         std::fwprintf(stderr, L"native skin animation metadata is invalid\n");
@@ -442,6 +531,35 @@ int wmain(int argc, wchar_t** argv) {
         native_rect.bottom - native_rect.top != native_size.cy) {
         std::fwprintf(stderr, L"native skin size or shadow policy is invalid\n");
         return 27;
+    }
+
+    // 导入皮肤的 v/vv/vvv 工具页都只使用候选区域主色；只有 v/vv
+    // 切换为竖向列表，普通候选仍保持素材原生尺寸和动画元数据。
+    const COLORREF sampled_background =
+        native_skin.CurrentTheme().utility_background_color;
+    native_window.SetContent(L"v", candidates, 0, 0, 9, true, true);
+    native_window.Show(POINT {40, 40});
+    const SIZE imported_v_size = native_window.WindowSize();
+    native_window.SetContent(L"vvv1+2", candidates, 0, 0, 9, true, false);
+    native_window.Show(POINT {40, 40});
+    const SIZE imported_vvv_size = native_window.WindowSize();
+    if (!shuru::ShouldUsePlainUtilityBackground(
+            true, native_skin.CurrentTheme().is_user_skin) ||
+        sampled_background !=
+            native_skin.CurrentTheme().utility_background_color ||
+        !native_window.UsesPlainUtilityBackgroundForTesting() ||
+        native_window.IsSkinAnimationTimerActiveForTesting() ||
+        imported_v_size.cx != MulDiv(350, static_cast<int>(dpi), 96) ||
+        imported_vvv_size.cx == imported_v_size.cx) {
+        std::fwprintf(stderr, L"imported utility skin mode policy is invalid\n");
+        return 42;
+    }
+    native_window.SetContent(L"bao", candidates, 0, 0, 9, false, false);
+    native_window.Show(POINT {40, 40});
+    if (native_window.UsesPlainUtilityBackgroundForTesting() ||
+        !native_window.IsSkinAnimationTimerActiveForTesting()) {
+        std::fwprintf(stderr, L"normal imported skin lost image animation\n");
+        return 43;
     }
 
     {

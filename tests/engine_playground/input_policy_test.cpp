@@ -130,14 +130,22 @@ int main() {
     CHECK(shortcut_cache.Consume('A', 1, 5, &shortcut_decision));
     CHECK(!shortcut_decision);
 
+    CHECK(IsUtilityMode("v"));
+    CHECK(IsUtilityMode("vvv1+2"));
+    CHECK(IsUtilityMode("VVV"));
+    CHECK(!IsUtilityMode("lv"));
     CHECK(IsVerticalUtilityMode("v"));
     CHECK(IsVerticalUtilityMode("v123"));
     CHECK(IsVerticalUtilityMode("vv"));
     CHECK(!IsVerticalUtilityMode("vvv"));
     CHECK(!IsVerticalUtilityMode("vvv1+2"));
+    CHECK(!IsVerticalUtilityMode("VVV1+2"));
     CHECK(IsVerticalUtilityMode("Vabc"));
     CHECK(!IsVerticalUtilityMode(""));
     CHECK(!IsVerticalUtilityMode("lv"));
+    CHECK(ShouldUsePlainUtilityBackground(true, true));
+    CHECK(!ShouldUsePlainUtilityBackground(true, false));
+    CHECK(!ShouldUsePlainUtilityBackground(false, true));
     char filter_digit = 0;
     CHECK(TryGetVerticalUtilityFilterDigit('0', false, &filter_digit));
     CHECK(filter_digit == '0');
@@ -242,6 +250,9 @@ int main() {
         std::vector<int>(9, 48), 0, 13, 4, 8, 16);
     CHECK(row.size() == 9 && row.back().index == 8);
     CHECK(CandidateRowRequiredWidth(row, 9) == row.back().hit_right + 9);
+    CHECK(CandidateItemTextRight(710, row.front().hit_right, 140) ==
+          row.front().hit_right);
+    CHECK(CandidateItemTextRight(710, 700, 140) == 570);
     CHECK(CandidateExpandedFirstPage(0, 5) == 0);
     CHECK(CandidateExpandedFirstPage(4, 5) == 0);
     CHECK(CandidateExpandedFirstPage(5, 5) == 5);

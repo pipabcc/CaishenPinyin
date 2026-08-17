@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.h>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -37,6 +38,7 @@ struct SkinTheme {
     COLORREF index_color = RGB(184, 134, 11);
     COLORREF status_text_color = RGB(153, 136, 119);
     COLORREF separator_color = RGB(240, 228, 210);
+    COLORREF utility_background_color = RGB(248, 250, 252);
 
     SkinSlice slice;
     SkinMargin pinyin_margin {10, 6, 16, 16};
@@ -47,9 +49,17 @@ struct SkinTheme {
     bool native_appearance = false;
     bool show_separator = true;
     bool has_bg_image = false;
+    bool is_user_skin = false;
     int native_width = 0;
     int native_height = 0;
 };
+
+COLORREF EstimateCandidateBackgroundColorFromPixels(
+    const std::uint8_t* bgra_pixels,
+    int width,
+    int height,
+    int stride,
+    const SkinTheme& theme) noexcept;
 
 class SkinManager {
 public:
@@ -91,7 +101,10 @@ public:
     void ResetAnimation() noexcept { current_frame_ = 0; }
 
 private:
-    void LoadFromDirectory(const std::wstring& dir_path, const std::wstring& skin_id);
+    void LoadFromDirectory(
+        const std::wstring& dir_path,
+        const std::wstring& skin_id,
+        bool is_user_skin);
     void CleanupGdiResources();
 
     SkinTheme current_theme_;

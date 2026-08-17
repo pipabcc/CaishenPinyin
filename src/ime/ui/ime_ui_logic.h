@@ -4,6 +4,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -56,13 +57,23 @@ struct ShortcutModifierDecisionCache {
     void Clear() noexcept { valid = false; }
 };
 
+inline bool IsUtilityMode(const std::string& composing) noexcept {
+    return !composing.empty() &&
+        (composing.front() == 'v' || composing.front() == 'V');
+}
+
 inline bool IsVerticalUtilityMode(const std::string& composing) noexcept {
-    if (composing.empty() ||
-        (composing.front() != 'v' && composing.front() != 'V')) {
-        return false;
-    }
+    if (!IsUtilityMode(composing)) return false;
     // vvv 是计算器入口，必须继续进入拼音引擎的特殊输入分支。
-    return composing.size() < 3 || composing.compare(0, 3, "vvv") != 0;
+    return composing.size() < 3 ||
+        ((composing[1] != 'v' && composing[1] != 'V') ||
+         (composing[2] != 'v' && composing[2] != 'V'));
+}
+
+inline bool ShouldUsePlainUtilityBackground(
+    bool utility_mode,
+    bool is_user_skin) noexcept {
+    return utility_mode && is_user_skin;
 }
 
 inline bool TryGetVerticalUtilityFilterDigit(
@@ -340,6 +351,48 @@ inline int CandidateRowRequiredWidth(
     const std::vector<CandidateItemLayout>& layout,
     int right_padding) noexcept {
     return layout.empty() ? right_padding : layout.back().hit_right + right_padding;
+}
+
+inline int CandidateItemTextRight(
+    int window_width,
+    int item_hit_right,
+    int content_right_padding) noexcept {
+    return (std::min)(
+        (std::max)(0, window_width - (std::max)(0, content_right_padding)),
+        item_hit_right);
+}
+
+inline double CandidateColorLuminance(COLORREF color) noexcept {
+    const auto linear = [](BYTE channel) noexcept {
+        const double value = static_cast<double>(channel) / 255.0;
+        return value <= 0.04045
+            ? value / 12.92
+            : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * linear(GetRValue(color)) +
+           0.7152 * linear(GetGValue(color)) +
+           0.0722 * linear(GetBValue(color));
+}
+
+inline double CandidateColorContrast(COLORREF left, COLORREF right) noexcept {
+    const double left_luminance = CandidateColorLuminance(left);
+    const double right_luminance = CandidateColorLuminance(right);
+    return ((std::max)(left_luminance, right_luminance) + 0.05) /
+           ((std::min)(left_luminance, right_luminance) + 0.05);
+}
+
+inline COLORREF EnsureCandidateTextContrast(
+    COLORREF configured,
+    COLORREF background,
+    double minimum_contrast = 4.5) noexcept {
+    if (CandidateColorContrast(configured, background) >= minimum_contrast) {
+        return configured;
+    }
+    constexpr COLORREF kDarkText = RGB(30, 41, 59);
+    constexpr COLORREF kLightText = RGB(255, 255, 255);
+    return CandidateColorContrast(kDarkText, background) >=
+            CandidateColorContrast(kLightText, background)
+        ? kDarkText : kLightText;
 }
 
 inline bool IsReliableCandidateRect(const RECT& rect, bool clipped = false) noexcept {

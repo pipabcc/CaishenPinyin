@@ -58,6 +58,7 @@ add_library(ShuruIme SHARED
   src/ime/ui/shared_status_ui.cpp
   src/ime/text_service.cpp
   src/ime/ui/candidate_window.cpp
+  src/ime/ui/directwrite_text_renderer.cpp
   src/ime/ui/skin_manager.cpp
   src/ime/dllmain.cpp
   src/ime/ShuruIme.def
@@ -88,6 +89,7 @@ target_link_libraries(ShuruIme PRIVATE
   user32
   gdi32
   gdiplus
+  dwrite
   advapi32
   bcrypt
   shell32
@@ -322,6 +324,7 @@ if(BUILD_TESTING)
     src/ime/punctuation_state.cpp
     src/ime/display_attribute.cpp
     src/ime/ui/candidate_window.cpp
+    src/ime/ui/directwrite_text_renderer.cpp
     src/ime/ui/skin_manager.cpp
     src/ime/ui/status_window.cpp
     src/ime/ui/shared_status_ui.cpp
@@ -332,7 +335,7 @@ if(BUILD_TESTING)
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     SHURU_TRAY_OWNER_MUTEX_TEST=1
     SHURU_TEST_DISABLE_EXTERNAL_HELPERS=1)
-  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 gdiplus advapi32 bcrypt shell32 dwmapi winsqlite3)
+  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 gdiplus dwrite advapi32 bcrypt shell32 dwmapi winsqlite3)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
@@ -355,11 +358,12 @@ if(BUILD_TESTING)
     src/common/runtime_config.cpp
     src/common/typing_stats.cpp
     src/ime/ui/candidate_window.cpp
+    src/ime/ui/directwrite_text_renderer.cpp
     src/ime/ui/skin_manager.cpp
   )
   target_include_directories(candidate_window_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(candidate_window_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(candidate_window_test PRIVATE user32 gdi32 gdiplus ole32 shell32 dwmapi)
+  target_link_libraries(candidate_window_test PRIVATE user32 gdi32 gdiplus dwrite ole32 shell32 dwmapi)
   add_test(NAME candidate_window COMMAND candidate_window_test)
   set_tests_properties(candidate_window PROPERTIES TIMEOUT 30)
 

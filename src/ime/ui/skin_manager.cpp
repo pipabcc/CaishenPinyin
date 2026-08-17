@@ -5,7 +5,9 @@
 #include <gdiplus.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -87,6 +89,82 @@ int ParseBoundedInt(const std::string& value, int fallback, int minimum, int max
     }
 }
 
+RECT CandidateBackgroundSampleRect(
+    int width,
+    int height,
+    const SkinTheme& theme) noexcept {
+    const int line_height = (std::max)(24, theme.font_size + 6);
+    int left = (std::max)(0, theme.candidate_margin.left);
+    int right = (std::min)(width, width - theme.candidate_margin.right);
+    int top = theme.pinyin_margin.top + line_height +
+        theme.pinyin_margin.bottom + theme.candidate_margin.top;
+    int bottom = (std::min)(height - theme.candidate_margin.bottom,
+                            top + line_height);
+    if (right - left < 8 || bottom - top < 4) {
+        left = width / 4;
+        right = width - width / 4;
+        top = height / 2;
+        bottom = (std::min)(height, top + (std::max)(8, height / 5));
+    }
+    return RECT {
+        (std::max)(0, left), (std::max)(0, top),
+        (std::min)(width, right), (std::min)(height, bottom)};
+}
+
+struct ColorBucket {
+    std::uint32_t count = 0;
+    std::uint64_t red = 0;
+    std::uint64_t green = 0;
+    std::uint64_t blue = 0;
+};
+
+COLORREF DominantColor(const std::array<ColorBucket, 4096>& buckets) noexcept {
+    const auto found = std::max_element(
+        buckets.begin(), buckets.end(), [](const auto& left_bucket,
+                                           const auto& right_bucket) {
+            return left_bucket.count < right_bucket.count;
+        });
+    if (found == buckets.end() || found->count == 0) {
+        return RGB(248, 250, 252);
+    }
+    return RGB(
+        static_cast<BYTE>(found->red / found->count),
+        static_cast<BYTE>(found->green / found->count),
+        static_cast<BYTE>(found->blue / found->count));
+}
+
+COLORREF EstimateCandidateBackgroundColor(
+    Gdiplus::Bitmap* bitmap,
+    const SkinTheme& theme) {
+    if (bitmap == nullptr || bitmap->GetWidth() == 0 || bitmap->GetHeight() == 0) {
+        return RGB(248, 250, 252);
+    }
+    const int width = static_cast<int>(bitmap->GetWidth());
+    const int height = static_cast<int>(bitmap->GetHeight());
+    const RECT sample = CandidateBackgroundSampleRect(width, height, theme);
+
+    std::array<ColorBucket, 4096> buckets {};
+    for (int y = sample.top; y < sample.bottom; ++y) {
+        for (int x = sample.left; x < sample.right; ++x) {
+            Gdiplus::Color color;
+            if (bitmap->GetPixel(x, y, &color) != Gdiplus::Ok ||
+                color.GetAlpha() < 192) {
+                continue;
+            }
+            const std::size_t bucket_index =
+                (static_cast<std::size_t>(color.GetRed() >> 4) << 8) |
+                (static_cast<std::size_t>(color.GetGreen() >> 4) << 4) |
+                static_cast<std::size_t>(color.GetBlue() >> 4);
+            auto& bucket = buckets[bucket_index];
+            ++bucket.count;
+            bucket.red += color.GetRed();
+            bucket.green += color.GetGreen();
+            bucket.blue += color.GetBlue();
+        }
+    }
+    return DominantColor(buckets);
+}
+
 std::wstring GetModuleDirectory() {
     HMODULE hModule = nullptr;
     GetModuleHandleExW(
@@ -113,6 +191,37 @@ std::wstring GetUserDataSkinsDirectory() {
 }
 
 }  // namespace
+
+COLORREF EstimateCandidateBackgroundColorFromPixels(
+    const std::uint8_t* bgra_pixels,
+    int width,
+    int height,
+    int stride,
+    const SkinTheme& theme) noexcept {
+    if (bgra_pixels == nullptr || width <= 0 || height <= 0 ||
+        stride < width * 4) {
+        return RGB(248, 250, 252);
+    }
+    const RECT sample = CandidateBackgroundSampleRect(width, height, theme);
+    std::array<ColorBucket, 4096> buckets {};
+    for (int y = sample.top; y < sample.bottom; ++y) {
+        const auto* row = bgra_pixels + static_cast<std::size_t>(y) * stride;
+        for (int x = sample.left; x < sample.right; ++x) {
+            const auto* pixel = row + static_cast<std::size_t>(x) * 4;
+            if (pixel[3] < 192) continue;
+            const std::size_t bucket_index =
+                (static_cast<std::size_t>(pixel[2] >> 4) << 8) |
+                (static_cast<std::size_t>(pixel[1] >> 4) << 4) |
+                static_cast<std::size_t>(pixel[0] >> 4);
+            auto& bucket = buckets[bucket_index];
+            ++bucket.count;
+            bucket.red += pixel[2];
+            bucket.green += pixel[1];
+            bucket.blue += pixel[0];
+        }
+    }
+    return DominantColor(buckets);
+}
 
 SkinManager& SkinManager::Instance() {
     static SkinManager s_instance;
@@ -165,14 +274,14 @@ void SkinManager::EnsureSkin(const std::wstring& skin_id) {
 
     for (const auto& dir : candidates) {
         if (GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            LoadFromDirectory(dir, target_id);
+            LoadFromDirectory(dir, target_id, false);
             return;
         }
     }
 
     const std::wstring user_dir = GetUserDataSkinsDirectory() + L"\\" + target_id;
     if (GetFileAttributesW(user_dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        LoadFromDirectory(user_dir, target_id);
+        LoadFromDirectory(user_dir, target_id, true);
         return;
     }
 
@@ -183,7 +292,7 @@ void SkinManager::EnsureSkin(const std::wstring& skin_id) {
                  mod_dir + L"\\..\\data\\skins\\classic_blue",
                  mod_dir + L"\\skins\\classic_blue"}) {
             if (GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                LoadFromDirectory(dir, L"classic_blue");
+                LoadFromDirectory(dir, L"classic_blue", false);
                 return;
             }
         }
@@ -198,9 +307,13 @@ void SkinManager::ReloadSkin(const std::wstring& skin_id) {
     EnsureSkin(skin_id);
 }
 
-void SkinManager::LoadFromDirectory(const std::wstring& dir_path, const std::wstring& skin_id) {
+void SkinManager::LoadFromDirectory(
+    const std::wstring& dir_path,
+    const std::wstring& skin_id,
+    bool is_user_skin) {
     current_theme_ = SkinTheme{};
     current_theme_.id = skin_id;
+    current_theme_.is_user_skin = is_user_skin;
 
     std::wstring ini_path = dir_path + L"\\skin.ini";
     std::ifstream file(ini_path, std::ios::binary);
@@ -351,6 +464,12 @@ void SkinManager::LoadFromDirectory(const std::wstring& dir_path, const std::wst
         frame_delays_ms_.push_back(delay);
     }
     current_theme_.has_bg_image = !bg_frames_.empty();
+    if (current_theme_.is_user_skin && !bg_frames_.empty()) {
+        current_theme_.utility_background_color =
+            EstimateCandidateBackgroundColor(
+                reinterpret_cast<Gdiplus::Bitmap*>(bg_frames_.front()),
+                current_theme_);
+    }
 }
 
 UINT SkinManager::CurrentFrameDelayMs() const noexcept {

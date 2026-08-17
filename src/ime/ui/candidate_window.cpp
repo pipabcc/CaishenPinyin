@@ -389,10 +389,16 @@ void CandidateWindow::EnsureFonts() {
     const auto& skin = SkinManager::Instance().CurrentTheme();
     const std::wstring family = skin.font_family.empty()
         ? L"Microsoft YaHei UI" : skin.font_family;
-    const int candidate_size = skin.native_appearance
+    const bool use_native_layout = skin.native_appearance &&
+        !UsesPlainUtilityBackground();
+    const int candidate_size = use_native_layout
         ? skin.font_size : GetRuntimeConfig().candidate_font_size;
+    const int utility_size = CandidateVModeListFontSize(
+        GetRuntimeConfig().candidate_font_size);
     const std::wstring signature = family + L"\n" +
         std::to_wstring(candidate_size) + L"\n" +
+        std::to_wstring(utility_size) + L"\n" +
+        std::to_wstring(use_native_layout ? 1 : 0) + L"\n" +
         std::to_wstring(Scale(100));
     if (!font_signature_.empty() && font_signature_ != signature) ResetFonts();
     font_signature_ = signature;
@@ -429,7 +435,7 @@ void CandidateWindow::EnsureFonts() {
     }
     if (font_utility_ == nullptr) {
         font_utility_ = CreateFontW(
-            -Scale(kUtilityFontSize), 0, 0, 0, FW_NORMAL,
+            -Scale(utility_size), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, font_quality,
             DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
@@ -480,7 +486,7 @@ void CandidateWindow::EnsureFonts() {
     if (gdip_font_utility_ == nullptr) {
         gdip_font_utility_ = new Gdiplus::Font(
             L"Microsoft YaHei UI",
-            static_cast<Gdiplus::REAL>(Scale(kUtilityFontSize)),
+            static_cast<Gdiplus::REAL>(Scale(utility_size)),
             Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     }
 }
@@ -500,6 +506,12 @@ int CandidateWindow::ShadowMargin() const {
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     return SkinManager::Instance().CurrentTheme().has_shadow
         ? Scale(kShadowMargin) : 0;
+}
+
+bool CandidateWindow::UsesPlainUtilityBackground() const {
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    return ShouldUsePlainUtilityBackground(
+        utility_mode_, SkinManager::Instance().CurrentTheme().is_user_skin);
 }
 
 SIZE CandidateWindow::WindowSize() const {
@@ -612,7 +624,8 @@ void CandidateWindow::StopSkinAnimation() {
 void CandidateWindow::SyncSkinAnimation() {
     StopSkinAnimation();
     auto& manager = SkinManager::Instance();
-    if (visible_ && hwnd_ != nullptr && manager.HasAnimation()) {
+    if (visible_ && hwnd_ != nullptr && manager.HasAnimation() &&
+        !UsesPlainUtilityBackground()) {
         skin_animation_timer_active_ = SetTimer(
             hwnd_, kSkinAnimationTimerId,
             manager.CurrentFrameDelayMs(), nullptr) != 0;
@@ -644,7 +657,9 @@ void CandidateWindow::SetContent(
     const std::vector<Candidate>& candidates,
     size_t selected_index,
     size_t page,
-    size_t page_size) {
+    size_t page_size,
+    bool utility_mode,
+    bool vertical_utility_mode) {
     const size_t normalized_page_size = (std::max)(size_t{1}, page_size);
     const size_t page_count = candidates.empty() ? 1 :
         (candidates.size() + normalized_page_size - 1) / normalized_page_size;
@@ -655,8 +670,11 @@ void CandidateWindow::SetContent(
     const bool must_collapse = expanded_ &&
         candidates.size() <= normalized_page_size;
     if (must_collapse) expanded_ = false;
-    const bool layout_changed = must_collapse || !DisplayContentEquals(
-        composing, candidates, normalized_page, normalized_page_size);
+    const bool mode_changed = utility_mode_ != utility_mode ||
+        vertical_utility_mode_ != vertical_utility_mode;
+    const bool layout_changed = must_collapse || mode_changed ||
+        !DisplayContentEquals(
+            composing, candidates, normalized_page, normalized_page_size);
     const bool selection_changed = selected_ != normalized_selected;
     if (!layout_changed && !selection_changed) return;
 
@@ -665,9 +683,10 @@ void CandidateWindow::SetContent(
     selected_ = normalized_selected;
     page_size_ = normalized_page_size;
     page_ = normalized_page;
+    utility_mode_ = utility_mode;
+    vertical_utility_mode_ = vertical_utility_mode;
 
-    const bool is_v_mode = (!composing.empty() && (composing[0] == L'v' || composing[0] == L'V') && composing.rfind(L"vvv", 0) != 0);
-    if (is_v_mode) {
+    if (vertical_utility_mode_) {
         const int max_scroll = (candidates.size() > static_cast<size_t>(kVerticalMaxVisible)) ? (static_cast<int>(candidates.size()) - kVerticalMaxVisible) : 0;
         if (normalized_selected < static_cast<size_t>(scroll_offset_)) {
             scroll_offset_ = static_cast<int>(normalized_selected);
@@ -703,10 +722,7 @@ void CandidateWindow::SetSelectedIndex(size_t selected_index) {
     } else {
         page_ = 0;
     }
-    const bool is_v_mode = !composing_.empty() &&
-        (composing_[0] == L'v' || composing_[0] == L'V') &&
-        composing_.rfind(L"vvv", 0) != 0;
-    if (is_v_mode) {
+    if (vertical_utility_mode_) {
         const int max_scroll = candidates_.size() >
                 static_cast<size_t>(kVerticalMaxVisible)
             ? static_cast<int>(candidates_.size()) - kVerticalMaxVisible
@@ -732,10 +748,7 @@ void CandidateWindow::SetSelectedIndex(size_t selected_index) {
 }
 
 bool CandidateWindow::SetExpanded(bool expanded) {
-    const bool is_v_mode = !composing_.empty() &&
-        (composing_[0] == L'v' || composing_[0] == L'V') &&
-        composing_.rfind(L"vvv", 0) != 0;
-    const bool next = expanded && !is_v_mode &&
+    const bool next = expanded && !vertical_utility_mode_ &&
         candidates_.size() > page_size_;
     if (expanded_ == next) return false;
     expanded_ = next;
@@ -822,6 +835,8 @@ void CandidateWindow::OpenSettings() {
 void CandidateWindow::RecalcSize() {
     EnsureFonts();
     const auto& skin = SkinManager::Instance().CurrentTheme();
+    const bool use_native_layout = skin.native_appearance &&
+        !UsesPlainUtilityBackground();
 
     if (gdip_font_ == nullptr || gdip_font_comp_ == nullptr ||
         gdip_font_meta_ == nullptr || gdip_font_utility_ == nullptr) {
@@ -841,16 +856,21 @@ void CandidateWindow::RecalcSize() {
     Gdiplus::StringFormat format(Gdiplus::StringFormat::GenericTypographic());
     format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces | Gdiplus::StringFormatFlagsNoWrap);
 
-    const auto measure_str = [&](Gdiplus::Font* f, const std::wstring& text) -> int {
+    const auto measure_str = [&](
+        Gdiplus::Font* f, const std::wstring& text,
+        const CandidateTextStyle& style) -> int {
         if (f == nullptr || text.empty()) return 0;
+        const float directwrite_width = directwrite_text_.MeasureText(
+            text, style, hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_));
+        if (directwrite_width > 0.0f) {
+            return static_cast<int>(std::ceil(directwrite_width));
+        }
         Gdiplus::RectF bbox;
         g.MeasureString(text.c_str(), static_cast<INT>(text.size()), f, Gdiplus::PointF(0, 0), &format, &bbox);
         return static_cast<int>(std::ceil(bbox.Width));
     };
 
-    const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
-
-    if (is_v_mode) {
+    if (vertical_utility_mode_) {
         width_ = Scale(350);
         const int top_bar_h = Scale(38);
         const int row_h = Scale(kVerticalRowHeight);
@@ -860,17 +880,33 @@ void CandidateWindow::RecalcSize() {
         return;
     }
 
-    const int comp_w = measure_str(font_comp, composing_.empty() ? L" " : composing_);
+    const std::wstring family = skin.font_family.empty()
+        ? L"Microsoft YaHei UI" : skin.font_family;
+    const int candidate_size = use_native_layout
+        ? skin.font_size : GetRuntimeConfig().candidate_font_size;
+    const CandidateTextStyle candidate_style {
+        family, static_cast<float>(candidate_size),
+        CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
+    const CandidateTextStyle composing_style {
+        family, static_cast<float>(candidate_size + 1),
+        CandidateTextWeight::SemiBold, CandidateTextAlignment::Near, true};
+    const CandidateTextStyle metadata_style {
+        L"Microsoft YaHei UI",
+        static_cast<float>(CandidateMetadataFontSize(
+            GetRuntimeConfig().candidate_font_size)),
+        CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
+    const int comp_w = measure_str(
+        font_comp, composing_.empty() ? L" " : composing_, composing_style);
     const std::wstring status_text = BuildTypingStatisticsText(
         typing_stats_.daily_count);
     const bool can_expand = candidates_.size() > page_size_;
-    const int header_right_w = measure_str(font_meta, status_text) +
+    const int header_right_w = measure_str(font_meta, status_text, metadata_style) +
         (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     int cand_w = 0;
-    const int padding = skin.native_appearance
+    const int padding = use_native_layout
         ? Scale(skin.candidate_margin.left)
         : Scale(kHorizontalPadding);
-    const int candidate_right_padding = skin.native_appearance
+    const int candidate_right_padding = use_native_layout
         ? Scale(skin.candidate_margin.right)
         : padding;
     const size_t first_page = expanded_
@@ -896,30 +932,30 @@ void CandidateWindow::RecalcSize() {
                 item = std::to_wstring(i - begin + 1) + L".";
             }
             item += candidates_[i].text;
-            item_widths.push_back(measure_str(font, item));
+            item_widths.push_back(measure_str(font, item, candidate_style));
         }
         item_rows_.push_back(BuildCandidateRowLayout(
             item_widths, begin,
-            skin.native_appearance ? padding : padding + Scale(4), Scale(4),
+            use_native_layout ? padding : padding + Scale(4), Scale(4),
             Scale(8), Scale(16)));
         cand_w = (std::max)(cand_w,
             CandidateRowRequiredWidth(item_rows_.back(), candidate_right_padding));
     }
 
-    const int header_left = skin.native_appearance
+    const int header_left = use_native_layout
         ? Scale(skin.pinyin_margin.left) : padding + Scale(4);
-    const int header_right = skin.native_appearance
+    const int header_right = use_native_layout
         ? Scale((std::max)(skin.pinyin_margin.right,
                            skin.candidate_margin.right)) : padding;
     const int header_w = CandidateHeaderRequiredWidth(
         comp_w, header_right_w, header_left, header_right,
         Scale(kHeaderTextGap));
-    const int minimum_width = skin.native_appearance
+    const int minimum_width = use_native_layout
         ? Scale((std::max)(skin.native_width, kMinWidth))
         : Scale(kMinWidth);
     width_ = (std::max)(minimum_width,
         (std::min)(Scale(kMaxWidth), (std::max)(header_w, cand_w)));
-    if (skin.native_appearance) {
+    if (use_native_layout) {
         const int native_line_height = Scale((std::max)(24, skin.font_size + 6));
         const int candidate_top = Scale(skin.pinyin_margin.top) +
             native_line_height + Scale(
@@ -942,8 +978,7 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
     x -= shadow_margin;
     y -= shadow_margin;
 
-    const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
-    if (is_v_mode) {
+    if (vertical_utility_mode_) {
         const int top_bar_h = Scale(38);
         const int row_h = Scale(kVerticalRowHeight);
         if (y < top_bar_h || y >= height_) return -1;
@@ -957,9 +992,11 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
 
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
-    const int row_height = skin.native_appearance
+    const bool use_native_layout = skin.native_appearance &&
+        !UsesPlainUtilityBackground();
+    const int row_height = use_native_layout
         ? Scale((std::max)(24, skin.font_size + 6)) : Scale(kLineHeight);
-    const int candidate_top = skin.native_appearance
+    const int candidate_top = use_native_layout
         ? Scale(skin.pinyin_margin.top) + row_height +
             Scale(skin.pinyin_margin.bottom + skin.candidate_margin.top)
         : BuildCandidateWindowVerticalLayout(
@@ -981,13 +1018,17 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
 }
 
 void CandidateWindow::DrawContent(
-    void* graphics_ptr, uint8_t* /*pixels*/, int /*bitmap_width*/, int /*bitmap_height*/,
-    int /*content_offset*/) {
-    if (graphics_ptr == nullptr) return;
+    void* graphics_ptr, uint8_t* pixels, int bitmap_width, int bitmap_height,
+    int content_offset) {
+    if (graphics_ptr == nullptr || pixels == nullptr ||
+        bitmap_width <= 0 || bitmap_height <= 0) return;
     auto& g = *reinterpret_cast<Gdiplus::Graphics*>(graphics_ptr);
 
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
+    const bool plain_utility_background = UsesPlainUtilityBackground();
+    const bool use_native_layout = skin.native_appearance &&
+        !plain_utility_background;
 
     g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
@@ -996,7 +1037,7 @@ void CandidateWindow::DrawContent(
 
     // 绘制背景：优先使用皮肤 9-Slice 位图切片，否则使用默认白底圆角矩形
     bool drew_bg = false;
-    if (skin.has_bg_image) {
+    if (skin.has_bg_image && !plain_utility_background) {
         drew_bg = SkinManager::Instance().DrawBackground(
             &g, width_, height_, hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_));
     }
@@ -1004,7 +1045,9 @@ void CandidateWindow::DrawContent(
         Gdiplus::GraphicsPath bg_path;
         Gdiplus::RectF bg_rect(0.0f, 0.0f, static_cast<float>(width_), static_cast<float>(height_));
         AddRoundedRectangleToPath(bg_path, bg_rect, static_cast<float>(Scale(skin.corner_radius)));
-        Gdiplus::SolidBrush bg_brush(Gdiplus::Color(255, 255, 255, 255));
+        const COLORREF background = plain_utility_background
+            ? skin.utility_background_color : RGB(255, 255, 255);
+        Gdiplus::SolidBrush bg_brush(ToGdiplusColor(background));
         g.FillPath(&bg_brush, &bg_path);
         Gdiplus::Pen border_pen(Gdiplus::Color(255, 226, 232, 240), 1.0f);
         g.DrawPath(&border_pen, &bg_path);
@@ -1019,6 +1062,41 @@ void CandidateWindow::DrawContent(
     auto* font_meta = static_cast<Gdiplus::Font*>(gdip_font_meta_);
     auto* font_header_title = static_cast<Gdiplus::Font*>(gdip_font_header_title_);
     auto* font_utility = static_cast<Gdiplus::Font*>(gdip_font_utility_);
+    const UINT dpi = hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_);
+    const int candidate_size = use_native_layout
+        ? skin.font_size : GetRuntimeConfig().candidate_font_size;
+    const std::wstring candidate_family = directwrite_text_.ResolveFontFamily(
+        skin.font_family.empty() ? L"Microsoft YaHei UI" : skin.font_family);
+    const bool directwrite_frame_started = directwrite_text_.BeginFrame(
+        bitmap_width, bitmap_height, dpi);
+
+    const auto draw_text = [&](
+        const std::wstring& text, const RECT& rect, COLORREF color,
+        const CandidateTextStyle& style, Gdiplus::Font* fallback_font,
+        Gdiplus::StringFormat* fallback_format) {
+        if (rect.right <= rect.left || rect.bottom <= rect.top || text.empty()) return;
+        RECT destination_rect = rect;
+        OffsetRect(&destination_rect, content_offset, content_offset);
+        if (directwrite_frame_started && directwrite_text_.DrawTextInFrame(
+                destination_rect, text, color, style)) {
+            return;
+        }
+        Gdiplus::SolidBrush brush(ToGdiplusColor(color));
+        Gdiplus::RectF fallback_rect(
+            static_cast<float>(rect.left), static_cast<float>(rect.top),
+            static_cast<float>(rect.right - rect.left),
+            static_cast<float>(rect.bottom - rect.top));
+        g.DrawString(text.c_str(), -1, fallback_font, fallback_rect,
+                     fallback_format, &brush);
+    };
+    const auto finish_text_frame = [&]() {
+        if (!directwrite_frame_started) return;
+        // GDI+ 可能仍缓存对同一 DIB 的背景和矢量绘制，先同步再叠加文字层。
+        g.Flush(Gdiplus::FlushIntentionSync);
+        directwrite_text_.CompositeFrame(
+            pixels, bitmap_width, bitmap_height);
+        directwrite_text_.EndFrame();
+    };
 
     Gdiplus::StringFormat format(Gdiplus::StringFormat::GenericTypographic());
     format.SetAlignment(Gdiplus::StringAlignmentNear);
@@ -1031,21 +1109,27 @@ void CandidateWindow::DrawContent(
     format_center.SetLineAlignment(Gdiplus::StringAlignmentCenter);
     format_center.SetFormatFlags(format_center.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
 
-    const bool is_v_mode = (!composing_.empty() && (composing_[0] == L'v' || composing_[0] == L'V') && composing_.rfind(L"vvv", 0) != 0);
-
-    if (is_v_mode) {
+    if (vertical_utility_mode_) {
         // ================= 竖向瀑布流绘制 =================
         const int top_bar_h = Scale(38);
         const int row_h = Scale(kVerticalRowHeight);
         const int padding = Scale(12);
 
         // 1. 顶部标题 (字号适中精致)
-        Gdiplus::SolidBrush title_brush(ToGdiplusColor(skin.pinyin_color));
         std::wstring title = composing_.rfind(L"vv", 0) == 0 ? L"自定义短语" : L"复制记录";
-        Gdiplus::RectF title_rc(
-            static_cast<float>(padding), static_cast<float>(Scale(4)),
-            static_cast<float>(Scale(120)), static_cast<float>(top_bar_h));
-        g.DrawString(title.c_str(), -1, font_header_title, title_rc, &format, &title_brush);
+        const RECT title_rc {padding, Scale(4), padding + Scale(120),
+                             Scale(4) + top_bar_h};
+        const CandidateTextStyle title_style {
+            L"Microsoft YaHei UI",
+            static_cast<float>(CandidateMetadataFontSize(
+                GetRuntimeConfig().candidate_font_size)),
+            CandidateTextWeight::SemiBold, CandidateTextAlignment::Near, true};
+        const COLORREF title_color = plain_utility_background
+            ? EnsureCandidateTextContrast(
+                skin.pinyin_color, skin.utility_background_color)
+            : skin.pinyin_color;
+        draw_text(title, title_rc, title_color, title_style,
+                  font_header_title, &format);
 
         // 2. 右侧可点击搜索框胶囊
         std::wstring search_query;
@@ -1068,23 +1152,23 @@ void CandidateWindow::DrawContent(
         g.DrawPath(&search_pen, &search_path);
 
         std::wstring search_text = search_query.empty() ? L"🔍 搜索..." : (L"🔍 " + search_query);
-        Gdiplus::SolidBrush search_text_brush(search_query.empty() ? Gdiplus::Color(255, 148, 163, 184) : Gdiplus::Color(255, 30, 41, 59));
-        Gdiplus::RectF search_text_rf(
-            static_cast<float>(search_box_rect_.left + Scale(8)),
-            static_cast<float>(search_box_rect_.top),
-            static_cast<float>(search_box_rect_.right - search_box_rect_.left - (search_query.empty() ? Scale(14) : Scale(28))),
-            static_cast<float>(search_box_rect_.bottom - search_box_rect_.top));
-        g.DrawString(search_text.c_str(), -1, font_meta, search_text_rf, &format, &search_text_brush);
+        const RECT search_text_rc {
+            search_box_rect_.left + Scale(8), search_box_rect_.top,
+            search_box_rect_.right - (search_query.empty() ? Scale(6) : Scale(20)),
+            search_box_rect_.bottom};
+        const CandidateTextStyle search_style {
+            L"Microsoft YaHei UI", 14.0f, CandidateTextWeight::Regular,
+            CandidateTextAlignment::Near, true};
+        draw_text(search_text, search_text_rc,
+                  search_query.empty() ? RGB(148, 163, 184) : RGB(30, 41, 59),
+                  search_style, font_meta, &format);
 
         if (!search_query.empty()) {
             search_clear_rect_ = RECT {search_box_rect_.right - Scale(20), search_box_rect_.top, search_box_rect_.right - Scale(2), search_box_rect_.bottom};
-            Gdiplus::SolidBrush clear_brush(Gdiplus::Color(255, 148, 163, 184));
-            Gdiplus::RectF clear_rf(
-                static_cast<float>(search_clear_rect_.left),
-                static_cast<float>(search_clear_rect_.top),
-                static_cast<float>(search_clear_rect_.right - search_clear_rect_.left),
-                static_cast<float>(search_clear_rect_.bottom - search_clear_rect_.top));
-            g.DrawString(L"✕", -1, font_meta, clear_rf, &format_center, &clear_brush);
+            CandidateTextStyle clear_style = search_style;
+            clear_style.alignment = CandidateTextAlignment::Center;
+            draw_text(L"✕", search_clear_rect_, RGB(148, 163, 184),
+                      clear_style, font_meta, &format_center);
         } else {
             search_clear_rect_ = {};
         }
@@ -1097,11 +1181,19 @@ void CandidateWindow::DrawContent(
 
         // 4. 竖向候选列表
         if (candidates_.empty()) {
-            Gdiplus::SolidBrush empty_brush(ToGdiplusColor(skin.status_text_color));
-            Gdiplus::RectF empty_rf(
-                static_cast<float>(padding), static_cast<float>(top_bar_h + Scale(16)),
-                static_cast<float>(width_ - padding * 2), static_cast<float>(Scale(34)));
-            g.DrawString(L"暂无记录", -1, font_utility, empty_rf, &format_center, &empty_brush);
+            const RECT empty_rc {padding, top_bar_h + Scale(16),
+                                 width_ - padding, top_bar_h + Scale(50)};
+            const CandidateTextStyle empty_style {
+                L"Microsoft YaHei UI",
+                static_cast<float>(CandidateVModeListFontSize(
+                    GetRuntimeConfig().candidate_font_size)),
+                CandidateTextWeight::Regular, CandidateTextAlignment::Center, true};
+            const COLORREF empty_color = plain_utility_background
+                ? EnsureCandidateTextContrast(
+                    skin.status_text_color, skin.utility_background_color)
+                : skin.status_text_color;
+            draw_text(L"暂无记录", empty_rc, empty_color,
+                      empty_style, font_utility, &format_center);
         } else {
             const size_t start_idx = static_cast<size_t>(scroll_offset_);
             const size_t end_idx = (std::min)(candidates_.size(), start_idx + static_cast<size_t>(kVerticalMaxVisible));
@@ -1130,19 +1222,32 @@ void CandidateWindow::DrawContent(
 
                 // 绘制圆点 •
                 COLORREF dot_color = is_selected ? skin.highlight_bg_color : skin.index_color;
-                Gdiplus::SolidBrush dot_brush(ToGdiplusColor(dot_color));
-                Gdiplus::RectF dot_rf(
-                    static_cast<float>(Scale(14)), static_cast<float>(row_y),
-                    static_cast<float>(Scale(12)), static_cast<float>(row_h));
-                g.DrawString(L"•", -1, font_utility, dot_rf, &format, &dot_brush);
+                COLORREF item_text_color = is_selected
+                    ? skin.highlight_bg_color : skin.candidate_color;
+                if (plain_utility_background) {
+                    const COLORREF row_background = is_selected
+                        ? RGB(238, 242, 255)
+                        : (is_hovered ? RGB(248, 250, 252)
+                                      : skin.utility_background_color);
+                    dot_color = EnsureCandidateTextContrast(
+                        dot_color, row_background);
+                    item_text_color = EnsureCandidateTextContrast(
+                        item_text_color, row_background);
+                }
+                const CandidateTextStyle utility_style {
+                    L"Microsoft YaHei UI",
+                    static_cast<float>(CandidateVModeListFontSize(
+                        GetRuntimeConfig().candidate_font_size)),
+                    CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
+                const RECT dot_rc {Scale(14), row_y, Scale(26), row_y + row_h};
+                draw_text(L"•", dot_rc, dot_color, utility_style,
+                          font_utility, &format);
 
                 // 绘制文本
-                COLORREF item_text_color = is_selected ? skin.highlight_bg_color : skin.candidate_color;
-                Gdiplus::SolidBrush item_text_brush(ToGdiplusColor(item_text_color));
-                Gdiplus::RectF item_text_rf(
-                    static_cast<float>(Scale(26)), static_cast<float>(row_y),
-                    static_cast<float>(row_rc.right - Scale(56)), static_cast<float>(row_h));
-                g.DrawString(candidates_[i].text.c_str(), -1, font_utility, item_text_rf, &format, &item_text_brush);
+                const RECT item_text_rc {Scale(26), row_y,
+                                         row_rc.right - Scale(30), row_y + row_h};
+                draw_text(candidates_[i].text, item_text_rc, item_text_color,
+                          utility_style, font_utility, &format);
 
                 // 悬停显示精致矢量简约垃圾桶
                 if (is_hovered) {
@@ -1192,17 +1297,18 @@ void CandidateWindow::DrawContent(
             g.FillPath(&thumb_brush, &thumb_path);
         }
 
+        finish_text_frame();
         return;
     }
 
     // ================= 普通横向拼音候选模式 =================
-    const int horizontal_padding = skin.native_appearance
+    const int horizontal_padding = use_native_layout
         ? Scale(skin.candidate_margin.left)
         : Scale(kHorizontalPadding);
-    const int line_height = skin.native_appearance
+    const int line_height = use_native_layout
         ? Scale((std::max)(24, skin.font_size + 6)) : Scale(kLineHeight);
     CandidateWindowVerticalLayout vertical;
-    if (skin.native_appearance) {
+    if (use_native_layout) {
         vertical.composing_top = Scale(skin.pinyin_margin.top);
         vertical.composing_bottom = vertical.composing_top + line_height;
         vertical.separator_y = vertical.composing_bottom +
@@ -1219,49 +1325,66 @@ void CandidateWindow::DrawContent(
         typing_stats_.daily_count);
     const bool can_expand = candidates_.size() > page_size_;
 
-    Gdiplus::RectF status_bbox;
-    g.MeasureString(status_text.c_str(), static_cast<INT>(status_text.size()), font_meta, Gdiplus::PointF(0, 0), &format, &status_bbox);
-    const int status_width = static_cast<int>(std::ceil(status_bbox.Width));
+    const CandidateTextStyle metadata_style {
+        L"Microsoft YaHei UI",
+        static_cast<float>(CandidateMetadataFontSize(
+            GetRuntimeConfig().candidate_font_size)),
+        CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
+    float status_width_value = directwrite_text_.MeasureText(
+        status_text, metadata_style, dpi);
+    if (status_width_value <= 0.0f) {
+        Gdiplus::RectF status_bbox;
+        g.MeasureString(status_text.c_str(), static_cast<INT>(status_text.size()),
+                        font_meta, Gdiplus::PointF(0, 0), &format, &status_bbox);
+        status_width_value = status_bbox.Width;
+    }
+    const int status_width = static_cast<int>(std::ceil(status_width_value));
 
     const int header_right_width = status_width +
         (can_expand ? Scale(kExpandToggleGap + kExpandToggleWidth) : 0);
     const auto header = BuildCandidateHeaderLayout(
         width_, header_right_width,
-        skin.native_appearance
+        use_native_layout
             ? Scale(skin.pinyin_margin.left)
             : horizontal_padding + Scale(4),
-        skin.native_appearance
+        use_native_layout
             ? Scale((std::max)(skin.pinyin_margin.right,
                                skin.candidate_margin.right))
             : horizontal_padding,
         Scale(kHeaderTextGap));
 
     // 绘制拼音
-    Gdiplus::SolidBrush pinyin_brush(ToGdiplusColor(skin.pinyin_color));
     std::wstring comp_draw = composing_;
     if (comp_draw.empty()) {
         comp_draw = english_mode_ ? L"[EN]" : L"";
     }
-    Gdiplus::RectF composing_rect(
-        static_cast<float>(header.composing_left),
-        static_cast<float>(vertical.composing_top),
-        static_cast<float>(header.composing_right - header.composing_left),
-        static_cast<float>(vertical.composing_bottom - vertical.composing_top));
-    g.DrawString(comp_draw.c_str(), -1, font_comp, composing_rect, &format, &pinyin_brush);
+    const RECT composing_rect {header.composing_left, vertical.composing_top,
+                               header.composing_right, vertical.composing_bottom};
+    const CandidateTextStyle composing_style {
+        candidate_family, static_cast<float>(candidate_size + 1),
+        CandidateTextWeight::SemiBold, CandidateTextAlignment::Near, true};
+    const COLORREF composing_color = plain_utility_background
+        ? EnsureCandidateTextContrast(
+            skin.pinyin_color, skin.utility_background_color)
+        : skin.pinyin_color;
+    draw_text(comp_draw, composing_rect, composing_color, composing_style,
+              font_comp, &format);
 
     // 绘制字数统计
-    Gdiplus::SolidBrush status_brush(ToGdiplusColor(skin.status_text_color));
-    Gdiplus::RectF status_rect(
-        static_cast<float>(header.page_left),
-        static_cast<float>(vertical.composing_top),
-        static_cast<float>(status_width),
-        static_cast<float>(vertical.composing_bottom - vertical.composing_top));
-    g.DrawString(status_text.c_str(), -1, font_meta, status_rect, &format, &status_brush);
+    const RECT status_rect {header.page_left, vertical.composing_top,
+                            header.page_left + status_width,
+                            vertical.composing_bottom};
+    const COLORREF metadata_color = plain_utility_background
+        ? EnsureCandidateTextContrast(
+            skin.status_text_color, skin.utility_background_color)
+        : skin.status_text_color;
+    draw_text(status_text, status_rect, metadata_color, metadata_style,
+              font_meta, &format);
 
     // 绘制展开/收起折线箭头
     expand_toggle_rect_ = {};
     if (can_expand) {
-        const int toggle_left = static_cast<int>(status_rect.GetRight()) + Scale(kExpandToggleGap);
+        const int toggle_left = status_rect.right + Scale(kExpandToggleGap);
         expand_toggle_rect_ = RECT {
             toggle_left, vertical.composing_top,
             toggle_left + Scale(kExpandToggleWidth),
@@ -1280,7 +1403,7 @@ void CandidateWindow::DrawContent(
             chevron[1] = Gdiplus::PointF(center_x, center_y + half_height);
             chevron[2] = Gdiplus::PointF(center_x + half_width, center_y - half_height);
         }
-        Gdiplus::Pen arrow_pen(ToGdiplusColor(skin.status_text_color), static_cast<float>((std::max)(1, Scale(1))));
+        Gdiplus::Pen arrow_pen(ToGdiplusColor(metadata_color), static_cast<float>((std::max)(1, Scale(1))));
         arrow_pen.SetLineJoin(Gdiplus::LineJoinMiter);
         g.DrawLines(&arrow_pen, chevron, 3);
     }
@@ -1314,7 +1437,7 @@ void CandidateWindow::DrawContent(
             const int text_left = item_rows_[row][slot].text_left;
 
             // 绘制选中高亮胶囊背景
-            if (is_selected && !skin.native_appearance) {
+            if (is_selected && !use_native_layout) {
                 Gdiplus::RectF hl_rf(
                     static_cast<float>(hit_left + Scale(2)),
                     static_cast<float>(row_top + Scale(3)),
@@ -1328,39 +1451,51 @@ void CandidateWindow::DrawContent(
 
             COLORREF num_color = is_selected ? skin.highlight_color : skin.index_color;
             COLORREF txt_color = is_selected ? skin.highlight_color : skin.candidate_color;
+            if (plain_utility_background) {
+                const COLORREF text_background = is_selected
+                    ? skin.highlight_bg_color
+                    : skin.utility_background_color;
+                num_color = EnsureCandidateTextContrast(
+                    num_color, text_background);
+                txt_color = EnsureCandidateTextContrast(
+                    txt_color, text_background);
+            }
 
+            const int item_text_right = CandidateItemTextRight(
+                width_, hit_right, use_native_layout
+                    ? Scale(skin.candidate_margin.right)
+                    : horizontal_padding);
+            const CandidateTextStyle candidate_style {
+                candidate_family, static_cast<float>(candidate_size),
+                CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
             if (numbered) {
                 std::wstring num_str = std::to_wstring(i - begin + 1) + L".";
-                Gdiplus::SolidBrush num_brush(ToGdiplusColor(num_color));
-                Gdiplus::RectF num_bbox;
-                g.MeasureString(num_str.c_str(), static_cast<INT>(num_str.size()), font, Gdiplus::PointF(0, 0), &format, &num_bbox);
-                const float num_w = num_bbox.Width;
-
-                Gdiplus::RectF num_rf(
-                    static_cast<float>(text_left),
-                    static_cast<float>(row_top),
-                    num_w,
-                    static_cast<float>(row_bottom - row_top));
-                g.DrawString(num_str.c_str(), -1, font, num_rf, &format, &num_brush);
-
-                Gdiplus::SolidBrush txt_brush(ToGdiplusColor(txt_color));
-                Gdiplus::RectF txt_rf(
-                    static_cast<float>(text_left) + num_w,
-                    static_cast<float>(row_top),
-                    static_cast<float>(hit_right - text_left) - num_w,
-                    static_cast<float>(row_bottom - row_top));
-                g.DrawString(candidates_[i].text.c_str(), -1, font, txt_rf, &format, &txt_brush);
+                float num_width_value = directwrite_text_.MeasureText(
+                    num_str, candidate_style, dpi);
+                if (num_width_value <= 0.0f) {
+                    Gdiplus::RectF num_bbox;
+                    g.MeasureString(num_str.c_str(), static_cast<INT>(num_str.size()),
+                                    font, Gdiplus::PointF(0, 0), &format, &num_bbox);
+                    num_width_value = num_bbox.Width;
+                }
+                const int num_width = static_cast<int>(std::ceil(num_width_value));
+                const RECT num_rc {text_left, row_top,
+                                   text_left + num_width, row_bottom};
+                draw_text(num_str, num_rc, num_color, candidate_style,
+                          font, &format);
+                const RECT text_rc {text_left + num_width, row_top,
+                                    item_text_right, row_bottom};
+                draw_text(candidates_[i].text, text_rc, txt_color,
+                          candidate_style, font, &format);
             } else {
-                Gdiplus::SolidBrush txt_brush(ToGdiplusColor(txt_color));
-                Gdiplus::RectF txt_rf(
-                    static_cast<float>(text_left),
-                    static_cast<float>(row_top),
-                    static_cast<float>(hit_right - text_left),
-                    static_cast<float>(row_bottom - row_top));
-                g.DrawString(candidates_[i].text.c_str(), -1, font, txt_rf, &format, &txt_brush);
+                const RECT text_rc {text_left, row_top,
+                                    item_text_right, row_bottom};
+                draw_text(candidates_[i].text, text_rc, txt_color,
+                          candidate_style, font, &format);
             }
         }
     }
+    finish_text_frame();
 }
 
 bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
@@ -1552,8 +1687,8 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         }
         break;
     case WM_MOUSEWHEEL: {
-        const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
-        if (is_v_mode && self->candidates_.size() > static_cast<size_t>(kVerticalMaxVisible)) {
+        if (self->vertical_utility_mode_ &&
+            self->candidates_.size() > static_cast<size_t>(kVerticalMaxVisible)) {
             const short delta = static_cast<short>(HIWORD(wparam));
             const int step = (delta > 0 ? -3 : 3);
             const int max_scroll = static_cast<int>(self->candidates_.size()) - kVerticalMaxVisible;
@@ -1567,9 +1702,8 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         const int shadow_margin = self->ShadowMargin();
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
-        const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
 
-        if (!is_v_mode && self->expand_toggle_rect_.right > 0 &&
+        if (!self->vertical_utility_mode_ && self->expand_toggle_rect_.right > 0 &&
             x >= self->expand_toggle_rect_.left &&
             x < self->expand_toggle_rect_.right &&
             y >= self->expand_toggle_rect_.top &&
@@ -1578,7 +1712,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             return 0;
         }
 
-        if (is_v_mode) {
+        if (self->vertical_utility_mode_) {
             // 1. 检查是否点击搜索框清空按钮
             if (self->search_clear_rect_.right > 0 &&
                 x >= self->search_clear_rect_.left && x <= self->search_clear_rect_.right &&
@@ -1628,9 +1762,8 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         const int shadow_margin = self->ShadowMargin();
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
-        const bool is_v_mode = (!self->composing_.empty() && (self->composing_[0] == L'v' || self->composing_[0] == L'V') && self->composing_.rfind(L"vvv", 0) != 0);
 
-        if (is_v_mode) {
+        if (self->vertical_utility_mode_) {
             bool need_redraw = false;
 
             // 滚动条拖拽处理

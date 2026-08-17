@@ -2,6 +2,7 @@
 
 #include "common/typing_stats.h"
 #include "engine/candidate.h"
+#include "directwrite_text_renderer.h"
 #include "ime_ui_logic.h"
 
 #include <Windows.h>
@@ -54,13 +55,21 @@ public:
     SIZE WindowSize() const;
     POINT ScreenPosition() const;
     HWND GetHwnd() const noexcept { return hwnd_; }
+    bool UsesPlainUtilityBackgroundForTesting() const {
+        return UsesPlainUtilityBackground();
+    }
+    bool IsSkinAnimationTimerActiveForTesting() const noexcept {
+        return skin_animation_timer_active_;
+    }
 
     void SetContent(
         const std::wstring& composing,
         const std::vector<Candidate>& candidates,
         size_t selected_index,
         size_t page = 0,
-        size_t page_size = 9);
+        size_t page_size = 9,
+        bool utility_mode = false,
+        bool vertical_utility_mode = false);
     void SetSelectedIndex(size_t selected_index);
     bool ToggleExpanded();
     bool SetExpanded(bool expanded);
@@ -97,7 +106,6 @@ private:
     static constexpr int kExpandedMaxRows = 5;
     static constexpr int kExpandToggleWidth = 16;
     static constexpr int kExpandToggleGap = 5;
-    static constexpr int kUtilityFontSize = 13;
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
     static constexpr UINT_PTR kVModeTimerId = 1002;
@@ -115,6 +123,7 @@ private:
     void* gdip_font_meta_ = nullptr;
     void* gdip_font_header_title_ = nullptr;
     void* gdip_font_utility_ = nullptr;
+    DirectWriteTextRenderer directwrite_text_;
     bool visible_ = false;
     bool english_mode_ = false;
     bool expanded_ = false;
@@ -144,6 +153,8 @@ private:
     size_t selected_ = 0;
     size_t page_ = 0;
     size_t page_size_ = 9;
+    bool utility_mode_ = false;
+    bool vertical_utility_mode_ = false;
     std::vector<std::vector<CandidateItemLayout>> item_rows_;
     bool layout_dirty_ = true;
     bool paint_dirty_ = true;
@@ -161,6 +172,7 @@ private:
 
     int Scale(int value) const;
     int ShadowMargin() const;
+    bool UsesPlainUtilityBackground() const;
     void StopSkinAnimation();
     void SyncSkinAnimation();
     void ResetFonts();

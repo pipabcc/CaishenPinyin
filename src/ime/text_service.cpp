@@ -1566,7 +1566,9 @@ void TextService::SyncCandidateWindowCandidates() {
         current_result_.candidates,
         candidate_state_.selected,
         candidate_state_.page,
-        candidate_state_.PageSize());
+        candidate_state_.PageSize(),
+        IsUtilityMode(composing_pinyin_),
+        IsVerticalUtilityMode(composing_pinyin_));
 }
 
 
