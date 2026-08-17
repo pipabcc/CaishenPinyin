@@ -23,6 +23,23 @@ std::uint8_t RoundedRectanglePixelCoverage(
     int height,
     int radius) noexcept;
 
+// 将已经预乘的候选框表面与由其 Alpha 扩散得到的黑色阴影合成。
+// surface_alpha 与 pixels 尺寸均为 width * height。
+void CompositeCandidateSurfaceAndShadow(
+    std::uint8_t* pixels,
+    const std::vector<std::uint8_t>& surface_alpha,
+    int width,
+    int height,
+    int shadow_offset,
+    int blur_radius,
+    int blur_passes,
+    std::uint8_t shadow_opacity);
+
+UINT RuntimeSettingsChangedMessage() noexcept;
+
+// 分层窗口必须使用灰度抗锯齿；ClearType 子像素会在 Alpha 合成后产生彩边。
+BYTE CandidateLayeredFontQuality() noexcept;
+
 class CandidateWindow {
 public:
     CandidateWindow() = default;
@@ -71,7 +88,7 @@ private:
     static constexpr int kRowGap = 4;
     static constexpr int kHeaderTextGap = 12;
     static constexpr int kCornerRadius = 8;
-    static constexpr int kShadowMargin = 12;
+    static constexpr int kShadowMargin = 16;
     static constexpr int kShadowBlurPasses = 3;
     static constexpr int kMinWidth = 280;
     static constexpr int kMaxWidth = 1440;
@@ -142,6 +159,7 @@ private:
     void StopSkinAnimation();
     void SyncSkinAnimation();
     void ResetFonts();
+    void ReloadRuntimeSettings();
     void EnsureFonts();
     void RecalcSize();
     bool DisplayContentEquals(

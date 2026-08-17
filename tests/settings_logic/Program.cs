@@ -10,9 +10,12 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using WinForms = System.Windows.Forms;
 
 if (args.Contains("--corrupt-migration"))
     return RunCorruptMigrationTest();
+if (args.Length == 2 && args[0] == "--installed-image-paste")
+    return RunInstalledImagePasteTestOnStaThread(args[1]);
 
 return RunMainTests();
 
@@ -32,6 +35,7 @@ static int RunMainTests()
         TestClipboardMigrationAndCrud(clipboardDirectory);
         TestClipboardConcurrencyAndPerformance();
         TestClipboardImageNormalizationAndCapture();
+        TestSkinCatalog(root);
         TestSsfConversion(root);
         TestTextPasteRequests(root);
         TestCorruptMigrationInChildProcess(root);
@@ -48,6 +52,138 @@ static int RunMainTests()
         Environment.SetEnvironmentVariable("CAISHEN_CLIPBOARD_DATA_DIR", null);
         try { Directory.Delete(root, recursive: true); }
         catch (Exception ex) { Console.Error.WriteLine("cleanup: " + ex.Message); }
+    }
+}
+
+static int RunInstalledImagePasteTest(string helperPath)
+{
+    var helper = Path.GetFullPath(helperPath);
+    if (!File.Exists(helper))
+    {
+        Console.Error.WriteLine($"安装版粘贴助手不存在：{helper}");
+        return 1;
+    }
+
+    var root = Path.Combine(
+        Path.GetTempPath(), "caishen-image-paste-test-" +
+        Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    Environment.SetEnvironmentVariable("CAISHEN_CLIPBOARD_DATA_DIR", root);
+    WinForms.Form? window = null;
+    try
+    {
+        var imagePath = Path.Combine(root, "paste-source.png");
+        File.WriteAllBytes(imagePath, EncodePng(
+        [
+            32, 64, 224, 255, 224, 64, 32, 255,
+            64, 192, 96, 255, 240, 192, 32, 255
+        ], width: 2, height: 2));
+        var recordId = "installed-image-" + Guid.NewGuid().ToString("N");
+        ClipboardStore.AddRecord(new ClipboardRecord
+        {
+            Id = recordId,
+            Type = ClipboardItemType.Image,
+            Content = "[图片]",
+            DisplayTitle = "[图片]",
+            ImagePath = imagePath,
+            CreatedTime = DateTime.Now
+        });
+        Require(ClipboardStore.FindRecord(recordId)?.IsImage == true,
+            "端到端测试图片记录未写入数据库");
+
+        var editor = new PasteTrackingRichTextBox
+        {
+            Dock = WinForms.DockStyle.Fill,
+            DetectUrls = false
+        };
+        window = new WinForms.Form
+        {
+            Text = "财神输入法图片粘贴测试",
+            Width = 460,
+            Height = 280,
+            StartPosition = WinForms.FormStartPosition.CenterScreen,
+            ShowInTaskbar = false,
+            TopMost = true
+        };
+        window.Controls.Add(editor);
+        window.Show();
+        window.BringToFront();
+        editor.Focus();
+        PumpWindowsForms(TimeSpan.FromMilliseconds(150));
+
+        var handle = editor.Handle;
+        Require(handle != IntPtr.Zero, "端到端测试编辑窗口句柄无效");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = helper,
+            Arguments = $"-paste-record {recordId} -target-hwnd {handle.ToInt64()}",
+            WorkingDirectory = Path.GetDirectoryName(helper),
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        startInfo.Environment["CAISHEN_CLIPBOARD_DATA_DIR"] = root;
+        using var pasteProcess = Process.Start(startInfo) ??
+            throw new InvalidOperationException("无法启动安装版图片粘贴助手");
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!pasteProcess.HasExited && DateTime.UtcNow < deadline)
+            PumpWindowsForms(TimeSpan.FromMilliseconds(20));
+        if (!pasteProcess.HasExited)
+        {
+            pasteProcess.Kill(entireProcessTree: true);
+            throw new TimeoutException("安装版图片粘贴助手执行超时");
+        }
+        PumpWindowsForms(TimeSpan.FromMilliseconds(300));
+
+        Require(pasteProcess.ExitCode == 0,
+            $"安装版图片粘贴助手退出码错误：{pasteProcess.ExitCode}");
+        var clipboardFormats = System.Windows.Clipboard.GetDataObject()?
+            .GetFormats(autoConvert: true) ?? Array.Empty<string>();
+        Require(editor.PasteMessageCount > 0 || editor.PasteKeyCount > 0,
+            "安装版助手未向目标编辑控件发送粘贴按键；" +
+            $"剪贴板格式：{string.Join(',', clipboardFormats)}");
+        Require(editor.Rtf?.Contains("\\pict", StringComparison.Ordinal) == true,
+            "目标编辑控件收到粘贴命令但未插入图片；" +
+            $"WM_PASTE={editor.PasteMessageCount}，Ctrl+V={editor.PasteKeyCount}，" +
+            $"剪贴板格式：{string.Join(',', clipboardFormats)}");
+        Require(!editor.Text.Contains(imagePath, StringComparison.OrdinalIgnoreCase),
+            "图片被错误地作为文件路径插入编辑框");
+        Console.WriteLine("installed_image_paste: OK");
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine(ex);
+        return 1;
+    }
+    finally
+    {
+        window?.Close();
+        Environment.SetEnvironmentVariable("CAISHEN_CLIPBOARD_DATA_DIR", null);
+        try { Directory.Delete(root, recursive: true); }
+        catch (Exception ex) { Console.Error.WriteLine("cleanup: " + ex.Message); }
+    }
+}
+
+static int RunInstalledImagePasteTestOnStaThread(string helperPath)
+{
+    var exitCode = 1;
+    var thread = new Thread(() =>
+    {
+        exitCode = RunInstalledImagePasteTest(helperPath);
+    });
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    thread.Join();
+    return exitCode;
+}
+
+static void PumpWindowsForms(TimeSpan duration)
+{
+    var deadline = DateTime.UtcNow + duration;
+    while (DateTime.UtcNow < deadline)
+    {
+        WinForms.Application.DoEvents();
+        Thread.Sleep(5);
     }
 }
 
@@ -302,6 +438,17 @@ static void TestClipboardImageNormalizationAndCapture()
             partial.PngBytes.SequenceEqual(partialPng),
         "正常半透明 PNG 被错误改写");
 
+    var pasteData = ClipboardImageService.CreateClipboardImageDataObject(
+        partialPng);
+    Require(pasteData.GetDataPresent(
+                ClipboardImageService.InternalPasteFormat, autoConvert: false) &&
+            pasteData.GetDataPresent(
+                ClipboardImageService.NativePngFormat, autoConvert: false) &&
+            pasteData.GetDataPresent(DataFormats.Bitmap, autoConvert: false) &&
+            !pasteData.GetDataPresent(DataFormats.FileDrop, autoConvert: false) &&
+            !pasteData.GetDataPresent(DataFormats.FileDrop, autoConvert: true),
+        "图片粘贴对象的格式集合不正确或仍包含文件拖放格式");
+
     var beforeTextCapture = ClipboardStore.CountHistory();
     var textData = new DataObject();
     textData.SetData(DataFormats.UnicodeText, "监听测试内容");
@@ -331,6 +478,105 @@ static void TestClipboardImageNormalizationAndCapture()
     var storedPixels = DecodeBgra(File.ReadAllBytes(imageRecord!.ImagePath));
     Require(storedPixels[3] == 255 && storedPixels[7] == 255,
         "监听器保存的 PNG 仍然全透明");
+}
+
+static void TestSkinCatalog(string root)
+{
+    var builtInRoot = Path.Combine(root, "built-in-skins");
+    var userRoot = Path.Combine(root, "user-skins");
+    Directory.CreateDirectory(builtInRoot);
+    Directory.CreateDirectory(userRoot);
+    var preview = EncodePng([20, 40, 60, 255], width: 1, height: 1);
+
+    static void WriteSkin(
+        string parent,
+        string id,
+        string name,
+        byte[] png,
+        bool valid = true)
+    {
+        var directory = Path.Combine(parent, id);
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, "skin.ini"), valid
+            ? $"[General]\nname={name}\nauthor=测试作者\ninfo=测试皮肤\n" +
+              "[Display]\npinyin_color=0x112233\n" +
+              $"[Scheme_H1]\nbg_image=cand_bg.png\n" +
+              $"native_appearance={(id == "imported" ? 1 : 0)}\n"
+            : $"[General]\nname={name}\n[Scheme_H1]\n");
+        if (valid)
+            File.WriteAllBytes(Path.Combine(directory, "cand_bg.png"), png);
+    }
+
+    WriteSkin(builtInRoot, SkinCatalog.DefaultSkinId, "内置默认", preview);
+    WriteSkin(builtInRoot, "official", "官方皮肤", preview);
+    WriteSkin(userRoot, SkinCatalog.DefaultSkinId, "同名用户副本", preview);
+    WriteSkin(userRoot, "imported", "导入皮肤", preview);
+    WriteSkin(userRoot, "broken", "损坏皮肤", preview, valid: false);
+    Directory.CreateDirectory(Path.Combine(userRoot, "missing-config"));
+
+    var firstLoad = SkinCatalog.Load(builtInRoot, userRoot);
+    var duplicate = firstLoad.Single(item =>
+        item.Id == SkinCatalog.DefaultSkinId);
+    Require(duplicate.IsBuiltIn && duplicate.Name == "内置默认",
+        "同名用户皮肤覆盖了内置皮肤");
+    Require(firstLoad.Any(item =>
+            item.Id == "imported" && !item.IsBuiltIn && item.IsAvailable),
+        "导入皮肤未进入皮肤管理目录");
+    var imported = firstLoad.Single(item => item.Id == "imported");
+    var importedCard = new SkinCardViewModel(imported, isCurrent: false);
+    Require(imported.UsesNativeLayout && importedCard.CanDelete &&
+            importedCard.PreviewWidth == 1 && importedCard.PreviewHeight == 1,
+        "原生导入皮肤预览未保持素材原始尺寸");
+    var builtInCard = new SkinCardViewModel(duplicate, isCurrent: true);
+    Require(!builtInCard.CanDelete && builtInCard.PreviewWidth == 420 &&
+            builtInCard.PreviewHeight == 82,
+        "内置皮肤删除权限或预览逻辑错误");
+    Require(firstLoad.Any(item =>
+            item.Id == "broken" && !item.IsAvailable &&
+            !string.IsNullOrWhiteSpace(item.ValidationError)),
+        "损坏皮肤未以不可用状态保留");
+    Require(firstLoad.Any(item =>
+            item.Id == "missing-config" && !item.IsAvailable),
+        "缺失配置文件的皮肤未以不可用状态保留");
+    Require(SkinCatalog.ResolveSelectedId("broken", firstLoad) ==
+            SkinCatalog.DefaultSkinId &&
+            SkinCatalog.ResolveSelectedId("missing", firstLoad) ==
+            SkinCatalog.DefaultSkinId,
+        "失效的当前皮肤没有回退到默认皮肤");
+
+    var secondLoad = SkinCatalog.Load(builtInRoot, userRoot);
+    Require(secondLoad.Any(item => item.Id == "imported" && item.IsAvailable),
+        "重新加载后导入皮肤从管理目录消失");
+
+    Directory.CreateDirectory(Path.Combine(userRoot, "sample-2"));
+    var uniqueId = SkinCatalog.CreateUniqueUserSkinId(
+        Path.Combine(root, "sample.zip"), ["sample"], userRoot);
+    Require(uniqueId == "sample-3",
+        $"导入皮肤冲突名称生成错误：{uniqueId}");
+
+    var outsideRoot = Path.Combine(root, "outside-skin");
+    WriteSkin(root, "outside-skin", "越界皮肤", preview);
+    var outsideDescriptor = imported with
+    {
+        Id = "outside-skin",
+        DirectoryPath = outsideRoot
+    };
+    ExpectException<InvalidDataException>(() =>
+        SkinCatalog.DeleteUserSkin(outsideDescriptor, userRoot));
+    Require(Directory.Exists(outsideRoot), "越界皮肤目录被错误删除");
+    ExpectException<InvalidOperationException>(() =>
+        SkinCatalog.DeleteUserSkin(duplicate, userRoot));
+    Require(Directory.Exists(duplicate.DirectoryPath), "内置皮肤目录被错误删除");
+
+    SkinCatalog.DeleteUserSkin(imported, userRoot);
+    Require(!Directory.Exists(imported.DirectoryPath) &&
+            !SkinCatalog.Load(builtInRoot, userRoot).Any(item =>
+                item.Id == imported.Id),
+        "导入皮肤目录未被删除或目录未刷新");
+    Require(SkinCatalog.ResolveSelectedId(
+                imported.Id, SkinCatalog.Load(builtInRoot, userRoot)) ==
+            SkinCatalog.DefaultSkinId,
+        "删除当前导入皮肤后未回退默认皮肤");
 }
 
 static void TestTextPasteRequests(string root)
@@ -449,4 +695,25 @@ static void ExpectException<TException>(Action action)
     }
     throw new InvalidOperationException(
         $"期望抛出 {typeof(TException).Name}");
+}
+
+sealed class PasteTrackingRichTextBox : WinForms.RichTextBox
+{
+    private const int PasteMessage = 0x0302;
+    private const int KeyDownMessage = 0x0100;
+    private const int VirtualKeyV = 0x56;
+
+    internal int PasteMessageCount { get; private set; }
+    internal int PasteKeyCount { get; private set; }
+
+    protected override void WndProc(ref WinForms.Message message)
+    {
+        if (message.Msg == PasteMessage) ++PasteMessageCount;
+        if (message.Msg == KeyDownMessage &&
+            message.WParam.ToInt32() == VirtualKeyV)
+        {
+            ++PasteKeyCount;
+        }
+        base.WndProc(ref message);
+    }
 }

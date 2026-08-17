@@ -4,6 +4,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -40,6 +41,12 @@ int wmain(int argc, wchar_t** argv) {
     CreateDirectoryW(isolated_local_app_data.c_str(), nullptr);
     SetEnvironmentVariableW(L"LOCALAPPDATA", isolated_local_app_data.c_str());
 
+    if (shuru::CandidateLayeredFontQuality() != ANTIALIASED_QUALITY ||
+        shuru::CandidateLayeredFontQuality() == CLEARTYPE_QUALITY) {
+        std::fwprintf(stderr, L"layered candidate window uses subpixel font quality\n");
+        return 34;
+    }
+
     bool found_antialiased_corner = false;
     for (int y = 0; y < 8; ++y) {
         for (int x = 0; x < 8; ++x) {
@@ -61,6 +68,55 @@ int wmain(int argc, wchar_t** argv) {
         shuru::RoundedRectanglePixelCoverage(-1, 0, 0, 0, 20, 20, 8) != 0) {
         std::fwprintf(stderr, L"rounded mask antialiasing is invalid\n");
         return 1;
+    }
+
+    constexpr int composite_width = 33;
+    constexpr int composite_height = 33;
+    std::vector<std::uint8_t> surface_alpha(
+        composite_width * composite_height, 0);
+    for (int y = 12; y <= 20; ++y) {
+        for (int x = 12; x <= 20; ++x) {
+            surface_alpha[static_cast<size_t>(y) * composite_width + x] = 255;
+        }
+    }
+    surface_alpha[static_cast<size_t>(12) * composite_width + 12] = 128;
+    std::vector<std::uint8_t> pixels(
+        static_cast<size_t>(composite_width) * composite_height * 4, 0);
+    shuru::CompositeCandidateSurfaceAndShadow(
+        pixels.data(), surface_alpha, composite_width, composite_height,
+        0, 0, 0, 0);
+    for (size_t index = 0; index < surface_alpha.size(); ++index) {
+        if (pixels[index * 4 + 3] != surface_alpha[index]) {
+            std::fwprintf(stderr, L"surface alpha was not preserved\n");
+            return 30;
+        }
+    }
+
+    std::fill(pixels.begin(), pixels.end(), std::uint8_t {0});
+    shuru::CompositeCandidateSurfaceAndShadow(
+        pixels.data(), surface_alpha, composite_width, composite_height,
+        2, 4, 3, 44);
+    bool found_outside_shadow = false;
+    bool found_shadow_gradient = false;
+    std::uint8_t first_shadow_alpha = 0;
+    for (size_t index = 0; index < surface_alpha.size(); ++index) {
+        if (surface_alpha[index] != 0) continue;
+        const std::uint8_t alpha = pixels[index * 4 + 3];
+        if (alpha == 255) {
+            std::fwprintf(stderr, L"shadow contains an opaque outside ring\n");
+            return 31;
+        }
+        if (alpha == 0) continue;
+        found_outside_shadow = true;
+        if (first_shadow_alpha == 0) {
+            first_shadow_alpha = alpha;
+        } else if (alpha != first_shadow_alpha) {
+            found_shadow_gradient = true;
+        }
+    }
+    if (!found_outside_shadow || !found_shadow_gradient) {
+        std::fwprintf(stderr, L"shadow alpha does not form a diffuse gradient\n");
+        return 32;
     }
 
     const int required_width = shuru::CandidateHeaderRequiredWidth(
@@ -114,7 +170,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     const UINT dpi = (std::max)(UINT {96}, GetDpiForWindow(handle));
-    const int shadow_margin = MulDiv(12, static_cast<int>(dpi), 96);
+    const int shadow_margin = MulDiv(16, static_cast<int>(dpi), 96);
     const SIZE size = window.WindowSize();
     const int expected_height = MulDiv(74, static_cast<int>(dpi), 96);
     if (size.cy != expected_height) {
@@ -387,6 +443,26 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"native skin size or shadow policy is invalid\n");
         return 27;
     }
+
+    {
+        std::ofstream settings(settings_path, std::ios::binary);
+        settings << "SkinId=classic_gold\n";
+    }
+    SendMessageW(
+        native_window.GetHwnd(), shuru::RuntimeSettingsChangedMessage(), 0, 0);
+    RECT reloaded_rect {};
+    GetWindowRect(native_window.GetHwnd(), &reloaded_rect);
+    const int reloaded_shadow_margin = MulDiv(16, static_cast<int>(dpi), 96);
+    if (shuru::GetRuntimeConfig().skin_id != L"classic_gold" ||
+        native_skin.CurrentTheme().id != L"classic_gold" ||
+        !native_skin.CurrentTheme().has_shadow || native_skin.HasAnimation() ||
+        reloaded_rect.right - reloaded_rect.left !=
+            native_window.WindowSize().cx + reloaded_shadow_margin * 2 ||
+        reloaded_rect.bottom - reloaded_rect.top !=
+            native_window.WindowSize().cy + reloaded_shadow_margin * 2) {
+        std::fwprintf(stderr, L"runtime skin reload message did not apply immediately\n");
+        return 33;
+    }
     native_window.Destroy();
     DeleteFileW(settings_path.c_str());
     DeleteFileW((frames_root + L"\\frame_000.png").c_str());
@@ -399,6 +475,6 @@ int wmain(int argc, wchar_t** argv) {
     RemoveDirectoryW((std::wstring(local_app_data, local_length) +
         L"\\CaishenPinyin").c_str());
     RemoveDirectoryW(isolated_local_app_data.c_str());
-    std::wprintf(L"candidate layered shadow, first frame, and v/vv scrolling passed\n");
+    std::wprintf(L"candidate shadow, runtime skin reload, and v/vv scrolling passed\n");
     return 0;
 }

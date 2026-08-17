@@ -96,7 +96,9 @@
                   <TextBlock Text="调整启动状态、候选数量和中文标点。" Style="{StaticResource PageDescriptionStyle}"/>
                 </StackPanel>
 
-                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
                   <StackPanel Margin="0,0,40,16">
                     <!-- 卡片 1: 启动与输入 -->
                     <Border Style="{StaticResource SectionStyle}">
@@ -328,6 +330,133 @@
 
                 <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
                   <StackPanel Margin="0,0,40,16">
+                    <ItemsControl x:Name="SkinCatalogList"
+                                  KeyboardNavigation.TabNavigation="Continue">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border Background="{Binding CardBackgroundBrush}"
+                                  BorderBrush="{Binding CardBorderBrush}"
+                                  BorderThickness="1" CornerRadius="8"
+                                  Padding="20" Margin="0,0,0,16">
+                            <Grid>
+                              <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                              </Grid.RowDefinitions>
+                              <Grid>
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition Width="*"/>
+                                  <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,24,0">
+                                  <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Name}" FontSize="16"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource TextPrimaryBrush}"
+                                               VerticalAlignment="Center"/>
+                                    <Border Background="{StaticResource PrimarySoftBrush}"
+                                            BorderBrush="#C9D7FF" BorderThickness="1"
+                                            CornerRadius="4" Padding="6,2"
+                                            Margin="10,0,0,0">
+                                      <TextBlock Text="{Binding SourceLabel}" FontSize="11"
+                                                 Foreground="#1D4ED8"
+                                                 FontWeight="SemiBold"/>
+                                    </Border>
+                                  </StackPanel>
+                                  <TextBlock Text="{Binding AuthorLine}" FontSize="12"
+                                             Foreground="{StaticResource TextSecondaryBrush}"
+                                             Margin="0,6,0,0"/>
+                                  <TextBlock Text="{Binding Info}"
+                                             Style="{StaticResource SectionDescriptionStyle}"/>
+                                  <TextBlock Text="{Binding ValidationText}" FontSize="12"
+                                             Foreground="{StaticResource DangerBrush}"
+                                             Margin="0,6,0,0">
+                                    <TextBlock.Style>
+                                      <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Style.Triggers>
+                                          <DataTrigger Binding="{Binding Descriptor.IsAvailable}"
+                                                       Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                          </DataTrigger>
+                                        </Style.Triggers>
+                                      </Style>
+                                    </TextBlock.Style>
+                                  </TextBlock>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                            VerticalAlignment="Center">
+                                  <Button Content="删除皮肤" Margin="0,0,10,0"
+                                          MinWidth="100" Padding="16,10"
+                                          Click="DeleteSkin_Click"
+                                          AutomationProperties.Name="{Binding Name, StringFormat=删除皮肤 {0}}">
+                                    <Button.Style>
+                                      <Style TargetType="Button"
+                                             BasedOn="{StaticResource DangerButtonStyle}">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                        <Style.Triggers>
+                                          <DataTrigger Binding="{Binding CanDelete}" Value="False">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                          </DataTrigger>
+                                        </Style.Triggers>
+                                      </Style>
+                                    </Button.Style>
+                                  </Button>
+                                  <Button Content="{Binding ActionText}"
+                                          IsEnabled="{Binding CanApply}" MinWidth="120"
+                                          Padding="18,10"
+                                          Click="ApplySkin_Click"
+                                          AutomationProperties.Name="{Binding Name}"/>
+                                </StackPanel>
+                              </Grid>
+
+                              <Border Grid.Row="1" Margin="0,16,0,0"
+                                      Background="{Binding PreviewBackground}"
+                                      BorderThickness="0" CornerRadius="8"
+                                      Padding="14,10"
+                                      Width="{Binding PreviewWidth}"
+                                      Height="{Binding PreviewHeight}"
+                                      HorizontalAlignment="Left" ClipToBounds="True">
+                                <StackPanel VerticalAlignment="Center">
+                                  <Grid Margin="0,0,0,7">
+                                    <TextBlock Text="cai shen"
+                                               Foreground="{Binding PinyinBrush}"
+                                               FontSize="14" FontWeight="Bold"/>
+                                    <TextBlock Text="今日 1,280 字"
+                                               Foreground="{Binding StatusTextBrush}"
+                                               FontSize="11" HorizontalAlignment="Right"/>
+                                  </Grid>
+                                  <Border Height="1" Background="{Binding SeparatorBrush}"
+                                          Margin="0,0,0,8"/>
+                                  <StackPanel Orientation="Horizontal">
+                                    <Border Background="{Binding HighlightBackgroundBrush}"
+                                            CornerRadius="6" Padding="8,4"
+                                            Margin="0,0,10,0">
+                                      <TextBlock Text="1.财神"
+                                                 Foreground="{Binding HighlightBrush}"
+                                                 FontSize="13" FontWeight="Bold"/>
+                                    </Border>
+                                    <TextBlock Text="2.输入法"
+                                               Foreground="{Binding CandidateBrush}"
+                                               FontSize="13" VerticalAlignment="Center"
+                                               Margin="0,0,16,0"/>
+                                    <TextBlock Text="3.发财"
+                                               Foreground="{Binding CandidateBrush}"
+                                               FontSize="13" VerticalAlignment="Center"
+                                               Margin="0,0,16,0"/>
+                                    <TextBlock Text="4.吉祥"
+                                               Foreground="{Binding CandidateBrush}"
+                                               FontSize="13" VerticalAlignment="Center"/>
+                                  </StackPanel>
+                                </StackPanel>
+                              </Border>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <StackPanel Visibility="Collapsed">
 
                     <!-- 皮肤 0: 经典蓝调 (原版默认) -->
                     <Border Style="{StaticResource SectionStyle}" Padding="20">
@@ -595,6 +724,7 @@
                       </Grid>
                     </Border>
 
+                    </StackPanel>
                   </StackPanel>
                 </ScrollViewer>
               </Grid>

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -16,7 +17,10 @@ internal static class ClipboardImageService
     internal const string InternalPasteFormat =
         "CaishenPinyin.InternalClipboardPaste";
 
+    private const int ClipboardCannotOpenHResult = unchecked((int)0x800401D0);
     private const long MaximumDecodedPixels = 100_000_000;
+    private static readonly int[] ClipboardRetryDelaysMilliseconds =
+        [20, 40, 80, 160, 320];
 
     internal static bool IsInternalPaste(IDataObject dataObject) =>
         dataObject.GetDataPresent(InternalPasteFormat, autoConvert: false);
@@ -81,30 +85,23 @@ internal static class ClipboardImageService
         if (normalized.AlphaRepaired)
             RepairImageFileAtomically(fullPath, normalized.PngBytes);
 
-        var bitmap = DecodeBitmap(normalized.PngBytes);
+        SetClipboardDataObject(CreateClipboardImageDataObject(normalized.PngBytes));
+    }
+
+    internal static DataObject CreateClipboardImageDataObject(byte[] pngBytes)
+    {
+        ArgumentNullException.ThrowIfNull(pngBytes);
+        if (pngBytes.Length == 0)
+            throw new InvalidDataException("PNG 图片为空");
+
+        var bitmap = DecodeBitmap(pngBytes);
         var dataObject = new DataObject();
         dataObject.SetData(InternalPasteFormat, "1");
         dataObject.SetData(
             NativePngFormat,
-            new MemoryStream(normalized.PngBytes, writable: false));
+            new MemoryStream((byte[])pngBytes.Clone(), writable: false));
         dataObject.SetImage(bitmap);
-
-        var fileDropList = new System.Collections.Specialized.StringCollection { fullPath };
-        dataObject.SetFileDropList(fileDropList);
-
-        for (var retry = 0; retry < 5; retry++)
-        {
-            try
-            {
-                Clipboard.SetDataObject(dataObject, copy: true);
-                break;
-            }
-            catch
-            {
-                if (retry == 4) throw;
-                Thread.Sleep(30);
-            }
-        }
+        return dataObject;
     }
 
     internal static void SetClipboardText(string text)
@@ -113,17 +110,23 @@ internal static class ClipboardImageService
         dataObject.SetData(InternalPasteFormat, "1");
         dataObject.SetData(DataFormats.UnicodeText, text ?? string.Empty);
 
-        for (var retry = 0; retry < 5; retry++)
+        SetClipboardDataObject(dataObject);
+    }
+
+    private static void SetClipboardDataObject(DataObject dataObject)
+    {
+        for (var attempt = 0; ; attempt++)
         {
             try
             {
                 Clipboard.SetDataObject(dataObject, copy: true);
-                break;
+                return;
             }
-            catch
+            catch (COMException ex) when (
+                ex.HResult == ClipboardCannotOpenHResult &&
+                attempt < ClipboardRetryDelaysMilliseconds.Length)
             {
-                if (retry == 4) throw;
-                Thread.Sleep(30);
+                Thread.Sleep(ClipboardRetryDelaysMilliseconds[attempt]);
             }
         }
     }

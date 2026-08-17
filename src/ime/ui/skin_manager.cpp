@@ -69,6 +69,16 @@ bool ParseBool(const std::string& value, bool fallback) {
     return fallback;
 }
 
+bool IsValidSkinId(const std::wstring& value) {
+    if (value.empty() || value.size() > 128 || value == L"." || value == L"..") {
+        return false;
+    }
+    return value.find_first_of(L"\\/:*?\"<>|") == std::wstring::npos &&
+           std::none_of(value.begin(), value.end(), [](wchar_t ch) {
+               return ch < 0x20;
+           });
+}
+
 int ParseBoundedInt(const std::string& value, int fallback, int minimum, int maximum) {
     try {
         return (std::max)(minimum, (std::min)(maximum, std::stoi(value)));
@@ -136,7 +146,8 @@ void SkinManager::CleanupGdiResources() {
 }
 
 void SkinManager::EnsureSkin(const std::wstring& skin_id) {
-    std::wstring target_id = skin_id.empty() ? L"classic_gold" : skin_id;
+    const std::wstring target_id = IsValidSkinId(skin_id)
+        ? skin_id : std::wstring(L"classic_blue");
     if (target_id == current_skin_id_ && (!bg_frames_.empty() || !current_theme_.has_bg_image)) {
         return;
     }
@@ -144,14 +155,7 @@ void SkinManager::EnsureSkin(const std::wstring& skin_id) {
     CleanupGdiResources();
     current_skin_id_ = target_id;
 
-    // 1. 优先尝试从用户目录查找
-    std::wstring user_dir = GetUserDataSkinsDirectory() + L"\\" + target_id;
-    if (GetFileAttributesW(user_dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        LoadFromDirectory(user_dir, target_id);
-        return;
-    }
-
-    // 2. 尝试从模块同级或上一级 data/skins 查找
+    // 内置资源优先，避免用户目录中的同名旧副本覆盖受版本管理的官方皮肤。
     std::wstring mod_dir = GetModuleDirectory();
     std::vector<std::wstring> candidates = {
         mod_dir + L"\\data\\skins\\" + target_id,
@@ -166,9 +170,32 @@ void SkinManager::EnsureSkin(const std::wstring& skin_id) {
         }
     }
 
-    // 3. 若找不到特定皮肤，加载内置默认经典金韵
+    const std::wstring user_dir = GetUserDataSkinsDirectory() + L"\\" + target_id;
+    if (GetFileAttributesW(user_dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        LoadFromDirectory(user_dir, target_id);
+        return;
+    }
+
+    // 配置被外部破坏时仍提供可用候选框；设置页会同步修正 SkinId。
+    if (target_id != L"classic_blue") {
+        for (const auto& dir : std::vector<std::wstring> {
+                 mod_dir + L"\\data\\skins\\classic_blue",
+                 mod_dir + L"\\..\\data\\skins\\classic_blue",
+                 mod_dir + L"\\skins\\classic_blue"}) {
+            if (GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                LoadFromDirectory(dir, L"classic_blue");
+                return;
+            }
+        }
+    }
+
     current_theme_ = SkinTheme{};
     current_theme_.id = target_id;
+}
+
+void SkinManager::ReloadSkin(const std::wstring& skin_id) {
+    current_skin_id_.clear();
+    EnsureSkin(skin_id);
 }
 
 void SkinManager::LoadFromDirectory(const std::wstring& dir_path, const std::wstring& skin_id) {
@@ -357,7 +384,7 @@ bool SkinManager::DrawBackground(
     std::unique_ptr<Gdiplus::Bitmap> destination_bitmap;
     std::unique_ptr<Gdiplus::Graphics> alpha_graphics;
     Gdiplus::Graphics* graphics = &hdc_graphics;
-    if (current_theme_.native_appearance && destination_pixels != nullptr &&
+    if (destination_pixels != nullptr &&
         destination_bitmap_width > 0 && destination_bitmap_height > 0 &&
         destination_offset >= 0 &&
         destination_offset + width <= destination_bitmap_width &&
@@ -375,8 +402,7 @@ bool SkinManager::DrawBackground(
         alpha_graphics->TranslateTransform(
             static_cast<Gdiplus::REAL>(destination_offset),
             static_cast<Gdiplus::REAL>(destination_offset));
-        // 后续九宫格共用同一绘制路径；原生素材由该 Graphics 直接写入
-        // 预乘 Alpha DIB，避免 HDC 丢失半透明边缘。
+        // 所有皮肤都直接写入预乘 Alpha DIB，保留素材自身的抗锯齿边缘。
         graphics = alpha_graphics.get();
     }
     Gdiplus::Graphics& g = *graphics;

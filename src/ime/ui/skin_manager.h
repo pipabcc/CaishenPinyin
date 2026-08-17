@@ -65,6 +65,9 @@ public:
     // 检查并按需加载指定皮肤
     void EnsureSkin(const std::wstring& skin_id);
 
+    // 配置变更通知到达时强制释放旧素材并重新加载。
+    void ReloadSkin(const std::wstring& skin_id);
+
     // 获取当前皮肤配置
     const SkinTheme& CurrentTheme() const { return current_theme_; }
 

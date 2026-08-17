@@ -66,7 +66,9 @@ std::uint8_t RoundedRectanglePixelCoverage(
 namespace {
 
 const wchar_t kWindowClass[] = L"ShuruCandidateWindowClass";
-constexpr uint8_t kShadowOpacity = 48;
+constexpr uint8_t kShadowOpacity = 44;
+constexpr wchar_t kRuntimeSettingsChangedMessageName[] =
+    L"CaishenPinyin.RuntimeSettingsChanged.v1";
 
 std::vector<uint8_t> BuildRoundedCardMask(
     int bitmap_width,
@@ -190,6 +192,56 @@ void BlendSolidColor(
 
 }  // namespace
 
+UINT RuntimeSettingsChangedMessage() noexcept {
+    static const UINT message = RegisterWindowMessageW(
+        kRuntimeSettingsChangedMessageName);
+    return message;
+}
+
+BYTE CandidateLayeredFontQuality() noexcept {
+    return ANTIALIASED_QUALITY;
+}
+
+void CompositeCandidateSurfaceAndShadow(
+    std::uint8_t* pixels,
+    const std::vector<std::uint8_t>& surface_alpha,
+    int width,
+    int height,
+    int shadow_offset,
+    int blur_radius,
+    int blur_passes,
+    std::uint8_t shadow_opacity) {
+    if (pixels == nullptr || width <= 0 || height <= 0 ||
+        surface_alpha.size() != static_cast<size_t>(width) * height) {
+        return;
+    }
+
+    std::vector<uint8_t> shadow_mask(surface_alpha.size(), 0);
+    if (shadow_opacity > 0 && blur_radius > 0 && blur_passes > 0) {
+        for (int y = 0; y < height; ++y) {
+            const int destination_y = y + shadow_offset;
+            if (destination_y < 0 || destination_y >= height) continue;
+            const size_t source_row = static_cast<size_t>(y) * width;
+            const size_t destination_row =
+                static_cast<size_t>(destination_y) * width;
+            std::copy_n(surface_alpha.begin() + source_row, width,
+                        shadow_mask.begin() + destination_row);
+        }
+        BlurMask(&shadow_mask, width, height, blur_radius, blur_passes);
+    }
+
+    for (size_t index = 0; index < surface_alpha.size(); ++index) {
+        const uint32_t foreground_alpha = surface_alpha[index];
+        const uint32_t shadow_alpha =
+            (static_cast<uint32_t>(shadow_mask[index]) * shadow_opacity + 127) /
+            255;
+        const uint32_t outside_shadow =
+            ((255 - foreground_alpha) * shadow_alpha + 127) / 255;
+        pixels[index * 4 + 3] = static_cast<uint8_t>(
+            foreground_alpha + outside_shadow);
+    }
+}
+
 CandidateWindow::~CandidateWindow() {
     Destroy();
 }
@@ -199,6 +251,9 @@ bool CandidateWindow::Create(HINSTANCE instance) {
     if (hwnd_ != nullptr) {
         return true;
     }
+
+    // 候选窗可能在设置保存后才首次创建，此处补读配置以覆盖通知丢失场景。
+    ReloadRuntimeConfig();
 
     WNDCLASSEXW wc {};
     wc.cbSize = sizeof(wc);
@@ -274,6 +329,21 @@ void CandidateWindow::ResetFonts() {
     font_signature_.clear();
 }
 
+void CandidateWindow::ReloadRuntimeSettings() {
+    const POINT anchor = visible_ ? ScreenPosition() : POINT {};
+    ReloadRuntimeConfig();
+    const std::wstring skin_id = GetRuntimeConfig().skin_id;
+    SkinManager::Instance().ReloadSkin(skin_id);
+    layout_skin_id_.clear();
+    ResetFonts();
+    StopSkinAnimation();
+    layout_dirty_ = true;
+    paint_dirty_ = true;
+    if (visible_) {
+        Show(anchor);
+    }
+}
+
 void CandidateWindow::EnsureFonts() {
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
@@ -286,18 +356,19 @@ void CandidateWindow::EnsureFonts() {
         std::to_wstring(Scale(100));
     if (!font_signature_.empty() && font_signature_ != signature) ResetFonts();
     font_signature_ = signature;
+    const BYTE font_quality = CandidateLayeredFontQuality();
     if (font_ == nullptr) {
         font_ = CreateFontW(
             -Scale(candidate_size), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            font_quality, DEFAULT_PITCH | FF_DONTCARE,
             family.c_str());
     }
     if (font_comp_ == nullptr) {
         font_comp_ = CreateFontW(
             -Scale(candidate_size + 1), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            font_quality, DEFAULT_PITCH | FF_DONTCARE,
             family.c_str());
     }
     if (font_meta_ == nullptr) {
@@ -305,7 +376,7 @@ void CandidateWindow::EnsureFonts() {
             -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
             0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            font_quality, DEFAULT_PITCH | FF_DONTCARE,
             L"Microsoft YaHei UI");
     }
     if (font_header_title_ == nullptr) {
@@ -313,14 +384,14 @@ void CandidateWindow::EnsureFonts() {
             -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
             0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+            font_quality, DEFAULT_PITCH | FF_DONTCARE,
             L"Microsoft YaHei UI");
     }
     if (font_utility_ == nullptr) {
         font_utility_ = CreateFontW(
             -Scale(kUtilityFontSize), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            CLIP_DEFAULT_PRECIS, font_quality,
             DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
     }
 }
@@ -1187,45 +1258,35 @@ bool CandidateWindow::UpdateLayeredWindowContent(const POINT& window_origin) {
     auto* pixels = static_cast<uint8_t*>(bitmap_bits);
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
-    if (skin.native_appearance) {
-        // GDI+ 已将图片以预乘 BGRA 写入 DIB；文字由 GDI 写入时 alpha
-        // 仍为零，因此只补齐有颜色但无 alpha 的文本像素，保留素材异形透明边缘。
+    std::vector<uint8_t> surface_alpha(pixel_count, 0);
+    if (skin.has_bg_image) {
         for (size_t index = 0; index < pixel_count; ++index) {
             uint8_t* pixel = pixels + index * 4;
-            if (pixel[3] == 0 && (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)) {
-                pixel[3] = 255;
+            surface_alpha[index] = pixel[3];
+            // GDI 文本不会写 Alpha。仅补齐确实有颜色但素材完全透明的像素。
+            if (surface_alpha[index] == 0 &&
+                (pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)) {
+                surface_alpha[index] = 255;
             }
         }
     } else {
-        const std::vector<uint8_t> card_mask = BuildRoundedCardMask(
+        surface_alpha = BuildRoundedCardMask(
             bitmap_width, bitmap_height, shadow_margin, shadow_margin,
-            width_, height_, Scale(kCornerRadius));
-        std::vector<uint8_t> shadow_mask(pixel_count, 0);
-        const int shadow_offset = Scale(2);
-        for (int y = 0; y < bitmap_height - shadow_offset; ++y) {
-            const size_t source_row = static_cast<size_t>(y) * bitmap_width;
-            const size_t destination_row =
-                static_cast<size_t>(y + shadow_offset) * bitmap_width;
-            for (int x = 0; x < bitmap_width; ++x) {
-                shadow_mask[destination_row + x] = card_mask[source_row + x];
-            }
-        }
-        BlurMask(&shadow_mask, bitmap_width, bitmap_height,
-                 (std::max)(1, Scale(4)), kShadowBlurPasses);
-
-        for (size_t i = 0; i < pixel_count; ++i) {
-            const uint32_t card_alpha = card_mask[i];
-            const uint32_t shadow_alpha =
-                (static_cast<uint32_t>(shadow_mask[i]) * kShadowOpacity + 127) / 255;
-            const uint32_t final_alpha = card_alpha +
-                ((255 - card_alpha) * shadow_alpha + 127) / 255;
-            uint8_t* pixel = pixels + i * 4;
-            pixel[0] = static_cast<uint8_t>((pixel[0] * card_alpha + 127) / 255);
-            pixel[1] = static_cast<uint8_t>((pixel[1] * card_alpha + 127) / 255);
-            pixel[2] = static_cast<uint8_t>((pixel[2] * card_alpha + 127) / 255);
-            pixel[3] = static_cast<uint8_t>(final_alpha);
+            width_, height_, Scale(skin.corner_radius));
+        for (size_t index = 0; index < pixel_count; ++index) {
+            const uint32_t alpha = surface_alpha[index];
+            uint8_t* pixel = pixels + index * 4;
+            pixel[0] = static_cast<uint8_t>((pixel[0] * alpha + 127) / 255);
+            pixel[1] = static_cast<uint8_t>((pixel[1] * alpha + 127) / 255);
+            pixel[2] = static_cast<uint8_t>((pixel[2] * alpha + 127) / 255);
         }
     }
+    CompositeCandidateSurfaceAndShadow(
+        pixels, surface_alpha, bitmap_width, bitmap_height,
+        skin.has_shadow ? Scale(2) : 0,
+        skin.has_shadow ? (std::max)(1, Scale(4)) : 0,
+        skin.has_shadow ? kShadowBlurPasses : 0,
+        skin.has_shadow ? kShadowOpacity : 0);
 
     POINT destination_origin = window_origin;
     SIZE window_size {bitmap_width, bitmap_height};
@@ -1269,6 +1330,12 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
 
     if (self == nullptr) {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+
+    const UINT runtime_settings_changed = RuntimeSettingsChangedMessage();
+    if (runtime_settings_changed != 0 && msg == runtime_settings_changed) {
+        self->ReloadRuntimeSettings();
+        return 0;
     }
 
     switch (msg) {
