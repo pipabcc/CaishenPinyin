@@ -224,6 +224,44 @@ static void TestSsfConversion(string root)
     Require(!SsfConverter.NormalizeInstalledSkin(target, "ssf-sample") &&
             File.ReadAllText(Path.Combine(target, "skin.ini")) == normalizedBefore,
         "已规范化皮肤没有保持幂等");
+
+    var wsscSource = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CaishenPinyin", "skins", "wssc");
+    if (Directory.Exists(wsscSource))
+    {
+        var wsscTarget = Path.Combine(root, "skins", "wssc-test");
+        CopyTestDirectory(wsscSource, wsscTarget);
+        var framesDir = Path.Combine(wsscTarget, "frames");
+        if (Directory.Exists(framesDir)) Directory.Delete(framesDir, true);
+        // 模拟未提取动画的旧版 skin.ini
+        var sourceIni = Path.Combine(wsscTarget, "source_skin.ini");
+        if (File.Exists(sourceIni))
+            File.Copy(sourceIni, Path.Combine(wsscTarget, "skin.ini"), true);
+
+        Require(SsfConverter.NormalizeInstalledSkin(wsscTarget, "wssc-test"),
+            "挂件型皮肤 wssc 应当成功规范化并补充提取动画");
+        var wsscIni = File.ReadAllText(Path.Combine(wsscTarget, "skin.ini"));
+        Require(wsscIni.Contains("[Animation]") && wsscIni.Contains("frame_count=23") &&
+                wsscIni.Contains("bg_image=frames\\frame_000.png"),
+            "挂件型皮肤 wssc 未能提取 23 帧动画与生成 Animation 节点");
+        Require(Directory.GetFiles(Path.Combine(wsscTarget, "frames"), "frame_*.png").Length == 23,
+            "挂件型皮肤 wssc frames 目录未能完整保存 23 帧");
+
+        var wsscBefore = File.ReadAllText(Path.Combine(wsscTarget, "skin.ini"));
+        Require(!SsfConverter.NormalizeInstalledSkin(wsscTarget, "wssc-test") &&
+                File.ReadAllText(Path.Combine(wsscTarget, "skin.ini")) == wsscBefore,
+            "已规范化 wssc 皮肤未保持幂等");
+    }
+}
+
+static void CopyTestDirectory(string source, string destination)
+{
+    Directory.CreateDirectory(destination);
+    foreach (var dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+        Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
+    foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), true);
 }
 
 static void TestSettingsAndCustomPhrases(string root)

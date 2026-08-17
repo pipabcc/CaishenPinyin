@@ -806,7 +806,7 @@ bool TextService::IsKeyEaten(
         if (wparam == VK_TAB && !IsVerticalUtilityMode(composing_pinyin_)) {
             return true;
         }
-        if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam)) ||
+        if (IsVirtualKeyAlpha(wparam) ||
             wparam == VK_BACK || wparam == VK_SPACE || wparam == VK_ESCAPE ||
             wparam == VK_RETURN ||
             wparam == VK_LEFT || wparam == VK_RIGHT ||
@@ -826,15 +826,16 @@ bool TextService::IsKeyEaten(
             return !IsNumpadDigit(wparam) || (GetKeyState(VK_NUMLOCK) & 1) != 0;
         }
     }
+    // F9（软键盘开关）和 F10（全拼/双拼切换）作为全局功能快捷键统一拦截
     if (wparam == VK_F9 || wparam == VK_F10) {
-        return wparam == VK_F9 || !composing_pinyin_.empty();
+        return true;
     }
     wchar_t punctuation = 0;
     const bool shift = IsShiftDownForKeyMessage();
     if (TryMapChinesePunctuation(wparam, shift, &punctuation) || wparam == VK_OEM_7) {
         return true;
     }
-    return PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam));
+    return IsVirtualKeyAlpha(wparam);
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
@@ -1053,7 +1054,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             return true;
         }
         DismissAssociation();
-        if (!PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam))) {
+        if (!IsVirtualKeyAlpha(wparam)) {
             candidate_window_.Hide();
         }
     }
@@ -1385,15 +1386,15 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
-    // F10：全拼 / 小鹤双拼
-    if (wparam == VK_F10 && !composing_pinyin_.empty()) {
+    // F10：全拼 / 小鹤双拼（随时切换）
+    if (wparam == VK_F10) {
         OnStatusToggleSchema();
         *eaten = true;
         return true;
     }
 
-    // 字母输入
-    if (PinyinEngine::IsPinyinLetter(static_cast<wchar_t>(wparam))) {
+    // 字母输入（严格只匹配 VK_A 到 VK_Z，避免与 VK_F1..VK_F12 等功能键混淆）
+    if (IsVirtualKeyAlpha(wparam)) {
         const bool starts_new_composition = composing_pinyin_.empty();
         char ch = static_cast<char>(wparam);
         if (ch >= 'A' && ch <= 'Z' && !shift_down) {

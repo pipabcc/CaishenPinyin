@@ -79,10 +79,10 @@ public partial class MainWindow : Window
 
     private async void NavigationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (GeneralPage is null || InputPage is null || PhrasePage is null || ClipboardPage is null || SkinPage is null || DictionaryPage is null)
+        if (GeneralPage is null || InputPage is null || PhrasePage is null || ClipboardPage is null || SkinPage is null || DictionaryPage is null || HelpPage is null)
             return;
 
-        var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, ClipboardPage, SkinPage, DictionaryPage };
+        var pages = new FrameworkElement[] { GeneralPage, InputPage, PhrasePage, ClipboardPage, SkinPage, DictionaryPage, HelpPage };
         for (var index = 0; index < pages.Length; ++index)
         {
             pages[index].Visibility = NavigationList.SelectedIndex == index

@@ -631,15 +631,31 @@ RECT SoftKeyboardWindow::KeyRect(int index) const {
         return RECT {};
     }
     const int row = index < 26 ? index / kCols : 3;
-    const int col = index < 26 ? index % kCols : (index == 26 ? 0 : (index == 27 ? 5 : 8));
-    const int width = index == 26 ? kKeyW * 4 : (index >= 27 ? kKeyW * 2 : kKeyW);
+    int col = 0;
+    int width = kKeyW;
+    if (index < 26) {
+        col = index % kCols;
+        width = kKeyW;
+    } else if (index == 26) {
+        col = 0;
+        width = kKeyW * 4 + kGap * 3;
+    } else if (index == 27) {
+        col = 5;
+        width = kKeyW * 2 + kGap;
+    } else if (index == 28) {
+        col = 7;
+        width = kKeyW;
+    } else if (index == 29) {
+        col = 8;
+        width = kKeyW * 2 + kGap;
+    }
     const int left = Scale(kGap + col * (kKeyW + kGap) + 4);
     const int top = Scale(kGap + row * (kKeyH + kGap) + 4);
     return RECT {left, top, left + Scale(width), top + Scale(kKeyH)};
 }
 
 int SoftKeyboardWindow::KeyCount() const {
-    return 26 + 3;  // letters + space/back/esc
+    return 26 + 4;  // letters (26) + space (26) + back (27) + close (28) + esc (29)
 }
 
 bool SoftKeyboardWindow::HitTest(int x, int y, int* index) const {
@@ -657,6 +673,10 @@ bool SoftKeyboardWindow::HitTest(int x, int y, int* index) const {
 }
 
 void SoftKeyboardWindow::EmitIndex(int index) {
+    if (index == 28) {
+        Hide();
+        return;
+    }
     if (!on_key_) {
         return;
     }
@@ -668,7 +688,7 @@ void SoftKeyboardWindow::EmitIndex(int index) {
         on_key_(L'S', true);
     } else if (index == 27) {
         on_key_(L'B', true);
-    } else if (index == 28) {
+    } else if (index == 29) {
         on_key_(L'E', true);
     }
 }
@@ -738,7 +758,11 @@ LRESULT SoftKeyboardWindow::OnPaint() {
     auto draw_key = [&](int i, const wchar_t* label) {
         const RECT kr = KeyRect(i);
         const bool hot = (i == hover_);
-        HBRUSH br = CreateSolidBrush(hot ? RGB(55, 120, 210) : RGB(52, 56, 66));
+        COLORREF bg_color = RGB(52, 56, 66);
+        if (hot) {
+            bg_color = (i == 28) ? RGB(200, 60, 60) : RGB(55, 120, 210);
+        }
+        HBRUSH br = CreateSolidBrush(bg_color);
         FillRect(mem, &kr, br);
         DeleteObject(br);
         RECT draw_rect = kr;
@@ -751,7 +775,8 @@ LRESULT SoftKeyboardWindow::OnPaint() {
     }
     draw_key(26, L"空格");
     draw_key(27, L"⌫");
-    draw_key(28, L"Esc");
+    draw_key(28, L"✕");
+    draw_key(29, L"Esc");
 
     if (oldf) {
         SelectObject(mem, oldf);
@@ -779,6 +804,37 @@ LRESULT CALLBACK SoftKeyboardWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam,
     switch (msg) {
     case WM_PAINT:
         return self->OnPaint();
+    case WM_NCHITTEST: {
+        POINT pt { static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam)) };
+        ScreenToClient(hwnd, &pt);
+        int idx = -1;
+        if (self->HitTest(pt.x, pt.y, &idx)) {
+            return HTCLIENT;
+        }
+        return HTCAPTION;
+    }
+    case WM_SETCURSOR: {
+        if (LOWORD(lparam) == HTCAPTION) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return TRUE;
+        }
+        if (LOWORD(lparam) == HTCLIENT) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
+        break;
+    }
+    case WM_LBUTTONDOWN: {
+        int idx = -1;
+        const int x = static_cast<short>(LOWORD(lparam));
+        const int y = static_cast<short>(HIWORD(lparam));
+        if (!self->HitTest(x, y, &idx)) {
+            ReleaseCapture();
+            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, lparam);
+            return 0;
+        }
+        return 0;
+    }
     case WM_MOUSEMOVE: {
         TRACKMOUSEEVENT tracking {
             sizeof(tracking), TME_LEAVE, hwnd, 0

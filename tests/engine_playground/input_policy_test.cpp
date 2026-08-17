@@ -273,6 +273,24 @@ int main() {
           rollback[2] == ActivationResource::ThreadManager);
     state.Clear();
     CHECK(state.Empty());
+    // 验证字母虚拟键码与功能键判定
+    for (WPARAM vk = 'A'; vk <= 'Z'; ++vk) {
+        CHECK(IsVirtualKeyAlpha(vk));
+        CHECK(!IsFunctionKey(vk));
+    }
+    for (WPARAM vk = VK_F1; vk <= VK_F24; ++vk) {
+        CHECK(!IsVirtualKeyAlpha(vk));
+        CHECK(IsFunctionKey(vk));
+    }
+    for (WPARAM vk = 'a'; vk <= 'z'; ++vk) {
+        // 虚拟键码不应包含小写 ASCII 字符
+        CHECK(!IsVirtualKeyAlpha(vk));
+    }
+    CHECK(!IsVirtualKeyAlpha(VK_SPACE));
+    CHECK(!IsVirtualKeyAlpha(VK_RETURN));
+    CHECK(!IsVirtualKeyAlpha(VK_ESCAPE));
+    CHECK(!IsVirtualKeyAlpha(VK_TAB));
+
     std::cout << "input_policy: OK\n";
     return 0;
 }

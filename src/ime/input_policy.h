@@ -11,6 +11,14 @@ enum class InputScopePrivacy { Unknown, Normal, Sensitive };
 bool IsSensitiveInputScope(InputScope scope);
 InputScopePrivacy ClassifyInputScopes(const InputScope* scopes, UINT count);
 
+constexpr bool IsVirtualKeyAlpha(WPARAM wparam) noexcept {
+    return wparam >= 'A' && wparam <= 'Z';
+}
+
+constexpr bool IsFunctionKey(WPARAM wparam) noexcept {
+    return wparam >= VK_F1 && wparam <= VK_F24;
+}
+
 struct NumpadDecision {
     bool handled = false;
     std::wstring text;

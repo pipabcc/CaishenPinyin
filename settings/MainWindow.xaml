@@ -51,6 +51,7 @@
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="剪贴板"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="外观与皮肤"/>
               <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="词库与隐私"/>
+              <ListBoxItem Style="{StaticResource ModernNavListBoxItemStyle}" Content="帮助说明"/>
             </ListBox>
 
             <!-- 侧边栏底部版本信息 -->
@@ -915,6 +916,442 @@
                                   Margin="0,16,0,0"/>
                       </StackPanel>
                     </Border>
+                  </StackPanel>
+                </ScrollViewer>
+              </Grid>
+
+              <!-- 6. 帮助说明页面 -->
+              <Grid x:Name="HelpPage" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Margin="0,0,0,20">
+                  <TextBlock Text="帮助说明" Style="{StaticResource PageTitleStyle}"/>
+                  <TextBlock Text="快捷键大全、特殊模式与高效输入指南。" Style="{StaticResource PageDescriptionStyle}"/>
+                </StackPanel>
+
+                <ScrollViewer Grid.Row="1" Margin="0,0,-32,0" VerticalScrollBarVisibility="Auto">
+                  <StackPanel Margin="0,0,40,16">
+
+                    <!-- 一、 模式切换与基础热键 -->
+                    <Border Style="{StaticResource SectionStyle}">
+                      <StackPanel>
+                        <TextBlock Text="一、 模式切换与基础热键" Style="{StaticResource SectionTitleStyle}"/>
+                        <TextBlock Text="中英文状态及全拼/双拼快速切换。" Style="{StaticResource SectionDescriptionStyle}" Margin="0,4,0,14"/>
+
+                        <Border Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                          <Grid>
+                            <Grid.RowDefinitions>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="160"/>
+                              <ColumnDefinition Width="*"/>
+                              <ColumnDefinition Width="220"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 表头 -->
+                            <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#F8FAFC" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" CornerRadius="8,8,0,0" Padding="14,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition Width="160"/>
+                                  <ColumnDefinition Width="*"/>
+                                  <ColumnDefinition Width="220"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="快捷键" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="1" Text="功能说明" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="2" Text="触发条件 / 上下文" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                              </Grid>
+                            </Border>
+
+                            <!-- 行 1: Shift（单点） -->
+                            <Border Grid.Row="1" Grid.Column="0" Padding="14,10" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="Shift（单点）" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" Padding="14,10" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="无输入状态：切换中文 / 英文输入模式&#x0a;拼音输入中：直接上屏原始拼音字母，并切换为英文" TextWrapping="Wrap" LineHeight="18"/>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="2" Padding="14,10" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="单独按下并释放 Shift 键（不与其他键组合）" Foreground="{StaticResource TextSecondaryBrush}" TextWrapping="Wrap" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 2: F10 -->
+                            <Border Grid.Row="2" Grid.Column="0" Padding="14,10">
+                              <Border Background="#EEF2F6" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="F10" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="1" Padding="14,10">
+                              <TextBlock Text="快速切换 全拼（Full Pinyin）/ 小鹤双拼（Double Pinyin）" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="2" Padding="14,10">
+                              <TextBlock Text="处于拼音组合输入状态时按下" Foreground="{StaticResource TextSecondaryBrush}" TextWrapping="Wrap" FontSize="12"/>
+                            </Border>
+                          </Grid>
+                        </Border>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- 二、 候选词选择与翻页导航 -->
+                    <Border Style="{StaticResource SectionStyle}">
+                      <StackPanel>
+                        <TextBlock Text="二、 候选词选择与翻页导航" Style="{StaticResource SectionTitleStyle}"/>
+                        <TextBlock Text="候选词选字、快速定位与翻页控制。" Style="{StaticResource SectionDescriptionStyle}" Margin="0,4,0,14"/>
+
+                        <Border Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                          <Grid>
+                            <Grid.RowDefinitions>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="160"/>
+                              <ColumnDefinition Width="*"/>
+                              <ColumnDefinition Width="180"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 表头 -->
+                            <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#F8FAFC" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" CornerRadius="8,8,0,0" Padding="14,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition Width="160"/>
+                                  <ColumnDefinition Width="*"/>
+                                  <ColumnDefinition Width="180"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="快捷键" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="1" Text="功能说明" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="2" Text="适用模式" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                              </Grid>
+                            </Border>
+
+                            <!-- 行 1: Space（空格） -->
+                            <Border Grid.Row="1" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="Space（空格）" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="上屏首选词（第 1 候选词）" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="默认拼音输入" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 2: 1 ~ 9 -->
+                            <Border Grid.Row="2" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="1 ~ 9" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="按数字序号直接选词上屏（主键盘数字键）" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="默认拼音输入 / 联想词模式" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 3: ← / → -->
+                            <Border Grid.Row="3" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="← / →" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="3" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="左右切换高亮候选词（跨页自动平滑滚动）" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="3" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="拼音输入状态" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 4: PageUp / PageDown -->
+                            <Border Grid.Row="4" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="PageUp / PageDown" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="4" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="候选词列表 向上 / 向下翻页" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="4" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="拼音输入状态" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 5: -（减号）/ =（等号） -->
+                            <Border Grid.Row="5" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="-（减号）/ =（等号）" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="5" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="候选词列表 向前 / 向后翻页" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="5" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="拼音输入状态" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 6: Tab -->
+                            <Border Grid.Row="6" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="Tab" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="6" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="展开 / 折叠九宫格多行候选窗" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="6" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="拼音输入状态" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+
+                            <!-- 行 7: ↑ / ↓ -->
+                            <Border Grid.Row="7" Grid.Column="0" Padding="14,8">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="↑ / ↓" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="7" Grid.Column="1" Padding="14,8">
+                              <TextBlock Text="在展开的多行候选框中 向上 / 向下跨行选词；在 v/vv 模式中进行上下行选择" TextWrapping="Wrap"/>
+                            </Border>
+                            <Border Grid.Row="7" Grid.Column="2" Padding="14,8">
+                              <TextBlock Text="展开候选窗 / v/vv 列表" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                            </Border>
+                          </Grid>
+                        </Border>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- 三、 输入控制与编辑 -->
+                    <Border Style="{StaticResource SectionStyle}">
+                      <StackPanel>
+                        <TextBlock Text="三、 输入控制与编辑" Style="{StaticResource SectionTitleStyle}"/>
+                        <TextBlock Text="拼音确认、上屏、分词与取消控制。" Style="{StaticResource SectionDescriptionStyle}" Margin="0,4,0,14"/>
+
+                        <Border Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                          <Grid>
+                            <Grid.RowDefinitions>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="160"/>
+                              <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 表头 -->
+                            <Border Grid.Row="0" Grid.ColumnSpan="2" Background="#F8FAFC" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" CornerRadius="8,8,0,0" Padding="14,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition Width="160"/>
+                                  <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="快捷键" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="1" Text="功能说明" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                              </Grid>
+                            </Border>
+
+                            <!-- 行 1: Enter（回车） -->
+                            <Border Grid.Row="1" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="Enter（回车）" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="上屏原始拼音英文串（不选中文词，直接输出输入的英文字母；若处于 v 算式模式则直接上屏计算结果）" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 2: Esc -->
+                            <Border Grid.Row="2" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="Esc" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="清空当前拼音并关闭候选窗；或关闭联想词提示" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 3: Backspace（退格） -->
+                            <Border Grid.Row="3" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="Backspace（退格）" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="3" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="删除最后一个拼音字符，删完自动关闭候选窗" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 4: '（分词符 / 单引号） -->
+                            <Border Grid.Row="4" Grid.Column="0" Padding="14,8">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="'（分词符 / 单引号）" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="4" Grid.Column="1" Padding="14,8">
+                              <TextBlock Text="显式拼音切分符（例如输入 xi'an 区分西安与先）" TextWrapping="Wrap"/>
+                            </Border>
+                          </Grid>
+                        </Border>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- 四、 特殊模式与效率工具（V / VV 模式） -->
+                    <Border Style="{StaticResource SectionStyle}">
+                      <StackPanel>
+                        <TextBlock Text="四、 特殊模式与效率工具（V / VV 模式）" Style="{StaticResource SectionTitleStyle}"/>
+                        <TextBlock Text="剪贴板历史、短语速查、计算器与动态日期时间。" Style="{StaticResource SectionDescriptionStyle}" Margin="0,4,0,14"/>
+
+                        <Border Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                          <Grid>
+                            <Grid.RowDefinitions>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="170"/>
+                              <ColumnDefinition Width="140"/>
+                              <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 表头 -->
+                            <Border Grid.Row="0" Grid.ColumnSpan="3" Background="#F8FAFC" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" CornerRadius="8,8,0,0" Padding="14,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition Width="170"/>
+                                  <ColumnDefinition Width="140"/>
+                                  <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="快捷键 / 触发码" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="1" Text="模式名称" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="2" Text="功能说明" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                              </Grid>
+                            </Border>
+
+                            <!-- 行 1: 连续按 v 或停顿 -->
+                            <Border Grid.Row="1" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="连续按 v 或停顿" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="剪贴板历史弹窗" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" FontSize="12"/>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="输入单个 v 后停顿（或按空格/回车），立即唤起现代化圆角浮窗剪贴板历史，支持搜索与快捷粘贴" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 2: 连续按 vv -->
+                            <Border Grid.Row="2" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="连续按 vv" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="自定义短语速查" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" FontSize="12"/>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="输入 vv 后自动呼出自定义短语管理与速选弹窗" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 3: 连续按 vvv + 算式 -->
+                            <Border Grid.Row="3" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="连续按 vvv + 算式" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="3" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="内置表达式计算器" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" FontSize="12"/>
+                            </Border>
+                            <Border Grid.Row="3" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="如输入 vvv1+2*3、vvv(100-20)/4，候选框自动计算数学结果并支持选词上屏" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 4: sj -->
+                            <Border Grid.Row="4" Grid.Column="0" Padding="14,8">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="sj" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="4" Grid.Column="1" Padding="14,8">
+                              <TextBlock Text="动态日期 / 时间" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" FontSize="12"/>
+                            </Border>
+                            <Border Grid.Row="4" Grid.Column="2" Padding="14,8">
+                              <TextBlock Text="输入拼音缩写直接输出当前日期（如 2026年08月17日）与实时时间" TextWrapping="Wrap"/>
+                            </Border>
+                          </Grid>
+                        </Border>
+                      </StackPanel>
+                    </Border>
+
+                    <!-- 五、 辅助功能 -->
+                    <Border Style="{StaticResource SectionStyle}">
+                      <StackPanel>
+                        <TextBlock Text="五、 辅助功能" Style="{StaticResource SectionTitleStyle}"/>
+                        <TextBlock Text="软键盘与快捷菜单操作。" Style="{StaticResource SectionDescriptionStyle}" Margin="0,4,0,14"/>
+
+                        <Border Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
+                          <Grid>
+                            <Grid.RowDefinitions>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                              <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                              <ColumnDefinition Width="180"/>
+                              <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 表头 -->
+                            <Border Grid.Row="0" Grid.ColumnSpan="2" Background="#F8FAFC" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" CornerRadius="8,8,0,0" Padding="14,9">
+                              <Grid>
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition Width="180"/>
+                                  <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="快捷键 / 操作" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                <TextBlock Grid.Column="1" Text="功能说明" FontWeight="SemiBold" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                              </Grid>
+                            </Border>
+
+                            <!-- 行 1: F9 -->
+                            <Border Grid.Row="1" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="F9" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="1" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
+                              <TextBlock Text="打开 / 关闭软键盘（Soft Keyboard）" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <!-- 行 2: 鼠标右键单击候选框 -->
+                            <Border Grid.Row="2" Grid.Column="0" Padding="14,8">
+                              <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                <TextBlock Text="鼠标右键单击候选框" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                              </Border>
+                            </Border>
+                            <Border Grid.Row="2" Grid.Column="1" Padding="14,8">
+                              <TextBlock Text="唤起输入法上下文菜单（进入输入法设置、切换皮肤、词库管理等）" TextWrapping="Wrap"/>
+                            </Border>
+                          </Grid>
+                        </Border>
+                      </StackPanel>
+                    </Border>
+
                   </StackPanel>
                 </ScrollViewer>
               </Grid>
