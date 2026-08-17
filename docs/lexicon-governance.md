@@ -46,10 +46,17 @@ python scripts/lexicon_manifest.py generate --version 2.0.1 --schema 2
 python scripts/lexicon_manifest.py validate
 ```
 
-校验器严格检查中文三列、纯小写拼音、整数频率、英文两列格式、完全重复键词对、
+校验器严格检查中文三列、纯小写拼音、整数频率、英文三列（兼容旧两列）格式、完全重复键词对、
 短词先验与字符 N-gram 的 magic/版本/顺序，以及 Grammar 元数据、双数组偏移、
-根单元、单元上限和精确文件长度。清单还固定每个文件的大小和 SHA-256。英文词库来源同样保持
-`NOASSERTION`，不得据此推断或伪造许可证。
+根单元、单元上限和精确文件长度。清单还固定每个文件的大小和 SHA-256。
+英文词库由 `scripts/build_en_dict.py` 确定性生成。导入的
+`BlindingDark/rime-easy-en/easy_en.dict.yaml` 固定到提交
+`54a4a07289412efc54134092c0d945f895a71ed3`，原始文件 SHA-256 为
+`4F039026B2746FA9B0D4D7A248CDF866B64609DCA2317708F04E9E68AC7D868A`。
+上游仓库声明 LGPL-3.0；其词典内容致谢并基于 ECDICT，ECDICT 仓库声明 MIT
+许可证。对应许可证全文位于 `licenses/LGPL-3.0-rime-easy-en.txt` 与
+`licenses/MIT-ECDICT.txt`。项目只提交规范化派生词库，清单保留来源、提交号与
+哈希，发布包必须同时附带相应第三方声明。运行时不联网。
 
 部署使用 `scripts/install_ime.ps1`。系统包安装到稳定数据根的
 `versions/<version>-<manifest 哈希前缀>`，

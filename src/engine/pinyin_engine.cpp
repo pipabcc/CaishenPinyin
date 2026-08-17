@@ -125,6 +125,47 @@ int SourcePriority(
     return 12;
 }
 
+constexpr size_t kEnglishPromotionMinLength = 4;
+
+bool HasStrongChineseEvidence(
+    const std::vector<Candidate>& candidates,
+    const std::string& input) {
+    return std::any_of(candidates.begin(), candidates.end(), [&input](const Candidate& candidate) {
+        return !candidate.is_english && candidate.covered_input_len >= input.size() &&
+            candidate.pinyin == input &&
+            (candidate.source == CandidateSource::Exact ||
+             candidate.source == CandidateSource::CustomPhrase ||
+             (candidate.from_user && candidate.learning_score > 0));
+    });
+}
+
+bool IsPromotableEnglishCandidate(
+    const Candidate& candidate, const std::string& input) {
+    if (!candidate.is_english || input.size() < kEnglishPromotionMinLength ||
+        candidate.frequency <= 0 ||
+        candidate.pinyin.size() < input.size() ||
+        candidate.pinyin.compare(0, input.size(), input) != 0) {
+        return false;
+    }
+    // The imported key is the authoritative match span.  Keeping completion
+    // bounded avoids obscure long words winning solely because they share a
+    // short prefix.
+    constexpr size_t kMaxCompletionLetters = 12;
+    return candidate.pinyin.size() - input.size() <= kMaxCompletionLetters;
+}
+
+bool PreferEnglishCompletion(
+    const Candidate& left, const Candidate& right, const std::string& input) {
+    const bool left_exact = left.pinyin == input;
+    const bool right_exact = right.pinyin == input;
+    if (left_exact != right_exact) return left_exact;
+    const size_t left_extra = left.pinyin.size() - input.size();
+    const size_t right_extra = right.pinyin.size() - input.size();
+    if (left_extra != right_extra) return left_extra < right_extra;
+    if (left.frequency != right.frequency) return left.frequency > right.frequency;
+    return left.text < right.text;
+}
+
 double CorrectionQuality(const Candidate& candidate) {
     constexpr double kEditPenalty = 60.0;
     constexpr double kKeyboardPenalty = 10.0;
@@ -1554,9 +1595,12 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
         if(!u.empty()||!b.empty()){add(std::move(u),n,40,1,true,CandidateSource::Prefix);add(std::move(b),n,40,1,true,CandidateSource::Prefix);break;}
     }
-    if(schema==InputSchema::Quanpin && !lexicon->english_dictionary.empty() && compact.size()>=2) {
-        add(lexicon->english_dictionary.LookupExact(compact),query.size(),0,1,true,CandidateSource::English);
-        add(lexicon->english_dictionary.LookupPrefix(compact,limit),query.size(),30,1,true,CandidateSource::English);
+    if(schema==InputSchema::Quanpin && query.find('\'')==std::string::npos &&
+       !lexicon->english_dictionary.empty() && compact.size()>=2) {
+        auto english_exact = lexicon->english_dictionary.LookupExact(compact);
+        auto english_prefix = lexicon->english_dictionary.LookupPrefix(compact,limit);
+        add(std::move(english_exact),query.size(),0,1,true,CandidateSource::English);
+        add(std::move(english_prefix),query.size(),30,1,true,CandidateSource::English);
     }
     if(pool.empty()){Candidate raw;raw.text=std::wstring(preview.begin(),preview.end());raw.pinyin=compact;add({raw},0,1000,1,true,CandidateSource::Raw);}
     std::sort(pool.begin(),pool.end(),better);
@@ -1623,6 +1667,41 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             }
         }
         pool = std::move(ordered);
+    }
+    // Promote only high-confidence English input.  A real Chinese exact/user
+    // candidate remains authoritative (women -> 我们), while inputs that are
+    // merely valid pinyin fragments (easy / engli) surface the closest English
+    // word first.
+    if (schema == InputSchema::Quanpin && query.find('\'') == std::string::npos &&
+        compact.size() >= kEnglishPromotionMinLength &&
+        !HasStrongChineseEvidence(pool, compact)) {
+        auto promoted = lexicon->english_dictionary.LookupPrefix(compact, (std::max)(limit * 8, size_t{128}));
+        std::sort(promoted.begin(), promoted.end(), [&](const Candidate& left, const Candidate& right) {
+            return PreferEnglishCompletion(left, right, compact);
+        });
+        const auto best = std::find_if(
+            promoted.begin(), promoted.end(), [&](const Candidate& candidate) {
+                return IsPromotableEnglishCandidate(candidate, compact);
+            });
+        if (best != promoted.end()) {
+            const auto existing = std::find_if(
+                pool.begin(), pool.end(), [&](const Candidate& candidate) {
+                    return candidate.text == best->text;
+                });
+            if (existing != pool.end()) {
+                if (existing != pool.begin()) {
+                    std::rotate(pool.begin(), existing, existing + 1);
+                }
+            } else {
+                Candidate candidate = *best;
+                candidate.covered_input_len = query.size();
+                candidate.match_cost = candidate.pinyin == compact ? 0 : 30;
+                candidate.segment_count = 1;
+                candidate.source = CandidateSource::English;
+                score(candidate);
+                pool.insert(pool.begin(), std::move(candidate));
+            }
+        }
     }
     // 同一输入码下连续选择两次同一候选后直接置顶（短期记忆，主流输入法行为）。
     if (repeat_count >= 2 && repeat_pinyin == compact) {

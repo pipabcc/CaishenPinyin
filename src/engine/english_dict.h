@@ -3,12 +3,11 @@
 #include "candidate.h"
 
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace shuru {
 
-// 英文单词词典：前缀检索（hello / hel...）
+// 英文单词词典：大小写不敏感查询，候选保留词库提供的规范大小写。
 class EnglishDictionary {
 public:
     bool LoadFromFile(const std::wstring& path);
@@ -23,10 +22,10 @@ public:
 private:
     struct Item {
         std::string word;
+        std::string display;
         int frequency = 0;
     };
-    std::vector<Item> words_;  // 按 word 升序，便于 lower_bound
-    std::unordered_map<std::string, int> freq_;
+    std::vector<Item> words_;  // 按规范化查询键升序，便于 lower_bound
 
     static std::string Normalize(const std::string& s);
 };

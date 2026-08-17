@@ -169,6 +169,7 @@ bool ParseMixedInput(
     if (segments == nullptr) return false;
     segments->clear();
     bool has_literal = false;
+    bool has_pinyin = false;
     for (char ch : raw_input) {
         const bool literal = IsAsciiUpper(ch);
         if (!literal && !IsAsciiLower(ch) && ch != '\'') {
@@ -176,14 +177,18 @@ bool ParseMixedInput(
             return false;
         }
         has_literal = has_literal || literal;
+        has_pinyin = has_pinyin || !literal;
         if (segments->empty() || segments->back().literal != literal) {
             segments->push_back({std::string(1, ch), literal});
         } else {
             segments->back().text.push_back(ch);
         }
     }
-    if (!has_literal) segments->clear();
-    return has_literal;
+    // An all-uppercase word is still a normal case-insensitive English query.
+    // Only mixed-case input (for example ``duolaAmeng``) enters the literal
+    // mixed-sentence path.
+    if (!has_literal || !has_pinyin) segments->clear();
+    return has_literal && has_pinyin;
 }
 
 bool IsCalculatorInput(const std::string& raw_input) noexcept {

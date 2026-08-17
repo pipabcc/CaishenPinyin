@@ -69,6 +69,7 @@ int main() {
     CHECK(segments[1].text == "A" && segments[1].literal);
     CHECK(segments[2].text == "meng" && !segments[2].literal);
     CHECK(!ParseMixedInput("duolameng", &segments));
+    CHECK(!ParseMixedInput("ENGLI", &segments));
 
     std::wstring value;
     CHECK(TryEvaluateCalculator("vvv1+2*3", &value) && value == L"7");

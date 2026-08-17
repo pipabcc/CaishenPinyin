@@ -195,6 +195,38 @@ if(BUILD_TESTING)
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata"
   )
 
+  add_executable(english_dictionary_test
+    tests/engine_playground/english_dict_test.cpp
+    src/common/logger.cpp
+    src/common/runtime_config.cpp
+    src/engine/english_dict.cpp
+  )
+  target_include_directories(english_dictionary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(english_dictionary_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  add_test(
+    NAME english_dictionary
+    COMMAND english_dictionary_test ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon/en_dict.txt
+  )
+
+  add_executable(english_ranking_test
+    tests/engine_playground/english_ranking_test.cpp
+    src/common/logger.cpp
+    src/common/runtime_config.cpp
+    src/common/private_acl.cpp
+    src/engine/dictionary.cpp
+    src/engine/lexicon_cache.cpp
+    src/engine/english_dict.cpp
+    src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_FEATURE_SOURCES}
+  )
+  target_include_directories(english_ranking_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(english_ranking_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(english_ranking_test PRIVATE user32 bcrypt)
+  add_test(
+    NAME english_ranking
+    COMMAND english_ranking_test ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon
+  )
+
   add_executable(system_language_model_test
     tests/engine_playground/system_language_model_test.cpp
     src/engine/system_language_model.cpp

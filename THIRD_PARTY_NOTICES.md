@@ -61,5 +61,17 @@ Unicode 编码、Darts 双数组查询和 Octagram 打分行为。许可证全�
 
 ## 英文词库
 
-`data/lexicon/en_dict.txt` 的历史来源目前无法从仓库内可靠确认，清单中保持
-`NOASSERTION`。完成来源与许可证审计前，不应对外宣称确定许可证。
+`data/lexicon/en_dict.txt` 是由 `scripts/build_en_dict.py` 生成的确定性派生文件，
+合并项目旧词条与以下固定上游：
+
+- 项目：https://github.com/BlindingDark/rime-easy-en
+- 固定提交：`54a4a07289412efc54134092c0d945f895a71ed3`
+- 原始文件：`easy_en.dict.yaml`
+- 原始文件 SHA-256：`4F039026B2746FA9B0D4D7A248CDF866B64609DCA2317708F04E9E68AC7D868A`
+- 仓库许可证：GNU Lesser General Public License v3.0（全文见
+  `licenses/LGPL-3.0-rime-easy-en.txt`）
+- 词典致谢来源：`skywind3000/ECDICT`，其仓库声明 MIT License（全文见
+  `licenses/MIT-ECDICT.txt`）
+
+本项目不把上游代码许可证扩展解释为词典数据的额外权利；发布包保留上述归属，
+并在清单中固定来源提交和派生文件 SHA-256。

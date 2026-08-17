@@ -28,11 +28,11 @@
     {
       "path": "en_dict.txt",
       "kind": "english",
-      "source": "project-generated with scripts/build_en_dict.py; see docs/lexicon-governance.md",
-      "license": "NOASSERTION",
-      "entries": 34868,
-      "size": 461014,
-      "sha256": "e6f0d655ddd57b32198a63e6b50bbb7de0c72b7a457358ab1369620dbd84799d"
+      "source": "BlindingDark/rime-easy-en easy_en.dict.yaml commit 54a4a07289412efc54134092c0d945f895a71ed3; merged with the legacy project English lexicon by scripts/build_en_dict.py; see docs/lexicon-governance.md",
+      "license": "LGPL-3.0-only (upstream repository); MIT attribution (ECDICT source)",
+      "entries": 250504,
+      "size": 4979169,
+      "sha256": "72e4091fedfd681cd6e218e3c3eb09201bb3c04802e1d0f295e63ee2d23b3398"
     },
     {
       "path": "base_dict.txt.bin",
