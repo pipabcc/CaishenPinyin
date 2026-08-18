@@ -64,10 +64,10 @@ powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
 ```
 
-默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。完整墨奇模型可用
-`-GrammarPath <rime-moqi-zh.gram>` 指定；未指定时脚本从 `data/lexicon` 或本机
-`ciku/rime-frost-master白霜拼音` 查找，并严格校验官方发布 SHA-256。其他参数包括
-`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage`；
+默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。如需在本地运行
+完整 Grammar 测试，可用 `-GrammarPath <rime-moqi-zh.gram>` 指定并校验模型；该文件
+始终不会进入发布包或安装目录。其他参数包括 `-BuildDir`、`-OutputDir`、
+`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage`；
 正式发布应使用 `-SigningPolicy Required`。
 
 ## 安装与注册
@@ -126,8 +126,9 @@ nihao	你好	9000
 
 ## 语言模型说明
 
-`rime-moqi-zh.gram` 是本地统计 N-gram 模型，输入时会通过只读内存映射查询，用于
-长句词间搭配排序；它不是神经网络或生成式 AI，也不会联网。运行时按“完整墨奇 →
-`system_ngram.bin` → 旧版小墨奇”的顺序加载，删除完整模型后会自动使用随包安装的
-`system_ngram.bin`。单字和双字的无上下文常用度由 `system_lexeme_prior.bin` 负责，
+`rime-moqi-zh.gram` 是用户自行下载的可选本地统计 N-gram 模型，正式发布包不会携带。
+用户可将它复制到当前词库目录 `%ProgramData%\CaishenPinyin\data\lexicon\versions\<current>`；
+输入时会通过只读内存映射查询，用于长句词间搭配排序。它不是神经网络或生成式 AI，
+也不会联网。运行时按“完整墨奇 → `system_ngram.bin` → 旧版小墨奇”的顺序加载；
+未安装完整模型时自动使用随包安装的 `system_ngram.bin`。单字和双字的无上下文常用度由 `system_lexeme_prior.bin` 负责，
 与语言模型互补。模型来源和再分发限制见 `THIRD_PARTY_NOTICES.md`。

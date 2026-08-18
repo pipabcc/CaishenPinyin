@@ -241,22 +241,27 @@ HRESULT TextService::InitEngine() {
         SHURU_LOG_ERROR("shared engine acquire failed");
         return E_FAIL;
     }
+
+    // 设置文件定义初始方案；F10 此后直接修改共享引擎方案，直到设置页面
+    // 真正改变该配置值。不要在每次查询时无条件用配置覆盖运行时切换。
+    const RuntimeConfig config = GetRuntimeConfig();
+    QueryOptions options = engine_->GetQueryOptions();
+    options.schema = config.shuangpin_xiaohe
+        ? InputSchema::ShuangpinXiaohe : InputSchema::Quanpin;
+    options.fuzzy_enabled = config.fuzzy_enabled;
+    options.fuzzy_config.initials = config.fuzzy_initials;
+    options.fuzzy_config.finals = config.fuzzy_finals;
+    options.fuzzy_config.missing_vowel = config.fuzzy_missing_vowel;
+    engine_->SetQueryOptions(options);
+    schema_sync_.Initialize(config.shuangpin_xiaohe);
+    shuangpin_mode_ = schema_sync_.runtime_shuangpin;
+
     if (!engine_->IsReady()) {
         SHURU_LOG_INFO("shared engine loading in background");
     } else {
         if (!engine_->ReloadCustomPhrases()) {
             SHURU_LOG_WARN("custom phrase reload failed; retaining previous snapshot");
         }
-        shuangpin_mode_ = (engine_->GetInputSchema() == InputSchema::ShuangpinXiaohe);
-        const RuntimeConfig config = GetRuntimeConfig();
-        QueryOptions options = engine_->GetQueryOptions();
-        options.schema = config.shuangpin_xiaohe ? InputSchema::ShuangpinXiaohe : InputSchema::Quanpin;
-        options.fuzzy_enabled = config.fuzzy_enabled;
-        options.fuzzy_config.initials = config.fuzzy_initials;
-        options.fuzzy_config.finals = config.fuzzy_finals;
-        options.fuzzy_config.missing_vowel = config.fuzzy_missing_vowel;
-        engine_->SetQueryOptions(options);
-        shuangpin_mode_ = config.shuangpin_xiaohe;
     }
     return S_OK;
 }
@@ -776,6 +781,11 @@ bool TextService::IsKeyEaten(
     if (wparam == VK_SPACE && IsCtrlOnlyDown()) {
         return true;
     }
+    // F9/F10 在中英文模式、空闲或组合状态下都保持一致；带修饰键的
+    // 系统快捷键仍交给宿主。
+    if ((wparam == VK_F9 || wparam == VK_F10) && !shortcut_modifier) {
+        return true;
+    }
     if (english_mode_) {
         return false;
     }
@@ -825,10 +835,6 @@ bool TextService::IsKeyEaten(
             wparam == VK_MULTIPLY || wparam == VK_ADD || wparam == VK_SUBTRACT) {
             return !IsNumpadDigit(wparam) || (GetKeyState(VK_NUMLOCK) & 1) != 0;
         }
-    }
-    // F9（软键盘开关）和 F10（全拼/双拼切换）作为全局功能快捷键统一拦截
-    if (wparam == VK_F9 || wparam == VK_F10) {
-        return true;
     }
     wchar_t punctuation = 0;
     const bool shift = IsShiftDownForKeyMessage();
@@ -1014,6 +1020,18 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     if (wparam == VK_SPACE && IsCtrlOnlyDown()) {
         ToggleEnglishMode();
+        *eaten = true;
+        return true;
+    }
+
+    // 必须先于英文直通分支处理，否则英文模式会把 F10 原样交给宿主。
+    if (wparam == VK_F9 && !shortcut_modifier) {
+        ToggleSoftKeyboard();
+        *eaten = true;
+        return true;
+    }
+    if (wparam == VK_F10 && !shortcut_modifier) {
+        OnStatusToggleSchema();
         *eaten = true;
         return true;
     }
@@ -1379,20 +1397,6 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
-    // F9：软键盘
-    if (wparam == VK_F9) {
-        ToggleSoftKeyboard();
-        *eaten = true;
-        return true;
-    }
-
-    // F10：全拼 / 小鹤双拼（随时切换）
-    if (wparam == VK_F10) {
-        OnStatusToggleSchema();
-        *eaten = true;
-        return true;
-    }
-
     // 字母输入（严格只匹配 VK_A 到 VK_Z，避免与 VK_F1..VK_F12 等功能键混淆）
     if (IsVirtualKeyAlpha(wparam)) {
         const bool starts_new_composition = composing_pinyin_.empty();
@@ -1538,14 +1542,20 @@ void TextService::RefreshCandidates() {
 
     const RuntimeConfig runtime = GetRuntimeConfig();
     QueryOptions options = engine_->GetQueryOptions();
-    options.schema = runtime.shuangpin_xiaohe ? InputSchema::ShuangpinXiaohe : InputSchema::Quanpin;
+    schema_sync_.ApplyConfigured(runtime.shuangpin_xiaohe);
+    if (engine_->GetInputSchema() != (schema_sync_.runtime_shuangpin
+            ? InputSchema::ShuangpinXiaohe : InputSchema::Quanpin)) {
+        engine_->SetInputSchema(schema_sync_.runtime_shuangpin
+            ? InputSchema::ShuangpinXiaohe : InputSchema::Quanpin);
+    }
+    options.schema = engine_->GetInputSchema();
     options.fuzzy_enabled = runtime.fuzzy_enabled;
     options.fuzzy_config.initials = runtime.fuzzy_initials;
     options.fuzzy_config.finals = runtime.fuzzy_finals;
     options.fuzzy_config.missing_vowel = runtime.fuzzy_missing_vowel;
     options.context = last_committed_word_;
     engine_->SetQueryOptions(options);
-    shuangpin_mode_ = runtime.shuangpin_xiaohe;
+    shuangpin_mode_ = (options.schema == InputSchema::ShuangpinXiaohe);
     current_result_ = engine_->Query(composing_pinyin_, candidate_count * 10, options);
     candidate_state_.total = current_result_.candidates.size();
     candidate_state_.page_size = candidate_count;
@@ -1669,14 +1679,13 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
     } else {
         RECT rc {};
         if (!GetCaretScreenRect(context, &rc)) {
-            if (!has_last_candidate_rect_) {
+            // TSF 在组合文本刚写入或宿主正在重排时可能暂时没有矩形。
+            // 已显示窗口保持原位，等 OnLayoutChange 提供权威矩形；首次
+            // 显示则保持隐藏，绝不借用上一轮组合的旧坐标。
+            if (!candidate_window_.IsVisible()) {
                 candidate_window_.Hide();
-                return;
             }
-            rc = last_candidate_rect_;
-        } else {
-            last_candidate_rect_ = rc;
-            has_last_candidate_rect_ = true;
+            return;
         }
         pt = POINT {rc.left, (rc.bottom > rc.top ? rc.bottom : rc.top) + gap};
     }
@@ -1705,8 +1714,6 @@ void TextService::ClearCompositionState() {
 }
 
 void TextService::ResetCandidateAnchor() noexcept {
-    has_last_candidate_rect_ = false;
-    last_candidate_rect_ = {};
     candidate_pos_overridden_ = false;
     candidate_override_pos_ = {};
 }
@@ -1769,11 +1776,9 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     if (context == nullptr) {
         return E_FAIL;
     }
-    RECT init_rect {};
-    bool init_ok = false;
     auto* session = new (std::nothrow) SetCompositionEditSession(
         context, client_id_, static_cast<ITfCompositionSink*>(this),
-        &composition_, text, display_atom_, &init_rect, &init_ok);
+        &composition_, text, display_atom_);
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }
@@ -1782,10 +1787,6 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     const HRESULT hr = context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
     composition_edit_in_progress_ = false;
     session->Release();
-    if (SUCCEEDED(hr) && init_ok && IsReliableCandidateRect(init_rect)) {
-        last_candidate_rect_ = init_rect;
-        has_last_candidate_rect_ = true;
-    }
     return SUCCEEDED(hr) ? hr_session : hr;
 }
 
@@ -1801,8 +1802,6 @@ STDMETHODIMP TextService::OnLayoutChange(
     if (composition_edit_in_progress_) return S_OK;
     if (lcode == TF_LC_DESTROY) {
         candidate_window_.Hide();
-        has_last_candidate_rect_ = false;
-        last_candidate_rect_ = {};
         return S_OK;
     }
     // 首字布局以及后续滚动、重排都会触发此通知。宿主排版完成后，
@@ -1882,11 +1881,21 @@ void TextService::OnStatusToggleSchema() {
     const InputSchema next = (cur == InputSchema::Quanpin)
                                  ? InputSchema::ShuangpinXiaohe
                                  : InputSchema::Quanpin;
+    schema_sync_.SetRuntime(next == InputSchema::ShuangpinXiaohe);
     engine_->SetInputSchema(next);
     engine_->SetFuzzyEnabled(true);
     shuangpin_mode_ = (next == InputSchema::ShuangpinXiaohe);
+    // 先结束 TSF 组合，再清理本地状态，避免宿主侧留下悬挂组合串，
+    // 进而影响下一次 F10 或输入时的光标定位。
+    if (composition_ != nullptr) {
+        composition_edit_in_progress_ = true;
+        const HRESULT hr = EndComposition();
+        composition_edit_in_progress_ = false;
+        if (FAILED(hr)) {
+            SHURU_LOG_WARN("schema toggle end composition failed: 0x%08X", hr);
+        }
+    }
     ClearCompositionState();
-    EndComposition();
     candidate_window_.Hide();
     SyncStatusUi();
     SHURU_LOG_INFO("schema -> %s", shuangpin_mode_ ? "shuangpin-xiaohe" : "quanpin");

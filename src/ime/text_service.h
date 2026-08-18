@@ -77,6 +77,7 @@ private:
     ITfComposition* composition_ = nullptr;
     bool english_mode_ = false;
     bool shuangpin_mode_ = false;  // 小鹤双拼
+    SchemaSyncState schema_sync_;
     ShiftTapState shift_tap_;
     ShortcutModifierDecisionCache shortcut_modifier_cache_;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
@@ -91,8 +92,6 @@ private:
     EngineQueryResult current_result_;
     std::wstring candidate_display_;
     std::wstring candidate_display_fallback_;
-    RECT last_candidate_rect_ {};
-    bool has_last_candidate_rect_ = false;
     bool composition_edit_in_progress_ = false;
     // 用户拖动候选窗后的固定位置；仅当前组合会话内有效，组合结束即恢复跟随光标。
     bool candidate_pos_overridden_ = false;

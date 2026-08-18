@@ -18,16 +18,12 @@ $dev=Join-Path $ToolsRoot 'vs2022\Common7\Tools\VsDevCmd.bat';if(-not(Test-Path 
 $build=Join-Path $Root $BuildDir;$out=Join-Path $Root $OutputDir
 $grammarTarget=Join-Path $Root 'data\lexicon\rime-moqi-zh.gram'
 $grammarHash='35993085E9CE5D9722050BD548B807572EDCDD784ABF8079152091F8CD9BC731'
-if(-not $GrammarPath){
- $bundled=Join-Path $Root 'ciku\rime-frost-master白霜拼音\rime-moqi-zh.gram'
- if(Test-Path -LiteralPath $grammarTarget -PathType Leaf){$GrammarPath=$grammarTarget}
- elseif(Test-Path -LiteralPath $bundled -PathType Leaf){$GrammarPath=$bundled}
- else{throw 'full Moqi Grammar missing; pass -GrammarPath rime-moqi-zh.gram'}
-}
-$GrammarPath=(Resolve-Path -LiteralPath $GrammarPath).Path
-if((Get-FileHash -LiteralPath $GrammarPath -Algorithm SHA256).Hash-ne$grammarHash){throw 'full Moqi Grammar SHA-256 mismatch'}
-if([IO.Path]::GetFullPath($GrammarPath)-ne[IO.Path]::GetFullPath($grammarTarget)){
- Copy-Item -LiteralPath $GrammarPath -Destination $grammarTarget -Force
+if($GrammarPath){
+ $GrammarPath=(Resolve-Path -LiteralPath $GrammarPath).Path
+ if((Get-FileHash -LiteralPath $GrammarPath -Algorithm SHA256).Hash-ne$grammarHash){throw 'full Moqi Grammar SHA-256 mismatch'}
+ if([IO.Path]::GetFullPath($GrammarPath)-ne[IO.Path]::GetFullPath($grammarTarget)){
+  Copy-Item -LiteralPath $GrammarPath -Destination $grammarTarget -Force
+ }
 }
 python (Join-Path $PSScriptRoot 'lexicon_manifest.py') validate --dir (Join-Path $Root 'data\lexicon') --manifest (Join-Path $Root 'data\lexicon\manifest.json')
 if($LASTEXITCODE-ne 0){throw 'lexicon manifest validation failed'}
@@ -62,7 +58,10 @@ if(-not $NoPackage){
  if(Test-Path $out){Remove-Item $out -Recurse -Force};New-Item -ItemType Directory -Force -Path (Join-Path $out 'data\lexicon')|Out-Null
  Copy-Item $dll (Join-Path $out 'ShuruIme.dll');foreach($name in $settingsFiles){Copy-Item (Join-Path $settingsOutput $name) (Join-Path $out $name)}
  $lexiconRoot=Join-Path $Root 'data\lexicon';$lexiconOut=Join-Path $out 'data\lexicon';$lexiconManifest=Get-Content -LiteralPath (Join-Path $lexiconRoot 'manifest.json') -Raw|ConvertFrom-Json
- foreach($file in $lexiconManifest.files){Copy-Item -LiteralPath (Join-Path $lexiconRoot $file.path) -Destination (Join-Path $lexiconOut $file.path) -Force}
+ foreach($file in $lexiconManifest.files){
+  if($file.PSObject.Properties.Name -contains 'runtimeOptional' -and $file.runtimeOptional -eq $true){continue}
+  Copy-Item -LiteralPath (Join-Path $lexiconRoot $file.path) -Destination (Join-Path $lexiconOut $file.path) -Force
+ }
  Copy-Item -LiteralPath (Join-Path $lexiconRoot 'manifest.json') -Destination (Join-Path $lexiconOut 'manifest.json') -Force
  Copy-Item -LiteralPath (Join-Path $Root 'THIRD_PARTY_NOTICES.md') -Destination $out
  Copy-Item -LiteralPath (Join-Path $Root 'licenses') -Destination (Join-Path $out 'licenses') -Recurse -Force

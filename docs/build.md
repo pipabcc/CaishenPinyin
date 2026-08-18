@@ -40,11 +40,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Re
 - `build-release\data\lexicon\*.txt`
 - `artifacts\release\ShuruIme.dll`
 - `artifacts\release\ShuruSettings.exe`、`ShuruSettings.dll`、`.deps.json`、`.runtimeconfig.json`
-- `artifacts\release\data\lexicon\*` 与 `release-manifest.json`
+- `artifacts\release\data\lexicon\*` 与 `release-manifest.json`，不含用户自行安装的 `rime-moqi-zh.gram`
 
-完整墨奇模型单文件超过 GitHub 普通 Git 上限，不直接提交。可用
-`-GrammarPath <rime-moqi-zh.gram>` 指定；脚本校验固定 SHA-256 后暂存到运行词库。
-发布词库同时包含必需的 `system_ngram.bin`，完整模型被删除或加载失败时自动回退。
+完整墨奇模型单文件超过 GitHub 普通 Git 上限，不提交也不进入发布包。若要在本地运行
+Grammar 测试，可用 `-GrammarPath <rime-moqi-zh.gram>` 指定；发布构建会将它排除。
+用户可自行下载并复制到安装后的当前词库版本目录；发布词库包含必需的
+`system_ngram.bin`，完整模型缺失或加载失败时自动回退。
 其他参数：`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required`、
 `-NoPackage`。正式发布必须使用 `-SigningPolicy Required`；本地编译测试可使用
 `-NoPackage`。

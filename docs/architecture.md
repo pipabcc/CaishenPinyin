@@ -47,7 +47,8 @@
 
 - `base_dict.txt`：系统词库
 - `system_lexeme_prior.bin`：单字、双字的只读常用度先验
-- `rime-moqi-zh.gram`：完整墨奇统计语言模型，Windows 只读文件映射，可选运行文件
+- `rime-moqi-zh.gram`：完整墨奇统计语言模型，Windows 只读文件映射，可选运行文件；
+  不随发布包和安装流程提供，用户可自行复制到当前词库版本目录
 - `system_ngram.bin`：必需的字符二元/三元回退模型
 - `user_dict.txt`：自动学习词，位于当前用户目录
 - `custom_phrases.txt`：自定义短语，位于当前用户目录

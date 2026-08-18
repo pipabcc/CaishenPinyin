@@ -11,6 +11,17 @@ enum class InputScopePrivacy { Unknown, Normal, Sensitive };
 bool IsSensitiveInputScope(InputScope scope);
 InputScopePrivacy ClassifyInputScopes(const InputScope* scopes, UINT count);
 
+// F10 modifies the current runtime schema. The persisted setting takes over
+// only when its value actually changes afterwards.
+struct SchemaSyncState {
+    bool runtime_shuangpin = false;
+    bool configured_shuangpin = false;
+
+    void Initialize(bool configured) noexcept;
+    void SetRuntime(bool shuangpin) noexcept;
+    void ApplyConfigured(bool configured) noexcept;
+};
+
 constexpr bool IsVirtualKeyAlpha(WPARAM wparam) noexcept {
     return wparam >= 'A' && wparam <= 'Z';
 }

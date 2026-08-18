@@ -226,6 +226,9 @@ if(BUILD_TESTING)
     NAME english_ranking
     COMMAND english_ranking_test ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon
   )
+  set_tests_properties(english_ranking PROPERTIES
+    ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata-english-ranking"
+  )
 
   add_executable(system_language_model_test
     tests/engine_playground/system_language_model_test.cpp
@@ -233,11 +236,15 @@ if(BUILD_TESTING)
   )
   target_include_directories(system_language_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(system_language_model_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  add_test(
-    NAME system_language_model
-    COMMAND system_language_model_test
-            ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon/rime-moqi-zh.gram
-  )
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon/rime-moqi-zh.gram")
+    add_test(
+      NAME system_language_model
+      COMMAND system_language_model_test
+              ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon/rime-moqi-zh.gram
+    )
+  else()
+    add_test(NAME system_language_model COMMAND system_language_model_test)
+  endif()
   set_tests_properties(system_language_model PROPERTIES TIMEOUT 30)
 
   add_executable(system_lexeme_prior_test
@@ -421,7 +428,7 @@ if(BUILD_TESTING)
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/deployment_core_test.ps1)
   set_tests_properties(deployment_core PROPERTIES
-    # 完整白霜词库与 Grammar 超过 240 MB，部署测试会多次复制并校验哈希。
+    # 完整白霜词库较大，部署测试会多次复制并校验哈希。
     # 在机械盘或实时防护开启时 60 秒不足，保留明确上限但给足正常 I/O 时间。
     TIMEOUT 180
     # VsDevCmd 可能把 PowerShell 7 模块目录放到最前，导致 Windows PowerShell

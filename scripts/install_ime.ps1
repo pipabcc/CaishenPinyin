@@ -476,7 +476,13 @@ try {
             }
             if (-not $reuseLexicon) {
                 foreach ($file in @($lexiconManifest.files) + @([pscustomobject]@{ path = 'manifest.json' })) {
-                    Copy-Item -LiteralPath (Join-Path $PackagePath $file.path) `
+                    $source = Join-Path $PackagePath $file.path
+                    if ($file.PSObject.Properties.Name -contains 'runtimeOptional' -and
+                        $file.runtimeOptional -eq $true) {
+                        Write-DeployLog "optional runtime file not installed: $($file.path)"
+                        continue
+                    }
+                    Copy-Item -LiteralPath $source `
                         -Destination (Join-Path $dataStage $file.path) -Force
                 }
             }

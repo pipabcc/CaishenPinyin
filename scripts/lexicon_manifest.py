@@ -35,7 +35,6 @@ FILES = (
     ("en_dict.txt", "english"),
     ("base_dict.txt.bin", "binary-cache"),
     ("char_dict.txt.bin", "binary-cache"),
-    ("rime-moqi-zh.gram", "grammar-model"),
     ("system_ngram.bin", "legacy-ngram-model"),
     ("system_lexeme_prior.bin", "binary-prior"),
     ("GPL-3.0.txt", "gpl-license"),
@@ -306,13 +305,18 @@ def build(directory: Path, package_id: str, version: str, schema: str, min_frequ
     files, errors = [], []
     for name, kind in FILES:
         path = directory / name
-        if not path.is_file(): errors.append(f"missing required file: {name}"); continue
+        metadata = DEFAULT_METADATA[name]
+        if not path.is_file():
+            if metadata.get("runtimeOptional"):
+                continue
+            errors.append(f"missing required file: {name}")
+            continue
         count, file_errors = inspect_file(path, kind, min_frequency, max_frequency)
         errors.extend(file_errors)
         files.append({
             "path": name,
             "kind": kind,
-            **DEFAULT_METADATA[name],
+            **metadata,
             "entries": count,
             "size": path.stat().st_size,
             "sha256": sha256(path),
@@ -335,7 +339,11 @@ def validate(directory: Path, manifest_path: Path, min_override, max_override):
         if not item: errors.append(f"manifest missing file record: {name}"); continue
         for field in ("source", "license", "entries", "size", "sha256"):
             if field not in item or item[field] in (None, ""): errors.append(f"{name}: missing metadata {field}")
-        if not path.is_file(): errors.append(f"missing required file: {name}"); continue
+        if not path.is_file():
+            if item.get("runtimeOptional"):
+                continue
+            errors.append(f"missing required file: {name}")
+            continue
         count, file_errors = inspect_file(path, kind, int(low), int(high)); errors.extend(file_errors)
         if count != item.get("entries"): errors.append(f"{name}: entry count {count} != manifest {item.get('entries')}")
         if path.stat().st_size != item.get("size"): errors.append(f"{name}: size mismatch")

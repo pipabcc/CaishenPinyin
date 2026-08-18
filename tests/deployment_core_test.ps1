@@ -59,7 +59,9 @@ try {
         throw 'incomplete legacy lexicon directory was modified'
     }
     $installedLexicon = Join-Path $dataRoot "versions\$installedDataVersion"
-    Remove-Item -LiteralPath (Join-Path $installedLexicon 'rime-moqi-zh.gram') -Force
+    if (Test-Path -LiteralPath (Join-Path $installedLexicon 'rime-moqi-zh.gram')) {
+        throw 'runtime-optional Grammar model was unexpectedly installed'
+    }
     & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck `
         -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
         -SigningPolicy Off -NoRegister

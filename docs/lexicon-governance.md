@@ -14,7 +14,8 @@
 Windows 只读文件映射和兼容 librime-octagram 的 Darts 双数组查询，不把 193 MB 文件
 复制到堆内存。模型是本地统计 N-gram，不是神经网络或生成式 AI；输入时会查询，
 不会联网。上游仓库没有许可证文件，因此清单必须保持 `NOASSERTION`，公开再分发前
-需要模型权利人的明确授权。
+需要模型权利人的明确授权。正式发布包和安装流程不携带该文件，用户自行下载后可复制到
+`%ProgramData%\CaishenPinyin\data\lexicon\versions\<current>`。
 
 字符回退模型 `system_ngram.bin` 由 Rime Ice 固定提交
 `569ff3bc65dd4aec0a26b33c49c8bbdfa8b5fd57` 的 `cn_dicts/ext.dict.yaml` 与
@@ -63,7 +64,7 @@ python scripts/lexicon_manifest.py validate
 通过小型 `current` 指针原子切换；默认机器根为
 `%ProgramData%\CaishenPinyin\data\lexicon`。引擎优先读取该包，缺失或损坏指针时兼容
 DLL 旁 `data\lexicon`。运行时依次尝试完整墨奇、`system_ngram.bin` 和旧版小
-`zh-moqi.gram`；完整墨奇在清单中标为运行时可选，删除后健康检查仍通过，
+`zh-moqi.gram`；完整墨奇不列入发行清单且不会随包安装，缺失时健康检查仍通过，
 `system_ngram.bin` 则必须存在且校验通过。小墨奇不列入 2.0.1 清单，仅兼容旧安装。
 用户词始终位于
 `%LOCALAPPDATA%\CaishenPinyin\data\lexicon\user_dict.txt`。

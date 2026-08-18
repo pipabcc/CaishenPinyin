@@ -24,6 +24,22 @@ InputScopePrivacy ClassifyInputScopes(const InputScope* scopes, UINT count) {
     return InputScopePrivacy::Normal;
 }
 
+void SchemaSyncState::Initialize(bool configured) noexcept {
+    runtime_shuangpin = configured;
+    configured_shuangpin = configured;
+}
+
+void SchemaSyncState::SetRuntime(bool shuangpin) noexcept {
+    runtime_shuangpin = shuangpin;
+}
+
+void SchemaSyncState::ApplyConfigured(bool configured) noexcept {
+    if (configured != configured_shuangpin) {
+        configured_shuangpin = configured;
+        runtime_shuangpin = configured;
+    }
+}
+
 NumpadDecision DecideNumpadKey(WPARAM key, bool num_lock, const std::string& composition) {
     NumpadDecision result;
     auto prefix = [&]() { result.text.assign(composition.begin(), composition.end()); };

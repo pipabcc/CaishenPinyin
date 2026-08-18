@@ -14,6 +14,20 @@ int main() {
     CHECK(CandidateQueryLimit(9, true) == 256);
     CHECK(CandidateQueryLimit(3, true) == 256);
 
+    SchemaSyncState schema;
+    schema.Initialize(false);
+    CHECK(!schema.runtime_shuangpin && !schema.configured_shuangpin);
+    schema.SetRuntime(true);
+    schema.ApplyConfigured(false);
+    CHECK(schema.runtime_shuangpin);  // unchanged setting must not undo F10
+    schema.ApplyConfigured(true);
+    CHECK(schema.runtime_shuangpin && schema.configured_shuangpin);
+    schema.SetRuntime(false);
+    schema.ApplyConfigured(true);
+    CHECK(!schema.runtime_shuangpin);  // F10 remains active after later queries
+    schema.ApplyConfigured(false);
+    CHECK(!schema.runtime_shuangpin && !schema.configured_shuangpin);
+
     ChinesePunctuationState punctuation;
     CHECK(punctuation.Translate(VK_OEM_COMMA, false, true, L"") == L"，");
     CHECK(punctuation.Translate(VK_OEM_7, true, true, L"") == L"“");

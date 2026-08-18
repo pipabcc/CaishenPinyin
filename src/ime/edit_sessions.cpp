@@ -132,11 +132,9 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
 
 SetCompositionEditSession::SetCompositionEditSession(
     ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
-    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom,
-    RECT* out_caret_rect, bool* out_caret_ok)
+    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom)
     : context_(context), client_id_(client_id), sink_(sink),
-      composition_(composition), text_(text), display_atom_(display_atom),
-      out_caret_rect_(out_caret_rect), out_caret_ok_(out_caret_ok) {
+      composition_(composition), text_(text), display_atom_(display_atom) {
     if (context_) {
         context_->AddRef();
     }
@@ -190,21 +188,6 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
         if (FAILED(hr) || insertion_range == nullptr) {
             SafeRelease(&insertion_range);
             return FAILED(hr) ? hr : E_FAIL;
-        }
-
-        // 在写入字符前测量已排版完成的前置光标插入点矩形
-        if (out_caret_rect_ != nullptr) {
-            ITfContextView* view = nullptr;
-            if (SUCCEEDED(context_->GetActiveView(&view)) && view != nullptr) {
-                RECT rc {};
-                BOOL clipped = FALSE;
-                if (SUCCEEDED(view->GetTextExt(ec, insertion_range, &rc, &clipped)) &&
-                    !clipped && rc.bottom > rc.top && rc.right >= rc.left) {
-                    *out_caret_rect_ = rc;
-                    if (out_caret_ok_ != nullptr) *out_caret_ok_ = true;
-                }
-                view->Release();
-            }
         }
 
         ITfContextComposition* context_composition = nullptr;
@@ -350,9 +333,9 @@ STDMETHODIMP GetTextExtEditSession::DoEditSession(TfEditCookie ec) {
     TfAnchor caret_anchor = TF_ANCHOR_END;
     if (composition_) {
         composition_->GetRange(&range);
-        // 组合期间始终以拼音起点为稳定锚点，避免每输入一个字母候选窗
-        // 都横向跳动。滚动或换行时 TSF 会重新上报该起点。
-        caret_anchor = TF_ANCHOR_START;
+        // 组合文本的选区由写入会话折叠到末尾；候选框必须使用同一个
+        // 实际输入光标，避免每次重排后先回到组合起点。
+        caret_anchor = TF_ANCHOR_END;
     }
     if (!range) {
         TF_SELECTION sel {};
