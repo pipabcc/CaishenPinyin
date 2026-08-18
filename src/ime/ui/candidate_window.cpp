@@ -322,6 +322,7 @@ bool CandidateWindow::Create(HINSTANCE instance) {
 void CandidateWindow::Destroy() {
     if (hwnd_ != nullptr) {
         StopReadyPolling();
+        StopDeferredAction();
         StopSkinAnimation();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -608,6 +609,7 @@ void CandidateWindow::Hide() {
     if (hwnd_ == nullptr) {
         return;
     }
+    StopDeferredAction();
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
     StopSkinAnimation();
@@ -807,6 +809,36 @@ void CandidateWindow::StopReadyPolling() {
     }
     ready_poll_active_ = false;
     ready_poll_ = nullptr;
+}
+
+void CandidateWindow::StartDeferredAction(
+    std::function<void()> action, UINT delay_ms) {
+    if (hwnd_ == nullptr) return;
+    StopDeferredAction();
+    deferred_action_ = std::move(action);
+    if (deferred_action_) {
+        const UINT interval = (std::max)(UINT{1}, delay_ms);
+        // WM_TIMER 可能在 KillTimer 后仍以旧 ID 留在消息队列中。每次
+        // 请求换用新 ID，旧消息不会误执行当前这一次的回调。
+        ++deferred_timer_serial_;
+        if (deferred_timer_serial_ == 0) {
+            deferred_timer_serial_ = 1;
+        }
+        deferred_timer_id_ = kDeferredActionTimerId + deferred_timer_serial_;
+        deferred_action_active_ = SetTimer(
+            hwnd_, deferred_timer_id_, interval, nullptr) != 0;
+        if (!deferred_action_active_) {
+            deferred_action_ = nullptr;
+        }
+    }
+}
+
+void CandidateWindow::StopDeferredAction() {
+    if (deferred_action_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, deferred_timer_id_);
+    }
+    deferred_action_active_ = false;
+    deferred_action_ = nullptr;
 }
 
 void CandidateWindow::StartVModeTimer(std::function<void()> callback, UINT delay_ms) {
@@ -1681,6 +1713,15 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             auto cb = std::move(self->vmode_timer_cb_);
             self->vmode_timer_cb_ = nullptr;
             if (cb) cb();
+            return 0;
+        }
+        if (wparam == self->deferred_timer_id_) {
+            if (!self->deferred_action_active_) return 0;
+            KillTimer(hwnd, self->deferred_timer_id_);
+            self->deferred_action_active_ = false;
+            auto action = std::move(self->deferred_action_);
+            self->deferred_action_ = nullptr;
+            if (action) action();
             return 0;
         }
         if (wparam == kReadyPollTimerId) {

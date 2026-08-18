@@ -215,6 +215,30 @@ int wmain() {
         }
     }
 
+    // 后续改写组合串不再重复 SetSelection；宿主应保留已经折叠到末端的光标。
+    if (!RunEditSession(
+            context, client_id,
+            new shuru::SetCompositionEditSession(
+                context, client_id, sink, &composition, L"suixinshurua",
+                TF_INVALID_GUIDATOM, false))) {
+        goto cleanup;
+    }
+    {
+        bool is_empty = false;
+        bool is_interim = true;
+        TfActiveSelEnd ase = TF_AE_NONE;
+        if (!RunEditSession(
+                context, client_id,
+                new ReadSelectionEditSession(context, &is_empty, &is_interim, &ase),
+                TF_ES_SYNC | TF_ES_READ) ||
+            !is_empty || is_interim || ase != TF_AE_END) {
+            std::fwprintf(stderr,
+                          L"composition update moved caret unexpectedly: empty=%d interim=%d ase=%d\n",
+                          is_empty, is_interim, ase);
+            goto cleanup;
+        }
+    }
+
     if (!RunEditSession(
             context, client_id,
             new shuru::InsertTextEditSession(

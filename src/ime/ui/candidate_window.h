@@ -86,6 +86,14 @@ public:
     void StartReadyPolling(std::function<bool()> poll);
     void StopReadyPolling();
 
+    // 将需要读取宿主布局的操作推迟到当前 TSF 编辑消息返回后执行。
+    // 连续请求会合并为一次回调，避免在旧布局和新布局之间来回移动。
+    void StartDeferredAction(std::function<void()> action, UINT delay_ms = 16);
+    void StopDeferredAction();
+    bool IsDeferredActionActive() const noexcept {
+        return deferred_action_active_;
+    }
+
     // V/VV 模式延时唤起独立窗口定时器
     void StartVModeTimer(std::function<void()> callback, UINT delay_ms = 220);
     void StopVModeTimer();
@@ -110,6 +118,7 @@ private:
     static constexpr UINT kReadyPollIntervalMs = 80;
     static constexpr UINT_PTR kVModeTimerId = 1002;
     static constexpr UINT_PTR kSkinAnimationTimerId = 1003;
+    static constexpr UINT_PTR kDeferredActionTimerId = 1004;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -166,6 +175,12 @@ private:
     std::function<bool()> ready_poll_;
     bool vmode_timer_active_ = false;
     std::function<void()> vmode_timer_cb_;
+    bool deferred_action_active_ = false;
+    // 每次延迟请求使用新的定时器 ID。KillTimer 无法撤回已经排队的
+    // WM_TIMER；递增 ID 可让这些旧消息在窗口过程中被直接忽略。
+    UINT_PTR deferred_timer_id_ = kDeferredActionTimerId;
+    UINT_PTR deferred_timer_serial_ = 0;
+    std::function<void()> deferred_action_;
     bool skin_animation_timer_active_ = false;
     std::wstring font_signature_;
     std::wstring layout_skin_id_;

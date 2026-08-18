@@ -132,9 +132,11 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
 
 SetCompositionEditSession::SetCompositionEditSession(
     ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
-    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom)
+    ITfComposition** composition, const std::wstring& text, TfGuidAtom display_atom,
+    bool move_caret_to_end)
     : context_(context), client_id_(client_id), sink_(sink),
-      composition_(composition), text_(text), display_atom_(display_atom) {
+      composition_(composition), text_(text), display_atom_(display_atom),
+      move_caret_to_end_(move_caret_to_end) {
     if (context_) {
         context_->AddRef();
     }
@@ -221,8 +223,11 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
 
     ApplyCompositionDisplayAttribute(context_, ec, range, display_atom_);
 
-    // 组合过程中将光标移动到当前组合串末尾，确保编辑器光标实时跟随输入
-    SetCaretToRangeEnd(context_, ec, range);
+    // 只在组合创建时设置一次选择端点。每个字母都调用 SetSelection 会让
+    // 部分宿主先按旧布局通知一次，再按新布局通知一次，直接造成闪跳。
+    if (move_caret_to_end_) {
+        SetCaretToRangeEnd(context_, ec, range);
+    }
 
     range->Release();
     return S_OK;
@@ -331,10 +336,12 @@ STDMETHODIMP GetTextExtEditSession::DoEditSession(TfEditCookie ec) {
 
     ITfRange* range = nullptr;
     TfAnchor caret_anchor = TF_ANCHOR_END;
+    const bool is_composition = composition_ != nullptr;
     if (composition_) {
         composition_->GetRange(&range);
-        // 组合文本的选区由写入会话折叠到末尾；候选框必须使用同一个
-        // 实际输入光标，避免每次重排后先回到组合起点。
+        // 组合范围的末端就是当前输入光标。下面优先测量末字符的字形
+        // 范围，再取其右边缘；部分宿主在重排窗口内对“折叠后的末端”
+        // 会暂时返回组合起点，直接使用该折叠矩形就会造成候选窗闪回。
         caret_anchor = TF_ANCHOR_END;
     }
     if (!range) {
@@ -350,7 +357,59 @@ STDMETHODIMP GetTextExtEditSession::DoEditSession(TfEditCookie ec) {
         return E_FAIL;
     }
 
-    // 优先测量折叠后的稳定锚点。
+    if (is_composition) {
+        ITfRange* tail_range = nullptr;
+        if (SUCCEEDED(range->Clone(&tail_range)) && tail_range != nullptr) {
+            if (SUCCEEDED(tail_range->Collapse(ec, TF_ANCHOR_END))) {
+                LONG shifted = 0;
+                if (SUCCEEDED(tail_range->ShiftStart(
+                        ec, -1, &shifted, nullptr)) && shifted == -1) {
+                    RECT tail_rect {};
+                    BOOL tail_clipped = FALSE;
+                    const HRESULT tail_hr = view->GetTextExt(
+                        ec, tail_range, &tail_rect, &tail_clipped);
+                    if (SUCCEEDED(tail_hr) && !tail_clipped &&
+                        tail_rect.right > tail_rect.left &&
+                        tail_rect.bottom > tail_rect.top) {
+                        tail_range->Release();
+                        range->Release();
+                        view->Release();
+                        tail_rect.left = tail_rect.right;
+                        *out_rect_ = tail_rect;
+                        if (out_ok_) *out_ok_ = true;
+                        return S_OK;
+                    }
+                }
+            }
+            tail_range->Release();
+        }
+    }
+
+    // 其次测量完整组合范围。它比折叠端点更能反映已经完成的排版，
+    // 同时作为跨行或末字符暂不可测量时的兼容回退。
+    RECT full_rect {};
+    BOOL full_clipped = FALSE;
+    HRESULT full_hr = view->GetTextExt(ec, range, &full_rect, &full_clipped);
+    if (is_composition && SUCCEEDED(full_hr) && !full_clipped &&
+        full_rect.right > full_rect.left &&
+        full_rect.bottom > full_rect.top) {
+        range->Release();
+        view->Release();
+        full_rect.left = full_rect.right;
+        *out_rect_ = full_rect;
+        if (out_ok_) *out_ok_ = true;
+        return S_OK;
+    }
+
+    // 组合末端暂时没有可用字形范围时宁可等待下一次布局通知，也不能
+    // 回退到折叠点。某些宿主此时会把折叠点错误地报告为组合起点。
+    if (is_composition) {
+        range->Release();
+        view->Release();
+        return E_FAIL;
+    }
+
+    // 非组合选区仍优先测量折叠后的实际插入点。
     ITfRange* caret_range = nullptr;
     if (SUCCEEDED(range->Clone(&caret_range)) && caret_range != nullptr) {
         if (SUCCEEDED(caret_range->Collapse(ec, caret_anchor))) {

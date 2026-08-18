@@ -240,6 +240,51 @@ int wmain(int argc, wchar_t** argv) {
     shuru::CandidateWindow window;
     if (!window.Create(GetModuleHandleW(nullptr))) return 4;
 
+    // KillTimer 不能移除已经排队的 WM_TIMER。旧消息必须被唯一 ID 忽略，
+    // 不能抢先执行后来设置的候选窗定位回调。
+    int deferred_calls = 0;
+    int deferred_value = 0;
+    window.StartDeferredAction([&]() {
+        ++deferred_calls;
+        deferred_value = 1;
+    }, 1);
+    Sleep(40);
+    MSG queued_timer {};
+    if (!PeekMessageW(
+            &queued_timer, window.GetHwnd(), WM_TIMER, WM_TIMER,
+            PM_NOREMOVE)) {
+        std::fwprintf(stderr, L"deferred timer message was not queued\n");
+        return 46;
+    }
+    window.StartDeferredAction([&]() {
+        ++deferred_calls;
+        deferred_value = 2;
+    }, 40);
+    while (PeekMessageW(
+            &queued_timer, window.GetHwnd(), WM_TIMER, WM_TIMER,
+            PM_REMOVE)) {
+        DispatchMessageW(&queued_timer);
+    }
+    if (deferred_calls != 0) {
+        std::fwprintf(stderr, L"stale deferred timer executed current action\n");
+        return 47;
+    }
+    const ULONGLONG deferred_deadline = GetTickCount64() + 500;
+    while (deferred_calls == 0 && GetTickCount64() < deferred_deadline) {
+        while (PeekMessageW(
+                &queued_timer, window.GetHwnd(), 0, 0, PM_REMOVE)) {
+            TranslateMessage(&queued_timer);
+            DispatchMessageW(&queued_timer);
+        }
+        Sleep(2);
+    }
+    if (deferred_calls != 1 || deferred_value != 2) {
+        std::fwprintf(stderr,
+                      L"deferred timer coalescing failed: calls=%d value=%d\n",
+                      deferred_calls, deferred_value);
+        return 48;
+    }
+
     std::vector<shuru::Candidate> candidates(63);
     for (size_t i = 0; i < candidates.size(); ++i) {
         candidates[i].text = L"候选" + std::to_wstring(i + 1);

@@ -12,6 +12,7 @@
 
 #include <msctf.h>
 
+#include <cstdint>
 #include <string>
 
 namespace shuru {
@@ -93,6 +94,14 @@ private:
     std::wstring candidate_display_;
     std::wstring candidate_display_fallback_;
     bool composition_edit_in_progress_ = false;
+    // 候选窗保留最近一次稳定确认的组合末端。新文本写入或布局变化后先
+    // 保留旧位置，等当前布局通知经过防抖再一次性更新，避免旧矩形曝光。
+    bool has_candidate_anchor_ = false;
+    RECT candidate_anchor_rect_ {};
+    bool candidate_position_pending_ = false;
+    bool candidate_layout_notified_ = false;
+    std::uint64_t candidate_layout_generation_ = 0;
+    std::uint64_t candidate_layout_serial_ = 0;
     // 用户拖动候选窗后的固定位置；仅当前组合会话内有效，组合结束即恢复跟随光标。
     bool candidate_pos_overridden_ = false;
     POINT candidate_override_pos_ {};
@@ -128,6 +137,9 @@ private:
     void DismissAssociation();
     void SyncCandidateWindowCandidates();
     void UpdateCandidateWindow(ITfContext* context);
+    void ScheduleCandidateWindowUpdate();
+    void TryResolveCandidateAnchor(
+        std::uint64_t generation, std::uint64_t layout_serial);
     bool GetCaretScreenRect(ITfContext* context, RECT* rect);
     void ResetCandidateAnchor() noexcept;
     void ClearCompositionState();

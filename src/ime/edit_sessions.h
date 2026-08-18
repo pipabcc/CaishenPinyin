@@ -31,7 +31,8 @@ public:
     SetCompositionEditSession(
         ITfContext* context, TfClientId client_id, ITfCompositionSink* sink,
         ITfComposition** composition, const std::wstring& text,
-        TfGuidAtom display_atom = TF_INVALID_GUIDATOM);
+        TfGuidAtom display_atom = TF_INVALID_GUIDATOM,
+        bool move_caret_to_end = true);
     virtual ~SetCompositionEditSession();
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
@@ -47,6 +48,7 @@ private:
     ITfComposition** composition_ = nullptr;
     std::wstring text_;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
+    bool move_caret_to_end_ = true;
 };
 
 class EndCompositionEditSession : public ITfEditSession {

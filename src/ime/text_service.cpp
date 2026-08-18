@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <cwchar>
 
 namespace shuru {
@@ -28,6 +29,10 @@ namespace {
 bool IsShiftKey(WPARAM wparam) {
     return wparam == VK_SHIFT || wparam == VK_LSHIFT || wparam == VK_RSHIFT;
 }
+
+// TSF 布局通知可能连续到达：第一条对应旧排版，后续通知才对应新组合
+// 末端。只在最后一条通知后的短暂静默期读取一次，避免把中间矩形显示出来。
+constexpr UINT kCandidateLayoutDebounceMs = 24;
 
 // Ctrl/Alt/Win 按下时把快捷键交给应用（Ctrl+A/C/V 等），IME 不吞键。
 // 检查当前是否处于系统快捷键组合中（Ctrl/Alt/Win）。
@@ -573,6 +578,7 @@ STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     } else {
         shift_tap_.Reset();
         SharedStatusUi::Unbind(this);
+        candidate_window_.StopDeferredAction();
         candidate_window_.Hide();
         SharedStatusUi::HideSoftKeyboard();
     }
@@ -1099,6 +1105,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             if (FAILED(hr)) {
                 composing_pinyin_.pop_back();
                 RefreshCandidates();
+                UpdateCandidateWindow(context);
                 return true;
             }
             RefreshCandidates();
@@ -1118,6 +1125,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         } else {
             composing_pinyin_.pop_back();
             RefreshCandidates();
+            UpdateCandidateWindow(context);
         }
         return true;
     }
@@ -1231,6 +1239,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             if (FAILED(hr)) {
                 composing_pinyin_ = previous;
                 RefreshCandidates();
+                UpdateCandidateWindow(context);
                 *eaten = false;
                 return true;
             }
@@ -1255,6 +1264,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             context, PinyinToWide(composing_pinyin_));
         if (FAILED(hr)) {
             RefreshCandidates();
+            UpdateCandidateWindow(context);
             SHURU_LOG_WARN("SetCompositionString rejected v-mode digit: 0x%08X", hr);
             *eaten = true;
             return true;
@@ -1446,6 +1456,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             // 缓冲已经由输入法接管。保留完整内容供后续按键重试，避免宿主
             // 暂时拒绝首次编辑会话时首字母被直接上屏或丢失。
             RefreshCandidates();
+            UpdateCandidateWindow(context);
             SHURU_LOG_WARN("SetCompositionString rejected key: 0x%08X", hr);
             return true;
         }
@@ -1656,6 +1667,7 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
 }
 
 void TextService::UpdateCandidateWindow(ITfContext* context) {
+    (void)context;
     const RuntimeConfig config = GetRuntimeConfig();
     const bool is_v1 = (composing_pinyin_ == "v" || composing_pinyin_ == "V");
     const bool is_vv = (composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0);
@@ -1676,18 +1688,19 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
     if (candidate_pos_overridden_) {
         // 用户在本次组合中拖动过候选窗：固定在拖放位置，不再跟随光标。
         pt = candidate_override_pos_;
-    } else {
-        RECT rc {};
-        if (!GetCaretScreenRect(context, &rc)) {
-            // TSF 在组合文本刚写入或宿主正在重排时可能暂时没有矩形。
-            // 已显示窗口保持原位，等 OnLayoutChange 提供权威矩形；首次
-            // 显示则保持隐藏，绝不借用上一轮组合的旧坐标。
-            if (!candidate_window_.IsVisible()) {
-                candidate_window_.Hide();
-            }
-            return;
-        }
+    } else if (has_candidate_anchor_ &&
+               IsReliableCandidateRect(candidate_anchor_rect_)) {
+        // 使用最近一次已经稳定确认的组合末端。新布局尚未稳定时保留
+        // 这个位置，避免把宿主的旧矩形短暂显示出来。
+        const RECT& rc = candidate_anchor_rect_;
         pt = POINT {rc.left, (rc.bottom > rc.top ? rc.bottom : rc.top) + gap};
+    } else {
+        // 首次组合尚未取得稳定末端时，必须保持隐藏；继续显示上一轮
+        // 组合位置会产生“旧位置 -> 当前光标”的可见闪跳。定位只由
+        // OnLayoutChange 触发，不能在这里启动脱离布局世代的轮询。
+        candidate_window_.Hide();
+        ScheduleCandidateWindowUpdate();
+        return;
     }
     // CandidateWindow::Show 使用实际布局尺寸和所在显示器工作区定位，无需在此
     // 用固定预留像素重复估算。
@@ -1700,8 +1713,46 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
     }
 }
 
+void TextService::ScheduleCandidateWindowUpdate() {
+    if (!candidate_position_pending_ || !candidate_layout_notified_ ||
+        edit_context_ == nullptr || composing_pinyin_.empty()) {
+        return;
+    }
+
+    // 每条布局通知都重新开始防抖计时。不能复用已经活动的定时器，
+    // 否则第一条旧布局通知会抢在最终布局通知前读取并提交错误坐标。
+    const std::uint64_t generation = candidate_layout_generation_;
+    const std::uint64_t layout_serial = candidate_layout_serial_;
+    candidate_window_.StartDeferredAction(
+        [this, generation, layout_serial]() {
+            TryResolveCandidateAnchor(generation, layout_serial);
+        },
+        kCandidateLayoutDebounceMs);
+}
+
+void TextService::TryResolveCandidateAnchor(
+    std::uint64_t generation, std::uint64_t layout_serial) {
+    if (edit_context_ == nullptr || composing_pinyin_.empty() ||
+        generation != candidate_layout_generation_ ||
+        layout_serial != candidate_layout_serial_ ||
+        !candidate_position_pending_ || !candidate_layout_notified_) {
+        return;
+    }
+
+    RECT rect {};
+    if (GetCaretScreenRect(edit_context_, &rect) &&
+        IsReliableCandidateRect(rect)) {
+        candidate_anchor_rect_ = rect;
+        has_candidate_anchor_ = true;
+        candidate_position_pending_ = false;
+        candidate_layout_notified_ = false;
+        UpdateCandidateWindow(edit_context_);
+    }
+}
+
 void TextService::ClearCompositionState() {
     candidate_window_.StopVModeTimer();
+    candidate_window_.StopDeferredAction();
     composing_pinyin_.clear();
     candidate_state_ = {};
     current_result_ = {};
@@ -1714,6 +1765,12 @@ void TextService::ClearCompositionState() {
 }
 
 void TextService::ResetCandidateAnchor() noexcept {
+    has_candidate_anchor_ = false;
+    candidate_anchor_rect_ = {};
+    candidate_position_pending_ = false;
+    candidate_layout_notified_ = false;
+    ++candidate_layout_generation_;
+    candidate_layout_serial_ = 0;
     candidate_pos_overridden_ = false;
     candidate_override_pos_ = {};
 }
@@ -1776,9 +1833,20 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     if (context == nullptr) {
         return E_FAIL;
     }
+    const bool starts_composition = composition_ == nullptr;
+    candidate_window_.StopDeferredAction();
+    ++candidate_layout_generation_;
+    candidate_layout_serial_ = 0;
+    candidate_position_pending_ = !text.empty();
+    candidate_layout_notified_ = false;
+    if (starts_composition) {
+        has_candidate_anchor_ = false;
+        candidate_anchor_rect_ = {};
+    }
     auto* session = new (std::nothrow) SetCompositionEditSession(
         context, client_id_, static_cast<ITfCompositionSink*>(this),
-        &composition_, text, display_atom_);
+        &composition_, text, display_atom_,
+        starts_composition);
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }
@@ -1787,26 +1855,46 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     const HRESULT hr = context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
     composition_edit_in_progress_ = false;
     session->Release();
+    if (FAILED(hr) || FAILED(hr_session) || text.empty()) {
+        candidate_position_pending_ = false;
+        candidate_layout_notified_ = false;
+        candidate_window_.StopDeferredAction();
+    } else {
+        // 每次改写组合串都产生新的末端位置。已显示窗口先保持上一次
+        // 稳定坐标，只有当前文本世代收到布局通知后才允许重新定位。
+        candidate_position_pending_ = true;
+        ScheduleCandidateWindowUpdate();
+    }
     return SUCCEEDED(hr) ? hr_session : hr;
 }
 
 STDMETHODIMP TextService::OnEndEdit(ITfContext* pic, TfEditCookie /*ecReadOnly*/, ITfEditRecord* /*pEditRecord*/) {
-    if (!composition_edit_in_progress_ && !composing_pinyin_.empty() && pic == edit_context_)
-        UpdateCandidateWindow(pic);
+    (void)pic;
+    // OnEndEdit 发生在宿主布局刷新之前，不能在这里读取并应用候选窗坐标。
+    // SetCompositionString/OnLayoutChange 会安排合并后的延迟刷新。
     return S_OK;
 }
 
 STDMETHODIMP TextService::OnLayoutChange(
     ITfContext* pic, TfLayoutCode lcode, ITfContextView* /*view*/) {
     if (pic != edit_context_ || composing_pinyin_.empty()) return S_OK;
-    if (composition_edit_in_progress_) return S_OK;
     if (lcode == TF_LC_DESTROY) {
+        candidate_window_.StopDeferredAction();
         candidate_window_.Hide();
+        has_candidate_anchor_ = false;
+        candidate_anchor_rect_ = {};
+        candidate_position_pending_ = false;
+        candidate_layout_notified_ = false;
+        ++candidate_layout_generation_;
+        candidate_layout_serial_ = 0;
         return S_OK;
     }
-    // 首字布局以及后续滚动、重排都会触发此通知。宿主排版完成后，
-    // 重新读取权威的 TSF 光标矩形。
-    UpdateCandidateWindow(pic);
+    // 即使通知发生在写入会话内部也不能丢弃：它描述的是当前文本世代
+    // 的排版，延迟回调会等写入会话返回后再读取坐标。
+    candidate_position_pending_ = true;
+    candidate_layout_notified_ = true;
+    ++candidate_layout_serial_;
+    ScheduleCandidateWindowUpdate();
     return S_OK;
 }
 
