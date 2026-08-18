@@ -2,11 +2,29 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $temporaryRoot = Join-Path $env:TEMP ('facai-deploy-test-' + [guid]::NewGuid())
 
+function New-TestLexiconPackage([string]$Path, [string]$Version, [string]$Content) {
+    New-Item -ItemType Directory -Force -Path $Path | Out-Null
+    $dictionaryPath = Join-Path $Path 'test_dict.txt'
+    [IO.File]::WriteAllText($dictionaryPath, $Content, [Text.UTF8Encoding]::new($false))
+    $file = Get-Item -LiteralPath $dictionaryPath
+    [ordered]@{
+        schemaVersion = '2'
+        version = $Version
+        files = @([ordered]@{
+            path = 'test_dict.txt'
+            sha256 = (Get-FileHash -LiteralPath $dictionaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            size = [int64]$file.Length
+        })
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath `
+        (Join-Path $Path 'manifest.json') -Encoding UTF8
+}
+
 try {
     New-Item -ItemType Directory -Force -Path $temporaryRoot | Out-Null
     $installRoot = Join-Path $temporaryRoot 'app'
     $dataRoot = Join-Path $temporaryRoot 'data'
     $startMenuRoot = Join-Path $temporaryRoot 'start-menu'
+    $userDataRoot = Join-Path $temporaryRoot 'user-data'
     $packageRoot = Join-Path $temporaryRoot 'package'
     $skinSource = Join-Path $packageRoot 'data\skins\classic_blue'
     New-Item -ItemType Directory -Force -Path $skinSource | Out-Null
@@ -24,6 +42,11 @@ try {
         'ShuruSettings.runtimeconfig.json')) {
         Set-Content -LiteralPath (Join-Path $settingsRoot $name) -Value $name
     }
+    Set-Content -LiteralPath (Join-Path $settingsRoot 'coreclr.dll') -Value 'self-contained-runtime'
+    $nativeRuntimeRoot = Join-Path $settingsRoot 'runtimes\win-x64\native'
+    New-Item -ItemType Directory -Force -Path $nativeRuntimeRoot | Out-Null
+    Set-Content -LiteralPath (Join-Path $nativeRuntimeRoot 'runtime-helper.dll') `
+        -Value 'nested-runtime'
 
     $commonArguments = @{
         DllPath = $dummyDll
@@ -32,6 +55,7 @@ try {
         InstallRoot = $installRoot
         DataRoot = $dataRoot
         StartMenuRoot = $startMenuRoot
+        UserDataRoot = $userDataRoot
         SigningPolicy = 'Off'
         NoRegister = $true
     }
@@ -72,6 +96,15 @@ try {
     $installedSettings = Join-Path $installRoot 'versions\test-1\ShuruSettings.exe'
     if (-not (Test-Path -LiteralPath $installedSettings -PathType Leaf)) {
         throw 'settings application was not deployed'
+    }
+    if (-not (Test-Path -LiteralPath `
+        (Join-Path $installRoot 'versions\test-1\coreclr.dll') -PathType Leaf)) {
+        throw 'self-contained runtime file was not deployed'
+    }
+    if (-not (Test-Path -LiteralPath `
+        (Join-Path $installRoot 'versions\test-1\runtimes\win-x64\native\runtime-helper.dll') `
+        -PathType Leaf)) {
+        throw 'nested self-contained runtime file was not deployed'
     }
     $installedSkin = Join-Path $installRoot 'versions\test-1\data\skins\classic_blue\skin.ini'
     if (-not (Test-Path -LiteralPath $installedSkin -PathType Leaf)) {
@@ -184,6 +217,77 @@ try {
     }
     if (Get-ChildItem -LiteralPath $firstStartMenuRoot -Filter '*.lnk' -ErrorAction SilentlyContinue) {
         throw 'failed first install left a settings shortcut'
+    }
+
+    $grammarPackage1 = Join-Path $temporaryRoot 'grammar-package-1'
+    $grammarPackage2 = Join-Path $temporaryRoot 'grammar-package-2'
+    New-TestLexiconPackage $grammarPackage1 'grammar-1' 'first lexicon'
+    New-TestLexiconPackage $grammarPackage2 'grammar-2' 'second lexicon'
+    $grammarInstallRoot = Join-Path $temporaryRoot 'grammar-app'
+    $grammarDataRoot = Join-Path $temporaryRoot 'grammar-data'
+    $grammarStartMenuRoot = Join-Path $temporaryRoot 'grammar-start-menu'
+    $grammarUserDataRoot = Join-Path $temporaryRoot 'grammar-user-data'
+    $grammarArguments = @{
+        DllPath = $dummyDll
+        SettingsPath = $settingsRoot
+        InstallRoot = $grammarInstallRoot
+        DataRoot = $grammarDataRoot
+        StartMenuRoot = $grammarStartMenuRoot
+        UserDataRoot = $grammarUserDataRoot
+        SigningPolicy = 'Off'
+        NoRegister = $true
+        NoShortcut = $true
+    }
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action Install `
+        -Version grammar-app-1 -PackagePath $grammarPackage1 @grammarArguments
+    if ($LASTEXITCODE -ne 0) { throw 'optional Grammar test first install failed' }
+    $grammarDataVersion1 = (Get-Content -LiteralPath `
+        (Join-Path $grammarDataRoot 'current') -Raw).Trim()
+    $grammarFile1 = Join-Path $grammarDataRoot "versions\$grammarDataVersion1\rime-moqi-zh.gram"
+    Set-Content -LiteralPath $grammarFile1 -Value 'user-managed-grammar'
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action Install `
+        -Version grammar-app-2 -PackagePath $grammarPackage2 @grammarArguments
+    if ($LASTEXITCODE -ne 0) { throw 'optional Grammar test upgrade failed' }
+    $grammarDataVersion2 = (Get-Content -LiteralPath `
+        (Join-Path $grammarDataRoot 'current') -Raw).Trim()
+    $grammarFile2 = Join-Path $grammarDataRoot "versions\$grammarDataVersion2\rime-moqi-zh.gram"
+    if (-not (Test-Path -LiteralPath $grammarFile2 -PathType Leaf) -or
+        (Get-Content -LiteralPath $grammarFile2 -Raw).Trim() -ne 'user-managed-grammar') {
+        throw 'user-managed Grammar was not preserved across lexicon upgrade'
+    }
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action Uninstall `
+        -InstallRoot $grammarInstallRoot -DataRoot $grammarDataRoot `
+        -StartMenuRoot $grammarStartMenuRoot -UserDataRoot $grammarUserDataRoot `
+        -SigningPolicy Off -NoRegister -NoShortcut -DeleteUserData
+    if ($LASTEXITCODE -ne 0) { throw 'optional Grammar test cleanup failed' }
+
+    $activeDataVersion = (Get-Content -LiteralPath (Join-Path $dataRoot 'current') -Raw).Trim()
+    $preservedGrammar = Join-Path $dataRoot "versions\$activeDataVersion\rime-moqi-zh.gram"
+    Set-Content -LiteralPath $preservedGrammar -Value 'preserve-on-uninstall'
+    New-Item -ItemType Directory -Force -Path $userDataRoot | Out-Null
+    $userDataSentinel = Join-Path $userDataRoot 'settings.ini'
+    Set-Content -LiteralPath $userDataSentinel -Value 'preserve-user-data'
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action Uninstall `
+        -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
+        -UserDataRoot $userDataRoot -SigningPolicy Off -NoRegister
+    if ($LASTEXITCODE -ne 0) { throw 'uninstall with retained data failed' }
+    if ((Test-Path -LiteralPath (Join-Path $installRoot 'current') -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $installRoot 'versions') -PathType Container)) {
+        throw 'uninstall left application pointers or version directories'
+    }
+    if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+        throw 'uninstall left the settings shortcut'
+    }
+    if (-not (Test-Path -LiteralPath $userDataSentinel -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $preservedGrammar -PathType Leaf)) {
+        throw 'default uninstall removed retained user data or Grammar'
+    }
+    & (Join-Path $root 'scripts\install_ime.ps1') -Action Uninstall `
+        -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `
+        -UserDataRoot $userDataRoot -SigningPolicy Off -NoRegister -DeleteUserData
+    if ($LASTEXITCODE -ne 0) { throw 'uninstall user-data cleanup failed' }
+    if ((Test-Path -LiteralPath $dataRoot) -or (Test-Path -LiteralPath $userDataRoot)) {
+        throw 'delete-user-data uninstall retained data directories'
     }
     Write-Host 'deployment core tests passed'
 } finally {

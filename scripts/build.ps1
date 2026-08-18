@@ -34,7 +34,8 @@ $ninja=Get-Command ninja -ErrorAction SilentlyContinue
 if($ninja){$configure="cmake -S `"$Root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl";$compile="cmake --build `"$build`" --config $Config --clean-first";$dll=Join-Path $build 'ShuruIme.dll'}
 else{$configure="cmake -S `"$Root`" -B `"$build`" -G `"Visual Studio 17 2022`" -A x64 -DBUILD_TESTING=ON";$compile="cmake --build `"$build`" --config $Config --clean-first";$dll=Join-Path $build "$Config\ShuruIme.dll"}
 $settingsProject=Join-Path $Root 'settings\ShuruSettings.csproj'
-$settingsOutput=Join-Path $Root "settings\bin\$Config\net8.0-windows"
+$settingsOutput=Join-Path $Root "settings\bin\$Config\net8.0-windows\win-x64\publish"
+if(Test-Path -LiteralPath $settingsOutput){Remove-Item -LiteralPath $settingsOutput -Recurse -Force}
 $bat=Join-Path $env:TEMP 'facai-release-build.cmd';@"
 @echo on
 call "$dev" -arch=amd64 -host_arch=amd64 || exit /b 1
@@ -43,20 +44,26 @@ $configure || exit /b 1
 $compile || exit /b 1
 ctest --test-dir "$build" -C $Config --output-on-failure || exit /b 1
 rem settings_ui_smoke uses dotnet run and rebuilds with the project defaults.
-rem Restore the release version metadata before validating and packaging it.
-dotnet build "$settingsProject" --configuration $Config -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1
+rem Publish the final settings application with its own Windows desktop runtime.
+dotnet publish "$settingsProject" --configuration $Config --runtime win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1
 "@ | Set-Content -LiteralPath $bat -Encoding ASCII
 cmd /c "`"$bat`"";if($LASTEXITCODE-ne 0){throw "configure/build/full CTest failed: $LASTEXITCODE"}
 if(-not(Test-Path $dll)){throw "expected DLL missing: $dll"}
 $builtVersion=(Get-Item -LiteralPath $dll).VersionInfo.FileVersion
 if($builtVersion-ne$productVersion){throw "DLL file version $builtVersion does not match source version $productVersion"}
-$settingsFiles=@('ShuruSettings.exe','ShuruSettings.dll','ShuruSettings.deps.json','ShuruSettings.runtimeconfig.json')
-foreach($name in $settingsFiles){if(-not(Test-Path -LiteralPath (Join-Path $settingsOutput $name) -PathType Leaf)){throw "expected settings file missing: $name"}}
+$settingsRequiredFiles=@('ShuruSettings.exe','ShuruSettings.dll','ShuruSettings.deps.json','ShuruSettings.runtimeconfig.json')
+foreach($name in $settingsRequiredFiles){if(-not(Test-Path -LiteralPath (Join-Path $settingsOutput $name) -PathType Leaf)){throw "expected settings file missing: $name"}}
 $settingsVersion=(Get-Item -LiteralPath (Join-Path $settingsOutput 'ShuruSettings.dll')).VersionInfo.FileVersion
 if(([Version]$settingsVersion).ToString(3)-ne$productVersion){throw "settings file version $settingsVersion does not match source version $productVersion"}
 if(-not $NoPackage){
  if(Test-Path $out){Remove-Item $out -Recurse -Force};New-Item -ItemType Directory -Force -Path (Join-Path $out 'data\lexicon')|Out-Null
- Copy-Item $dll (Join-Path $out 'ShuruIme.dll');foreach($name in $settingsFiles){Copy-Item (Join-Path $settingsOutput $name) (Join-Path $out $name)}
+ Copy-Item $dll (Join-Path $out 'ShuruIme.dll')
+ Get-ChildItem -LiteralPath $settingsOutput -Recurse -File | ForEach-Object {
+  $relative=$_.FullName.Substring($settingsOutput.Length).TrimStart('\')
+  $destination=Join-Path $out $relative
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination)|Out-Null
+  Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+ }
  $lexiconRoot=Join-Path $Root 'data\lexicon';$lexiconOut=Join-Path $out 'data\lexicon';$lexiconManifest=Get-Content -LiteralPath (Join-Path $lexiconRoot 'manifest.json') -Raw|ConvertFrom-Json
  foreach($file in $lexiconManifest.files){
   if($file.PSObject.Properties.Name -contains 'runtimeOptional' -and $file.runtimeOptional -eq $true){continue}
@@ -65,6 +72,13 @@ if(-not $NoPackage){
  Copy-Item -LiteralPath (Join-Path $lexiconRoot 'manifest.json') -Destination (Join-Path $lexiconOut 'manifest.json') -Force
  Copy-Item -LiteralPath (Join-Path $Root 'THIRD_PARTY_NOTICES.md') -Destination $out
  Copy-Item -LiteralPath (Join-Path $Root 'licenses') -Destination (Join-Path $out 'licenses') -Recurse -Force
+ $dotnetRoot=Split-Path -Parent (Get-Command dotnet).Source
+ foreach($notice in @('LICENSE.txt','ThirdPartyNotices.txt')){
+  $source=Join-Path $dotnetRoot $notice
+  if(Test-Path -LiteralPath $source -PathType Leaf){
+   Copy-Item -LiteralPath $source -Destination (Join-Path $out "licenses\dotnet-$notice") -Force
+  }
+ }
  if(Test-Path (Join-Path $Root 'data\skins')){Copy-Item -LiteralPath (Join-Path $Root 'data\skins') -Destination (Join-Path $out 'data\skins') -Recurse -Force}
  & (Join-Path $PSScriptRoot 'new_release_manifest.ps1') -PackageRoot $out -Version $productVersion -SigningPolicy $SigningPolicy
 }

@@ -14,6 +14,7 @@
 | Windows SDK 10.0.26100 | `E:\shurufa\tools\winsdk\Windows Kits\10` |
 | CMake 3.31.6 | `E:\shurufa\tools\cmake\cmake-3.31.6-windows-x86_64` |
 | Ninja 1.12.1 | `E:\shurufa\tools\ninja` |
+| NSIS 3 | `C:\Program Files (x86)\NSIS` |
 | 安装缓存 | `E:\shurufa\tools\cache` |
 | 临时目录 | `E:\shurufa\tools\tmp` |
 
@@ -39,7 +40,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Re
 - `build-release\engine_playground.exe`
 - `build-release\data\lexicon\*.txt`
 - `artifacts\release\ShuruIme.dll`
-- `artifacts\release\ShuruSettings.exe`、`ShuruSettings.dll`、`.deps.json`、`.runtimeconfig.json`
+- `artifacts\release\ShuruSettings.exe`、WPF 程序文件及完整 `win-x64` .NET 8 Desktop Runtime
 - `artifacts\release\data\lexicon\*` 与 `release-manifest.json`，不含用户自行安装的 `rime-moqi-zh.gram`
 
 完整墨奇模型单文件超过 GitHub 普通 Git 上限，不提交也不进入发布包。若要在本地运行
@@ -47,8 +48,26 @@ Grammar 测试，可用 `-GrammarPath <rime-moqi-zh.gram>` 指定；发布构建
 用户可自行下载并复制到安装后的当前词库版本目录；发布词库包含必需的
 `system_ngram.bin`，完整模型缺失或加载失败时自动回退。
 其他参数：`-BuildDir`、`-OutputDir`、`-SigningPolicy Off|IfPresent|Required`、
-`-NoPackage`。正式发布必须使用 `-SigningPolicy Required`；本地编译测试可使用
-`-NoPackage`。
+`-NoPackage`。当前无签名安装包固定使用 `Off`；未来签名发布应切换为 `Required`。
+本地编译测试可使用 `-NoPackage`。
+
+## 构建安装包
+
+`scripts\build_installer.ps1` 是图形安装包的唯一入口。它先调用上述正式构建，再验证
+清单、哈希、自包含运行时、法律声明和禁止打包的用户文件，最后调用 NSIS：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
+
+输出：
+
+- `artifacts\installer\CaishenPinyin-<version>-win-x64-Setup.exe`
+- 同名 `.sha256` 文件
+
+只重编 NSIS 包装层时可加 `-SkipBuild`，但仍会完整校验现有 `artifacts\release`。
+安装包保持未签名；脚本若发现 Setup 意外带有签名或发布清单不是 `SigningPolicy=Off`
+会立即失败。
 
 中文 Windows 下，CMakeLists 已显式配置 Ninja 识别 MSVC 的 UTF-8 中文
 `/showIncludes` 前缀，避免增量构建遗漏头文件依赖。
@@ -73,7 +92,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
-该入口会校验发布清单、注册 DLL、部署设置程序并创建公共开始菜单快捷方式。开发阶段只需重新注册单个 DLL 时，才使用 `scripts\register_ime.ps1`。
+该入口会校验发布清单、注册 DLL、部署设置程序并创建公共开始菜单快捷方式。设置程序
+为自包含发布，目标电脑无需单独安装 .NET Desktop Runtime。开发阶段只需重新注册单个
+DLL 时，才使用 `scripts\register_ime.ps1`。
 
 ## 日志
 

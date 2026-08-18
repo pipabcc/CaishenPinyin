@@ -49,6 +49,7 @@ Windows 11 本地拼音输入法，包含 TSF 文本服务、拼音引擎、候�
 2. Windows 10/11 SDK（含 `msctf.h`）
 3. CMake >= 3.20
 4. .NET 8 SDK（设置程序 / C# 演练）
+5. NSIS 3（仅构建图形安装包时需要）
 
 检查环境：
 
@@ -64,15 +65,27 @@ powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
 ```
 
-默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。如需在本地运行
+默认构建目录为 `build-release`，发布包目录为 `artifacts\release`。设置中心以
+`win-x64` 自包含方式发布，目标电脑无需预装 .NET 8 Desktop Runtime。如需在本地运行
 完整 Grammar 测试，可用 `-GrammarPath <rime-moqi-zh.gram>` 指定并校验模型；该文件
 始终不会进入发布包或安装目录。其他参数包括 `-BuildDir`、`-OutputDir`、
-`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage`；
-正式发布应使用 `-SigningPolicy Required`。
+`-SigningPolicy Off|IfPresent|Required` 和 `-NoPackage`。当前无签名安装包方案显式使用
+`-SigningPolicy Off`；取得 Authenticode 证书后，签名发布应改为 `Required`。
 
 ## 安装与注册
 
-先完成正式构建，再在管理员 PowerShell 中安装发布包：
+构建单文件图形安装包（内部会先执行正式构建和完整测试）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
+
+输出为 `artifacts\installer\CaishenPinyin-<version>-win-x64-Setup.exe` 及对应
+SHA-256 文件。安装页的“设为默认输入法”默认勾选；安装后会在 Windows“已安装的应用”
+中注册 `Uninstall.exe`。当前安装包未签名，分发时 Windows 可能显示“未知发布者”或
+SmartScreen 提示，这属于既定的无签名方案限制。
+
+开发环境也可在管理员 PowerShell 中直接部署发布包：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
@@ -81,12 +94,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
   -SettingsPath artifacts\release `
   -PackagePath artifacts\release\data\lexicon `
   -Version 2.0.1 `
+  -SetDefaultInputMethod `
   -HealthCheckExe build-release\release_health_check.exe
 ```
 
 安装后可从开始菜单打开“财神输入法设置”，也可在候选框内右键直接打开设置。原“中 / 全 / 键 / 设”悬浮状态栏默认永久隐藏，软键盘仍可通过 `F9` 使用。
 
-卸载：
+正式卸载请使用“设置 → 应用 → 已安装的应用”中的财神拼音卸载程序。默认保留设置、
+皮肤、剪贴板记录、词库和用户自行安装的 Grammar；只有显式勾选删除个人数据时才会
+删除这些目录。开发阶段仅注销当前 DLL 时可使用：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\unregister_ime.ps1
@@ -116,6 +132,7 @@ nihao	你好	9000
 
 - `docs/lexicon-governance.md`
 - `docs/deployment.md`
+- `docs/installer.md`
 - `docs/privacy-input-policy.md`
 
 `user_dict.txt`、`custom_phrases.txt` 和字数统计始终保存在 `%LOCALAPPDATA%`，升级流程不会覆盖。

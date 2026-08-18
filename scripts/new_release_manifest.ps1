@@ -11,7 +11,11 @@ if(-not(Test-Path -LiteralPath $dll -PathType Leaf)){throw 'ShuruIme.dll missing
 $files=@()
 Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Where-Object {$_.Name -ne 'release-manifest.json' -and $_.Name -ne 'user_dict.txt'} | Sort-Object FullName | ForEach-Object {
   $relative=$_.FullName.Substring($PackageRoot.Length).TrimStart('\').Replace('\','/')
-  $item=[ordered]@{path=$relative;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();size=[int64]$_.Length}
+  $component = if($relative -eq 'ShuruIme.dll'){'ime'}
+    elseif($relative.StartsWith('data/lexicon/',[StringComparison]::OrdinalIgnoreCase)){'lexicon'}
+    elseif($relative.StartsWith('licenses/',[StringComparison]::OrdinalIgnoreCase) -or $relative -eq 'THIRD_PARTY_NOTICES.md'){'legal'}
+    else{'application'}
+  $item=[ordered]@{path=$relative;component=$component;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant();size=[int64]$_.Length}
   if($relative -eq 'ShuruIme.dll'){
     $vi=$_.VersionInfo
     $item.fileVersion=[string]$vi.FileVersion
@@ -24,6 +28,6 @@ Get-ChildItem -LiteralPath $PackageRoot -Recurse -File | Where-Object {$_.Name -
   }
   $files += [pscustomobject]$item
 }
-$manifest=[ordered]@{schemaVersion='1';product='Caishen IME';version=$Version;signingPolicy=$SigningPolicy;createdUtc=(Get-Date).ToUniversalTime().ToString('O');files=$files}
+$manifest=[ordered]@{schemaVersion='2';product='Caishen IME';version=$Version;signingPolicy=$SigningPolicy;createdUtc=(Get-Date).ToUniversalTime().ToString('O');files=$files}
 $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $PackageRoot 'release-manifest.json') -Encoding UTF8
 Write-Host "release manifest created: $PackageRoot\release-manifest.json"
