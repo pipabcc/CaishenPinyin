@@ -35,6 +35,10 @@ set(SHURU_CLIPBOARD_SOURCES
   src/engine/clipboard_helper.cpp
 )
 
+set(SHURU_PINNED_CANDIDATE_SOURCES
+  src/engine/pinned_candidate_store.cpp
+)
+
 add_library(ShuruIme SHARED
   src/common/logger.cpp
   src/common/runtime_config.cpp
@@ -44,6 +48,7 @@ add_library(ShuruIme SHARED
   src/engine/lexicon_cache.cpp
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
+  ${SHURU_PINNED_CANDIDATE_SOURCES}
   ${SHURU_ENGINE_FEATURE_SOURCES}
   ${SHURU_CLIPBOARD_SOURCES}
   src/engine/shared_engine.cpp
@@ -94,6 +99,7 @@ target_link_libraries(ShuruIme PRIVATE
   bcrypt
   shell32
   dwmapi
+  imm32
   winsqlite3
 )
 
@@ -124,6 +130,7 @@ add_executable(engine_playground
   src/engine/lexicon_cache.cpp
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
+  ${SHURU_PINNED_CANDIDATE_SOURCES}
   ${SHURU_ENGINE_FEATURE_SOURCES}
   src/engine/shared_engine.cpp
 )
@@ -163,6 +170,17 @@ if(BUILD_TESTING)
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-runtime-config"
   )
 
+  add_executable(pinned_candidate_store_test
+    tests/engine_playground/pinned_candidate_store_test.cpp
+    src/common/private_acl.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
+  )
+  target_include_directories(pinned_candidate_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(pinned_candidate_store_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(pinned_candidate_store_test PRIVATE advapi32)
+  add_test(NAME pinned_candidate_store COMMAND pinned_candidate_store_test)
+  set_tests_properties(pinned_candidate_store PROPERTIES TIMEOUT 30)
+
   add_executable(typing_stats_test
     tests/engine_playground/typing_stats_test.cpp
     src/common/typing_stats.cpp
@@ -181,6 +199,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(engine_phase1_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -217,6 +236,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(english_ranking_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -265,6 +285,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(p1_engine_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -289,6 +310,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
     src/engine/shared_engine.cpp
   )
@@ -311,6 +333,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(dictionary_stress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -354,6 +377,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
     ${SHURU_CLIPBOARD_SOURCES}
     src/engine/shared_engine.cpp
@@ -374,7 +398,7 @@ if(BUILD_TESTING)
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     SHURU_TRAY_OWNER_MUTEX_TEST=1
     SHURU_TEST_DISABLE_EXTERNAL_HELPERS=1)
-  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 gdiplus dwrite advapi32 bcrypt shell32 dwmapi winsqlite3)
+  target_link_libraries(shared_status_ui_test PRIVATE ole32 oleaut32 uuid user32 gdi32 gdiplus dwrite advapi32 bcrypt shell32 dwmapi imm32 winsqlite3)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
@@ -445,6 +469,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
   target_include_directories(release_health_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)

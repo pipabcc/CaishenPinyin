@@ -362,6 +362,20 @@ inline int CandidateItemTextRight(
         item_hit_right);
 }
 
+inline RECT BuildCandidatePinRect(
+    const CandidateItemLayout& item,
+    int window_width,
+    int content_right_padding,
+    int reserved_width,
+    int row_top,
+    int row_bottom) noexcept {
+    const int right = CandidateItemTextRight(
+        window_width, item.hit_right, content_right_padding);
+    const int left = (std::max)(
+        item.text_left, right - (std::max)(1, reserved_width));
+    return RECT {left, row_top, right, (std::max)(row_top, row_bottom)};
+}
+
 inline double CandidateColorLuminance(COLORREF color) noexcept {
     const auto linear = [](BYTE channel) noexcept {
         const double value = static_cast<double>(channel) / 255.0;
@@ -397,6 +411,21 @@ inline COLORREF EnsureCandidateTextContrast(
 
 inline bool IsReliableCandidateRect(const RECT& rect, bool clipped = false) noexcept {
     return !clipped && rect.bottom > rect.top && rect.right >= rect.left;
+}
+
+inline bool IsCandidateRectPlausibleForHost(
+    const RECT& rect,
+    const RECT& host_rect,
+    int tolerance = 64) noexcept {
+    if (!IsReliableCandidateRect(rect) ||
+        host_rect.right <= host_rect.left || host_rect.bottom <= host_rect.top) {
+        return false;
+    }
+    const int margin = (std::max)(0, tolerance);
+    return rect.right >= host_rect.left - margin &&
+           rect.left <= host_rect.right + margin &&
+           rect.bottom >= host_rect.top - margin &&
+           rect.top <= host_rect.bottom + margin;
 }
 
 inline std::vector<std::wstring> SettingsExecutableCandidates(

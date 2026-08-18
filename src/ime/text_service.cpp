@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
+#include <imm.h>
 
 namespace shuru {
 
@@ -33,22 +34,18 @@ bool IsShiftKey(WPARAM wparam) {
 // TSF 布局通知可能连续到达：第一条对应旧排版，后续通知才对应新组合
 // 末端。只在最后一条通知后的短暂静默期读取一次，避免把中间矩形显示出来。
 constexpr UINT kCandidateLayoutDebounceMs = 24;
+constexpr UINT kCandidatePositionRetryMs = 32;
+constexpr unsigned kCandidatePositionMaximumAttempts = 6;
 
-// Ctrl/Alt/Win 按下时把快捷键交给应用（Ctrl+A/C/V 等），IME 不吞键。
-// 检查当前是否处于系统快捷键组合中（Ctrl/Alt/Win）。
-// 必须同时结合 GetKeyState 与 GetAsyncKeyState 进行双重验证：
-// 避免刚使用 Win+Space 切换输入法或 Alt+Tab 切换窗口后，线程消息队列中
-// 残留已松开的 Win/Alt 历史键态，导致首次击键的首个字母被误判为快捷键而直接上屏漏字。
-bool HasShortcutModifier() {
-    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0 &&
-                      (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool alt  = (GetKeyState(VK_MENU) & 0x8000) != 0 &&
-                      (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    const bool lwin = (GetKeyState(VK_LWIN) & 0x8000) != 0 &&
-                      (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0;
-    const bool rwin = (GetKeyState(VK_RWIN) & 0x8000) != 0 &&
-                      (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
-    return ctrl || alt || lwin || rwin;
+// 物理键态只提供状态机首次观察时的兜底；显式的 TSF KeyDown/KeyUp
+// 决定修饰键世代，避免线程队列残留的 Ctrl/Alt/Win 状态污染下一键。
+ShortcutModifierPhysicalState ReadShortcutModifierPhysicalState() {
+    return ShortcutModifierPhysicalState {
+        (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_MENU) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0,
+    };
 }
 
 bool IsCtrlOnlyDown() {
@@ -61,6 +58,91 @@ bool IsCtrlOnlyDown() {
 
 bool IsShiftDownForKeyMessage() {
     return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
+bool IsShiftPhysicallyDown() {
+    return (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 ||
+           (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0 ||
+           (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+}
+
+HWND ActiveContextWindow(ITfContext* context) {
+    if (context == nullptr) return nullptr;
+    ITfContextView* view = nullptr;
+    if (FAILED(context->GetActiveView(&view)) || view == nullptr) return nullptr;
+    HWND window = nullptr;
+    view->GetWnd(&window);
+    view->Release();
+    return window;
+}
+
+bool IsMinttyWindow(HWND window) {
+    if (window == nullptr) return false;
+    wchar_t class_name[64] = {};
+    return GetClassNameW(window, class_name, ARRAYSIZE(class_name)) > 0 &&
+           _wcsicmp(class_name, L"mintty") == 0;
+}
+
+bool GetClientScreenRect(HWND window, RECT* rect) {
+    if (window == nullptr || rect == nullptr || !GetClientRect(window, rect)) {
+        return false;
+    }
+    SetLastError(ERROR_SUCCESS);
+    return MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(rect), 2) != 0 ||
+           GetLastError() == ERROR_SUCCESS;
+}
+
+bool TryGetImmCaretScreenRect(HWND window, RECT* rect) {
+    if (window == nullptr || rect == nullptr) return false;
+    HIMC input_context = ImmGetContext(window);
+    if (input_context == nullptr) return false;
+
+    POINT client_point {};
+    bool found = false;
+    COMPOSITIONFORM composition_form {};
+    if (ImmGetCompositionWindow(input_context, &composition_form)) {
+        if (composition_form.dwStyle == CFS_POINT ||
+            composition_form.dwStyle == CFS_FORCE_POSITION) {
+            client_point = composition_form.ptCurrentPos;
+            found = true;
+        } else if (composition_form.dwStyle == CFS_RECT) {
+            client_point = POINT {
+                composition_form.rcArea.left,
+                composition_form.rcArea.bottom,
+            };
+            found = true;
+        }
+    }
+    if (!found) {
+        CANDIDATEFORM candidate_form {};
+        if (ImmGetCandidateWindow(input_context, 0, &candidate_form)) {
+            if (candidate_form.dwStyle == CFS_CANDIDATEPOS) {
+                client_point = candidate_form.ptCurrentPos;
+                found = true;
+            } else if (candidate_form.dwStyle == CFS_EXCLUDE) {
+                client_point = POINT {
+                    candidate_form.rcArea.left,
+                    candidate_form.rcArea.bottom,
+                };
+                found = true;
+            }
+        }
+    }
+    ImmReleaseContext(window, input_context);
+    if (!found || (client_point.x == 0 && client_point.y == 0) ||
+        !ClientToScreen(window, &client_point)) {
+        return false;
+    }
+
+    const UINT dpi = (std::max)(UINT {96}, GetDpiForWindow(window));
+    const int caret_height = MulDiv(20, static_cast<int>(dpi), 96);
+    *rect = RECT {
+        client_point.x,
+        client_point.y,
+        client_point.x + 1,
+        client_point.y + caret_height,
+    };
+    return true;
 }
 
 std::wstring PinyinToWide(const std::string& pinyin) {
@@ -160,6 +242,7 @@ TextService::~TextService() {
     RollbackActivation();
     ClearCompositionState();
     candidate_window_.SetSelectionHandler({});
+    candidate_window_.SetPinHandler({});
     candidate_window_.Destroy();
     SharedStatusUi::Unbind(this);
     if (status_ui_acquired_) {
@@ -286,6 +369,9 @@ void TextService::EnsureUiWindows() {
         candidate_window_.SetSelectionHandler([this](size_t index) {
             OnCandidateSelected(index);
         });
+        candidate_window_.SetPinHandler([this](size_t index) {
+            OnCandidatePinToggled(index);
+        });
         candidate_window_.SetDragHandler([this](POINT pos) {
             // 拖动后的位置只对当前组合会话生效；组合结束时清除，恢复跟随光标。
             candidate_pos_overridden_ = true;
@@ -403,7 +489,10 @@ bool TextService::IsOwnerThread() const noexcept {
 
 void TextService::RollbackActivation() noexcept {
     shift_tap_.Reset();
+    shortcut_modifier_state_.Reset();
+    shortcut_modifier_cache_.Clear();
     if (IsOwnerThread()) {
+        StopShiftReleasePolling();
         EndComposition();
         candidate_window_.Hide();
         SharedStatusUi::HideSoftKeyboard();
@@ -553,6 +642,10 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* /*pdim*/) { return
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* pdimFocus, ITfDocumentMgr* /*pdimPrevFocus*/) {
     shift_tap_.Reset();
+    StopShiftReleasePolling();
+    shortcut_modifier_state_.ResetFromPhysical(
+        ReadShortcutModifierPhysicalState());
+    shortcut_modifier_cache_.Clear();
     // 文档切换时先结束旧上下文中的组合，避免旧拼音残留到新文档。
     EndComposition();
     ClearCompositionState();
@@ -571,12 +664,18 @@ STDMETHODIMP TextService::OnPopContext(ITfContext* /*pic*/) { return S_OK; }
 
 STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     if (fForeground) {
+        shortcut_modifier_state_.ResetFromPhysical(
+            ReadShortcutModifierPhysicalState());
+        shortcut_modifier_cache_.Clear();
         EnsureUiWindows();
         SharedStatusUi::Bind(this);
         SyncStatusUi();
         SharedStatusUi::Hide();
     } else {
         shift_tap_.Reset();
+        StopShiftReleasePolling();
+        shortcut_modifier_state_.Reset();
+        shortcut_modifier_cache_.Clear();
         SharedStatusUi::Unbind(this);
         candidate_window_.StopDeferredAction();
         candidate_window_.Hide();
@@ -781,9 +880,59 @@ bool TextService::ShortcutModifierForKey(
                 wparam, lparam, now, &cached_decision)) {
             return cached_decision;
         }
-        return HasShortcutModifier();
+        return shortcut_modifier_state_.IsActive(
+            ReadShortcutModifierPhysicalState());
     }
-    return HasShortcutModifier();
+    return shortcut_modifier_state_.IsActive(
+        ReadShortcutModifierPhysicalState());
+}
+
+void TextService::OnCandidatePinToggled(size_t index) {
+    if (engine_ == nullptr || !engine_->IsReady() ||
+        composing_pinyin_.empty() || IsUtilityMode(composing_pinyin_) ||
+        association_active_ || index >= current_result_.candidates.size()) {
+        return;
+    }
+    const Candidate& candidate = current_result_.candidates[index];
+    if (candidate.text.empty() ||
+        candidate.action != CandidateAction::CommitText) {
+        return;
+    }
+    const PinnedCandidateToggleResult result = engine_->TogglePinnedCandidate(
+        engine_->GetInputSchema(), composing_pinyin_, candidate.text);
+    if (result == PinnedCandidateToggleResult::Failed) {
+        SHURU_LOG_WARN("pinned candidate update failed");
+        return;
+    }
+    RefreshCandidates();
+    UpdateCandidateWindow(edit_context_);
+}
+
+void TextService::CompleteShiftTap(ITfContext* context) {
+    const ShiftTapRelease release = shift_tap_.Release(
+        !composing_pinyin_.empty(), IsPasswordContext(context));
+    if (release.action == ShiftTapAction::CommitRawComposition) {
+        if (!CommitRawComposition(context)) {
+            SHURU_LOG_WARN("Shift raw composition commit failed");
+        }
+    } else if (release.action == ShiftTapAction::ToggleEnglishMode) {
+        ToggleEnglishMode();
+    }
+}
+
+void TextService::StartShiftReleasePolling() {
+    EnsureUiWindows();
+    if (!shift_tap_.HasPendingKey()) return;
+    candidate_window_.StartShiftReleasePolling([this]() {
+        if (!shift_tap_.HasPendingKey()) return false;
+        if (IsShiftPhysicallyDown()) return true;
+        CompleteShiftTap(edit_context_);
+        return false;
+    });
+}
+
+void TextService::StopShiftReleasePolling() {
+    candidate_window_.StopShiftReleasePolling();
 }
 
 bool TextService::IsKeyEaten(
@@ -864,9 +1013,14 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
     }
     if (IsPasswordContext(pic)) {
         shift_tap_.Reset();
+        StopShiftReleasePolling();
+        shortcut_modifier_state_.Reset();
         shortcut_modifier_cache_.Clear();
         *pfEaten = FALSE;
         return S_OK;
+    }
+    if (IsShortcutModifierKey(wParam)) {
+        shortcut_modifier_state_.KeyDown(wParam);
     }
     const bool shortcut_modifier = ShortcutModifierForKey(
         wParam, lParam, true);
@@ -876,6 +1030,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
         const bool repeated = (lParam & (1 << 30)) != 0;
         *pfEaten = shift_tap_.Begin(
             !composing_pinyin_.empty(), shortcut_modifier, repeated) ? TRUE : FALSE;
+        if (shift_tap_.HasPendingKey()) StartShiftReleasePolling();
         if (*pfEaten) {
             shortcut_modifier_cache_.Store(
                 wParam, lParam, shortcut_modifier, GetTickCount());
@@ -888,21 +1043,16 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
     // 若此前武装了 ShiftTap，且到达当前非 Shift 键时物理 Shift 键已完全弹起，则判定先前的 Shift 单击已完成，
     // 立即就地结算中英切换 / 原始拼音提交，然后再以最新状态处理当前到达的按键。
     if (shift_tap_.HasPendingKey()) {
-        const bool shift_physically_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
-                                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        if (!shift_physically_down) {
-            const ShiftTapRelease release = shift_tap_.Release(
-                !composing_pinyin_.empty(), IsPasswordContext(pic));
-            if (release.action == ShiftTapAction::CommitRawComposition) {
-                CommitRawComposition(pic);
-            } else if (release.action == ShiftTapAction::ToggleEnglishMode) {
-                ToggleEnglishMode();
-            }
+        if (!IsShiftPhysicallyDown()) {
+            StopShiftReleasePolling();
+            CompleteShiftTap(pic);
         } else {
             shift_tap_.CancelAction();
+            StopShiftReleasePolling();
         }
     } else {
         shift_tap_.CancelAction();
+        StopShiftReleasePolling();
     }
     *pfEaten = IsKeyEaten(pic, wParam, shortcut_modifier) ? TRUE : FALSE;
     if (*pfEaten) {
@@ -927,6 +1077,10 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*l
         *pfEaten = release.eaten ? TRUE : FALSE;
         return S_OK;
     }
+    if (IsShortcutModifierKey(wParam)) {
+        shortcut_modifier_state_.KeyUp(wParam);
+        shortcut_modifier_cache_.Clear();
+    }
     *pfEaten = FALSE;
     return S_OK;
 }
@@ -936,6 +1090,7 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*lPara
         return E_INVALIDARG;
     }
     if (IsShiftKey(wParam)) {
+        StopShiftReleasePolling();
         const ShiftTapRelease release = shift_tap_.KeyUp(
             !composing_pinyin_.empty(), IsPasswordContext(pic));
         if (release.action == ShiftTapAction::CommitRawComposition) {
@@ -947,6 +1102,10 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*lPara
         if (release.action == ShiftTapAction::ToggleEnglishMode) ToggleEnglishMode();
         *pfEaten = release.eaten ? TRUE : FALSE;
         return S_OK;
+    }
+    if (IsShortcutModifierKey(wParam)) {
+        shortcut_modifier_state_.KeyUp(wParam);
+        shortcut_modifier_cache_.Clear();
     }
     *pfEaten = FALSE;
     return S_OK;
@@ -979,6 +1138,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     if (IsPasswordContext(context)) {
         shift_tap_.Reset();
+        StopShiftReleasePolling();
+        shortcut_modifier_state_.Reset();
         shortcut_modifier_cache_.Clear();
         if (!composing_pinyin_.empty()) {
             const HRESULT hr = EndComposition();
@@ -992,6 +1153,10 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         return true;
     }
 
+    if (IsShortcutModifierKey(wparam)) {
+        shortcut_modifier_state_.KeyDown(wparam);
+    }
+
     const bool shortcut_modifier = ShortcutModifierForKey(
         wparam, lparam, false);
 
@@ -1001,25 +1166,21 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         const bool repeated = (lparam & (1 << 30)) != 0;
         shift_tap_.Begin(
             !composing_pinyin_.empty(), shortcut_modifier, repeated);
+        if (shift_tap_.HasPendingKey()) StartShiftReleasePolling();
         *eaten = shift_tap_.ShouldEatKeyUp();
         return true;
     }
     if (shift_tap_.HasPendingKey()) {
-        const bool shift_physically_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ||
-                                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-        if (!shift_physically_down) {
-            const ShiftTapRelease release = shift_tap_.Release(
-                !composing_pinyin_.empty(), IsPasswordContext(context));
-            if (release.action == ShiftTapAction::CommitRawComposition) {
-                CommitRawComposition(context);
-            } else if (release.action == ShiftTapAction::ToggleEnglishMode) {
-                ToggleEnglishMode();
-            }
+        if (!IsShiftPhysicallyDown()) {
+            StopShiftReleasePolling();
+            CompleteShiftTap(context);
         } else {
             shift_tap_.CancelAction();
+            StopShiftReleasePolling();
         }
     } else {
         shift_tap_.CancelAction();
+        StopShiftReleasePolling();
     }
 
     // Ctrl+A/C/V 等：绝不当拼音字母处理
@@ -1599,6 +1760,10 @@ void TextService::SyncCandidateWindowCandidates() {
         candidate_state_.PageSize(),
         IsUtilityMode(composing_pinyin_),
         IsVerticalUtilityMode(composing_pinyin_));
+    candidate_window_.SetPinningEnabled(
+        engine_ != nullptr && engine_->IsReady() &&
+        !association_active_ && !composing_pinyin_.empty() &&
+        !IsUtilityMode(composing_pinyin_));
 }
 
 
@@ -1608,14 +1773,18 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
     }
     *rect = {};
 
-    bool tsf_view_available = false;
-    if (context != nullptr && client_id_ != TF_CLIENTID_NULL) {
-        ITfContextView* view = nullptr;
-        if (SUCCEEDED(context->GetActiveView(&view)) && view != nullptr) {
-            tsf_view_available = true;
-            view->Release();
-        }
-    }
+    HWND context_target = ActiveContextWindow(context);
+    HWND target = context_target;
+    if (target == nullptr) target = GetForegroundWindow();
+    const bool tsf_view_available = context_target != nullptr;
+    const bool mintty_host = IsMinttyWindow(target);
+    RECT host_rect {};
+    const bool has_host_rect = GetClientScreenRect(target, &host_rect);
+    const auto plausible_for_host = [&](const RECT& candidate) {
+        return IsReliableCandidateRect(candidate) &&
+            (!has_host_rect || IsCandidateRectPlausibleForHost(
+                candidate, host_rect));
+    };
 
     // 1) 只读 edit session + 合法 cookie 的 GetTextExt（多应用更稳）
     if (context != nullptr && client_id_ != TF_CLIENTID_NULL) {
@@ -1627,10 +1796,21 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
             const HRESULT hr = context->RequestEditSession(
                 client_id_, session, TF_ES_SYNC | TF_ES_READ, &hr_session);
             session->Release();
-            if (SUCCEEDED(hr) && ok && IsReliableCandidateRect(rc)) {
+            if (SUCCEEDED(hr) && ok && plausible_for_host(rc)) {
                 *rect = rc;
                 return true;
             }
+        }
+    }
+
+    // mintty 不公开 Win32 caret，首次激活时 TSF 还可能返回屏幕原点的
+    // 占位矩形。其 IMM 桥接层若已经给出组合/候选位置，则优先使用。
+    if (mintty_host) {
+        RECT imm_rect {};
+        if (TryGetImmCaretScreenRect(target, &imm_rect) &&
+            plausible_for_host(imm_rect)) {
+            *rect = imm_rect;
+            return true;
         }
     }
 
@@ -1639,19 +1819,6 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
     // 应该直接返回 false，等待随之而来的 OnLayoutChange 通知拿到真实的当前光标后再呈现。
     if (tsf_view_available) {
         return false;
-    }
-
-    HWND target = nullptr;
-    if (context != nullptr) {
-        ITfContextView* view = nullptr;
-        if (SUCCEEDED(context->GetActiveView(&view)) && view != nullptr) {
-            view->GetWnd(&target);
-            view->Release();
-        }
-    }
-
-    if (target == nullptr) {
-        target = GetForegroundWindow();
     }
 
     // 3) GUITHREADINFO 光标（仅用于不支持 TSF ActiveView 的纯旧式宿主）
@@ -1664,8 +1831,10 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
                 RECT rc = gi.rcCaret;
                 if (IsReliableCandidateRect(rc)) {
                     MapWindowPoints(gi.hwndCaret, nullptr, reinterpret_cast<POINT*>(&rc), 2);
-                    *rect = rc;
-                    return true;
+                    if (plausible_for_host(rc)) {
+                        *rect = rc;
+                        return true;
+                    }
                 }
             }
         }
@@ -1754,7 +1923,17 @@ void TextService::TryResolveCandidateAnchor(
         has_candidate_anchor_ = true;
         candidate_position_pending_ = false;
         candidate_layout_notified_ = false;
+        candidate_position_attempts_ = 0;
         UpdateCandidateWindow(edit_context_);
+        return;
+    }
+
+    if (++candidate_position_attempts_ < kCandidatePositionMaximumAttempts) {
+        candidate_window_.StartDeferredAction(
+            [this, generation, layout_serial]() {
+                TryResolveCandidateAnchor(generation, layout_serial);
+            },
+            kCandidatePositionRetryMs);
     }
 }
 
@@ -1777,6 +1956,7 @@ void TextService::ResetCandidateAnchor() noexcept {
     candidate_anchor_rect_ = {};
     candidate_position_pending_ = false;
     candidate_layout_notified_ = false;
+    candidate_position_attempts_ = 0;
     ++candidate_layout_generation_;
     candidate_layout_serial_ = 0;
     candidate_pos_overridden_ = false;
@@ -1847,6 +2027,7 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     candidate_layout_serial_ = 0;
     candidate_position_pending_ = !text.empty();
     candidate_layout_notified_ = false;
+    candidate_position_attempts_ = 0;
     if (starts_composition) {
         has_candidate_anchor_ = false;
         candidate_anchor_rect_ = {};
@@ -1871,6 +2052,12 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
         // 每次改写组合串都产生新的末端位置。已显示窗口先保持上一次
         // 稳定坐标，只有当前文本世代收到布局通知后才允许重新定位。
         candidate_position_pending_ = true;
+        HWND position_target = ActiveContextWindow(context);
+        if (position_target == nullptr) position_target = GetForegroundWindow();
+        if (IsMinttyWindow(position_target)) {
+            // mintty 未必发送 TSF 布局通知；允许有界轮询等待其 IMM 桥接坐标。
+            candidate_layout_notified_ = true;
+        }
         ScheduleCandidateWindowUpdate();
     }
     return SUCCEEDED(hr) ? hr_session : hr;
@@ -1901,6 +2088,7 @@ STDMETHODIMP TextService::OnLayoutChange(
     // 的排版，延迟回调会等写入会话返回后再读取坐标。
     candidate_position_pending_ = true;
     candidate_layout_notified_ = true;
+    candidate_position_attempts_ = 0;
     ++candidate_layout_serial_;
     ScheduleCandidateWindowUpdate();
     return S_OK;

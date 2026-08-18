@@ -14,7 +14,8 @@ public sealed record AppSettings(
     bool ShuangpinXiaohe = false,
     bool FullWidthPunctuation = true,
     int CandidateCount = 9,
-    int CandidateFontSize = 19,
+    string CandidateFontFamily = "",
+    string CandidateFontSizeMode = SettingsStore.FollowSkinFontSizeMode,
     string DisplayName = SettingsStore.DefaultDisplayName,
     bool VModeOpenWindow = false,
     bool VvModeOpenWindow = false,
@@ -22,8 +23,9 @@ public sealed record AppSettings(
 {
     public AppSettings Validated() => this with
     {
-        CandidateCount = CandidateCount is >= 3 and <= 9 ? CandidateCount : 9,
-        CandidateFontSize = CandidateFontSize is >= 14 and <= 32 ? CandidateFontSize : 19,
+        CandidateCount = CandidateCount is >= 3 and <= 11 ? CandidateCount : 9,
+        CandidateFontFamily = SettingsStore.NormalizeCandidateFontFamily(CandidateFontFamily) ?? "",
+        CandidateFontSizeMode = SettingsStore.NormalizeCandidateFontSizeMode(CandidateFontSizeMode),
         DisplayName = SettingsStore.NormalizeDisplayName(DisplayName) ?? SettingsStore.DefaultDisplayName,
         SkinId = string.IsNullOrWhiteSpace(SkinId) ? "classic_blue" : SkinId.Trim()
     };
@@ -32,6 +34,7 @@ public sealed record AppSettings(
 public static class SettingsStore
 {
     public const string DefaultDisplayName = "财神输入法";
+    public const string FollowSkinFontSizeMode = "follow_skin";
 
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -53,22 +56,26 @@ public static class SettingsStore
             int I(string key, int fallback) => values.TryGetValue(key, out var v) &&
                 int.TryParse(v, NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : fallback;
             string S(string key, string fallback) => values.TryGetValue(key, out var v) ? v : fallback;
+            var fontSizeMode = values.ContainsKey("CandidateFontSizeMode")
+                ? S("CandidateFontSizeMode", FollowSkinFontSizeMode)
+                : CandidateFontSizeModeFromLegacy(I("CandidateFontSize", -1));
             return new AppSettings(
-                B("EnglishDefault", defaults.EnglishDefault),
-                B("LearningEnabled", defaults.LearningEnabled),
-                B("ContentLogging", defaults.ContentLogging),
-                B("FuzzyEnabled", defaults.FuzzyEnabled),
-                B("FuzzyInitials", defaults.FuzzyInitials),
-                B("FuzzyFinals", defaults.FuzzyFinals),
-                B("FuzzyMissingVowel", defaults.FuzzyMissingVowel),
-                B("ShuangpinXiaohe", defaults.ShuangpinXiaohe),
-                B("FullWidthPunctuation", defaults.FullWidthPunctuation),
-                I("CandidateCount", defaults.CandidateCount),
-                I("CandidateFontSize", defaults.CandidateFontSize),
-                S("DisplayName", defaults.DisplayName),
-                B("VModeOpenWindow", defaults.VModeOpenWindow),
-                B("VvModeOpenWindow", defaults.VvModeOpenWindow),
-                S("SkinId", defaults.SkinId)).Validated();
+                EnglishDefault: B("EnglishDefault", defaults.EnglishDefault),
+                LearningEnabled: B("LearningEnabled", defaults.LearningEnabled),
+                ContentLogging: B("ContentLogging", defaults.ContentLogging),
+                FuzzyEnabled: B("FuzzyEnabled", defaults.FuzzyEnabled),
+                FuzzyInitials: B("FuzzyInitials", defaults.FuzzyInitials),
+                FuzzyFinals: B("FuzzyFinals", defaults.FuzzyFinals),
+                FuzzyMissingVowel: B("FuzzyMissingVowel", defaults.FuzzyMissingVowel),
+                ShuangpinXiaohe: B("ShuangpinXiaohe", defaults.ShuangpinXiaohe),
+                FullWidthPunctuation: B("FullWidthPunctuation", defaults.FullWidthPunctuation),
+                CandidateCount: I("CandidateCount", defaults.CandidateCount),
+                CandidateFontFamily: S("CandidateFontFamily", defaults.CandidateFontFamily),
+                CandidateFontSizeMode: fontSizeMode,
+                DisplayName: S("DisplayName", defaults.DisplayName),
+                VModeOpenWindow: B("VModeOpenWindow", defaults.VModeOpenWindow),
+                VvModeOpenWindow: B("VvModeOpenWindow", defaults.VvModeOpenWindow),
+                SkinId: S("SkinId", defaults.SkinId)).Validated();
         }
         catch (IOException) { return defaults; }
         catch (UnauthorizedAccessException) { return defaults; }
@@ -84,7 +91,7 @@ public static class SettingsStore
         var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
         var content = string.Join("\n", new[]
         {
-            "# Caishen Pinyin settings v1",
+            "# Caishen Pinyin settings v2",
             $"EnglishDefault={Bit(settings.EnglishDefault)}",
             $"LearningEnabled={Bit(settings.LearningEnabled)}",
             $"ContentLogging={Bit(settings.ContentLogging)}",
@@ -95,7 +102,9 @@ public static class SettingsStore
             $"ShuangpinXiaohe={Bit(settings.ShuangpinXiaohe)}",
             $"FullWidthPunctuation={Bit(settings.FullWidthPunctuation)}",
             $"CandidateCount={settings.CandidateCount}",
-            $"CandidateFontSize={settings.CandidateFontSize}",
+            $"CandidateFontFamily={settings.CandidateFontFamily}",
+            $"CandidateFontSizeMode={settings.CandidateFontSizeMode}",
+            $"CandidateFontSize={LegacyCandidateFontSize(settings.CandidateFontSizeMode)}",
             $"DisplayName={settings.DisplayName}",
             $"VModeOpenWindow={Bit(settings.VModeOpenWindow)}",
             $"VvModeOpenWindow={Bit(settings.VvModeOpenWindow)}",
@@ -130,4 +139,43 @@ public static class SettingsStore
             ? normalized
             : null;
     }
+
+    public static string? NormalizeCandidateFontFamily(string? value)
+    {
+        var normalized = value?.Trim();
+        if (string.IsNullOrEmpty(normalized)) return null;
+        return normalized.Length <= 64 &&
+               normalized.All(ch => !char.IsControl(ch) && !char.IsSurrogate(ch))
+            ? normalized
+            : null;
+    }
+
+    public static string NormalizeCandidateFontSizeMode(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            "small" => "small",
+            "standard" => "standard",
+            "large" => "large",
+            "extra_large" => "extra_large",
+            _ => FollowSkinFontSizeMode
+        };
+
+    public static string CandidateFontSizeModeFromLegacy(int value) => value switch
+    {
+        >= 14 and <= 17 => "small",
+        >= 18 and <= 20 => "standard",
+        >= 21 and <= 24 => "large",
+        >= 25 and <= 32 => "extra_large",
+        _ => FollowSkinFontSizeMode
+    };
+
+    public static int LegacyCandidateFontSize(string? mode) =>
+        NormalizeCandidateFontSizeMode(mode) switch
+        {
+            "small" => 16,
+            "standard" => 19,
+            "large" => 22,
+            "extra_large" => 26,
+            _ => 19
+        };
 }

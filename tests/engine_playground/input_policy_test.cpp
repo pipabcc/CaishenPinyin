@@ -144,6 +144,39 @@ int main() {
     CHECK(shortcut_cache.Consume('A', 1, 5, &shortcut_decision));
     CHECK(!shortcut_decision);
 
+    ShortcutModifierState modifiers;
+    ShortcutModifierPhysicalState physical;
+    CHECK(!modifiers.IsActive(physical));
+    modifiers.KeyDown(VK_CONTROL);
+    physical.control = true;
+    CHECK(modifiers.IsActive(physical));
+    modifiers.KeyUp(VK_CONTROL);
+    // Ctrl+C 松开后的线程键态即使暂时仍显示按下，也不能放走下一字母。
+    CHECK(!modifiers.IsActive(physical));
+    physical.control = false;
+    CHECK(!modifiers.IsActive(physical));
+    modifiers.KeyDown(VK_CONTROL);
+    physical.control = true;
+    CHECK(modifiers.IsActive(physical));
+    modifiers.KeyUp(VK_CONTROL);
+    physical.control = false;
+    physical.alt = true;
+    modifiers.Reset();
+    CHECK(modifiers.IsActive(physical));
+    physical.alt = false;
+    CHECK(!modifiers.IsActive(physical));
+    physical.left_windows = true;
+    physical.right_windows = true;
+    modifiers.ResetFromPhysical(physical);
+    CHECK(modifiers.IsActive(physical));
+    modifiers.KeyUp(VK_LWIN);
+    modifiers.KeyUp(VK_RWIN);
+    CHECK(!modifiers.IsActive(physical));
+    CHECK(IsShortcutModifierKey(VK_CONTROL));
+    CHECK(IsShortcutModifierKey(VK_RMENU));
+    CHECK(IsShortcutModifierKey(VK_LWIN));
+    CHECK(!IsShortcutModifierKey(VK_SHIFT));
+
     CHECK(IsUtilityMode("v"));
     CHECK(IsUtilityMode("vvv1+2"));
     CHECK(IsUtilityMode("VVV"));
@@ -223,9 +256,16 @@ int main() {
 
     const RECT valid_rect {10, 20, 11, 40};
     const RECT flat_rect {10, 20, 11, 20};
+    const RECT host_rect {100, 100, 900, 700};
     CHECK(IsReliableCandidateRect(valid_rect));
     CHECK(!IsReliableCandidateRect(valid_rect, true));
     CHECK(!IsReliableCandidateRect(flat_rect));
+    CHECK(IsCandidateRectPlausibleForHost(
+        RECT {120, 130, 121, 150}, host_rect));
+    CHECK(IsCandidateRectPlausibleForHost(
+        RECT {50, 80, 51, 100}, host_rect));
+    CHECK(!IsCandidateRectPlausibleForHost(valid_rect, host_rect));
+    CHECK(!IsCandidateRectPlausibleForHost(flat_rect, host_rect));
     CHECK(GetCandidatePagingDirection(VK_PRIOR, true) == CandidatePagingDirection::Previous);
     CHECK(GetCandidatePagingDirection(VK_NEXT, false) == CandidatePagingDirection::Next);
     CHECK(GetCandidatePagingDirection(VK_OEM_COMMA, false) == CandidatePagingDirection::None);

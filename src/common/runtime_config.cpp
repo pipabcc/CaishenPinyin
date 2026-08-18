@@ -68,6 +68,38 @@ std::wstring ReadDisplayName(
     return normalized.empty() ? fallback : normalized;
 }
 
+CandidateFontSizeMode CandidateFontSizeModeFromLegacyValue(int value) noexcept {
+    if (value <= 17) return CandidateFontSizeMode::Small;
+    if (value <= 20) return CandidateFontSizeMode::Standard;
+    if (value <= 24) return CandidateFontSizeMode::Large;
+    return CandidateFontSizeMode::ExtraLarge;
+}
+
+CandidateFontSizeMode ReadCandidateFontSizeMode(
+    const std::map<std::string, std::string>& values) {
+    const auto found = values.find("CandidateFontSizeMode");
+    if (found != values.end()) {
+        if (found->second == "small") return CandidateFontSizeMode::Small;
+        if (found->second == "standard") return CandidateFontSizeMode::Standard;
+        if (found->second == "large") return CandidateFontSizeMode::Large;
+        if (found->second == "extra_large") {
+            return CandidateFontSizeMode::ExtraLarge;
+        }
+        return CandidateFontSizeMode::FollowSkin;
+    }
+    const int legacy = ReadInt(values, "CandidateFontSize", -1, 14, 32);
+    return legacy < 0
+        ? CandidateFontSizeMode::FollowSkin
+        : CandidateFontSizeModeFromLegacyValue(legacy);
+}
+
+std::wstring ReadCandidateFontFamily(
+    const std::map<std::string, std::string>& values) {
+    const auto found = values.find("CandidateFontFamily");
+    if (found == values.end()) return {};
+    return NormalizeCandidateFontFamily(Utf8ToWide(found->second));
+}
+
 RuntimeConfig ReadConfig() {
     const auto values = ReadValues();
     RuntimeConfig value;
@@ -81,8 +113,9 @@ RuntimeConfig ReadConfig() {
     value.fuzzy_missing_vowel = ReadBool(values, "FuzzyMissingVowel", true);
     value.shuangpin_xiaohe = ReadBool(values, "ShuangpinXiaohe", false);
     value.association_enabled = ReadBool(values, "AssociationEnabled", true);
-    value.candidate_count = ReadInt(values, "CandidateCount", 9, 3, 9);
-    value.candidate_font_size = ReadInt(values, "CandidateFontSize", 19, 14, 32);
+    value.candidate_count = ReadInt(values, "CandidateCount", 9, 3, 11);
+    value.candidate_font_family = ReadCandidateFontFamily(values);
+    value.candidate_font_size_mode = ReadCandidateFontSizeMode(values);
     value.display_name = ReadDisplayName(values, L"财神输入法");
     value.v_mode_open_window = ReadBool(values, "VModeOpenWindow", false);
     value.vv_mode_open_window = ReadBool(values, "VvModeOpenWindow", false);
@@ -154,6 +187,44 @@ std::wstring NormalizeTrayText(std::wstring value) {
     value = NormalizeDisplayName(std::move(value));
     if (value.empty() || value.size() > 2) return {};
     return value;
+}
+
+std::wstring NormalizeCandidateFontFamily(std::wstring value) {
+    const auto first = std::find_if_not(
+        value.begin(), value.end(), [](wchar_t ch) {
+            return std::iswspace(ch) != 0;
+        });
+    const auto last = std::find_if_not(
+        value.rbegin(), value.rend(), [](wchar_t ch) {
+            return std::iswspace(ch) != 0;
+        }).base();
+    if (first >= last) return {};
+    value = std::wstring(first, last);
+    if (value.size() > 64 ||
+        std::any_of(value.begin(), value.end(), [](wchar_t ch) {
+            return std::iswcntrl(ch) != 0 ||
+                (ch >= 0xD800 && ch <= 0xDFFF);
+        })) {
+        return {};
+    }
+    return value;
+}
+
+int ResolveCandidateFontSize(
+    CandidateFontSizeMode mode, int skin_font_size) noexcept {
+    switch (mode) {
+    case CandidateFontSizeMode::Small:
+        return 16;
+    case CandidateFontSizeMode::Standard:
+        return 19;
+    case CandidateFontSizeMode::Large:
+        return 22;
+    case CandidateFontSizeMode::ExtraLarge:
+        return 26;
+    case CandidateFontSizeMode::FollowSkin:
+    default:
+        return (std::max)(14, (std::min)(32, skin_font_size));
+    }
 }
 
 }  // namespace shuru

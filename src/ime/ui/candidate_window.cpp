@@ -23,6 +23,24 @@ Gdiplus::Color ToGdiplusColor(COLORREF c, BYTE alpha = 255) noexcept {
     return Gdiplus::Color(alpha, GetRValue(c), GetGValue(c), GetBValue(c));
 }
 
+std::wstring CandidateFontFamilyForTheme(
+    const RuntimeConfig& config,
+    const SkinTheme& skin) {
+    if (!config.candidate_font_family.empty()) {
+        return config.candidate_font_family;
+    }
+    return skin.font_family.empty()
+        ? std::wstring(L"Microsoft YaHei UI") : skin.font_family;
+}
+
+int CandidateLineHeightForTheme(
+    bool use_native_layout, int candidate_font_size) noexcept {
+    constexpr int kDefaultCandidateLineHeight = 30;
+    return use_native_layout
+        ? (std::max)(24, candidate_font_size + 6)
+        : (std::max)(kDefaultCandidateLineHeight, candidate_font_size + 10);
+}
+
 void AddRoundedRectangleToPath(
     Gdiplus::GraphicsPath& path,
     const Gdiplus::RectF& rect,
@@ -39,6 +57,54 @@ void AddRoundedRectangleToPath(
     path.AddArc(rect.GetRight() - d, rect.GetBottom() - d, d, d, 0.0f, 90.0f);
     path.AddArc(rect.X, rect.GetBottom() - d, d, d, 90.0f, 90.0f);
     path.CloseFigure();
+}
+
+void DrawCandidatePinIcon(
+    Gdiplus::Graphics& graphics,
+    const RECT& rect,
+    COLORREF color,
+    bool pinned,
+    bool hovered) {
+    const float width = static_cast<float>(rect.right - rect.left);
+    const float height = static_cast<float>(rect.bottom - rect.top);
+    if (width <= 0.0f || height <= 0.0f) return;
+
+    const float center_x = (rect.left + rect.right) / 2.0f;
+    const float center_y = (rect.top + rect.bottom) / 2.0f;
+    if (hovered) {
+        const float diameter = (std::min)(width, height) - 2.0f;
+        Gdiplus::SolidBrush hover_brush(Gdiplus::Color(28, 15, 23, 42));
+        graphics.FillEllipse(
+            &hover_brush, center_x - diameter / 2.0f,
+            center_y - diameter / 2.0f, diameter, diameter);
+    }
+
+    const float scale = (std::max)(0.75f, (std::min)(width / 18.0f, height / 30.0f));
+    const float top = center_y - 6.0f * scale;
+    Gdiplus::PointF head[] = {
+        {center_x - 4.0f * scale, top},
+        {center_x + 4.0f * scale, top},
+        {center_x + 2.5f * scale, top + 2.5f * scale},
+        {center_x + 2.5f * scale, top + 6.0f * scale},
+        {center_x - 2.5f * scale, top + 6.0f * scale},
+        {center_x - 2.5f * scale, top + 2.5f * scale},
+    };
+    Gdiplus::GraphicsPath head_path;
+    head_path.AddPolygon(head, ARRAYSIZE(head));
+    Gdiplus::Pen pen(ToGdiplusColor(color), (std::max)(1.0f, scale));
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
+    if (pinned) {
+        Gdiplus::SolidBrush brush(ToGdiplusColor(color));
+        graphics.FillPath(&brush, &head_path);
+    } else {
+        graphics.DrawPath(&pen, &head_path);
+    }
+    graphics.DrawLine(
+        &pen, center_x, top + 6.0f * scale,
+        center_x, top + 11.5f * scale);
+    graphics.DrawLine(
+        &pen, center_x, top + 11.5f * scale,
+        center_x - 1.5f * scale, top + 9.5f * scale);
 }
 
 }  // namespace
@@ -322,6 +388,7 @@ bool CandidateWindow::Create(HINSTANCE instance) {
 void CandidateWindow::Destroy() {
     if (hwnd_ != nullptr) {
         StopReadyPolling();
+        StopShiftReleasePolling();
         StopDeferredAction();
         StopSkinAnimation();
         DestroyWindow(hwnd_);
@@ -386,16 +453,15 @@ void CandidateWindow::ReloadRuntimeSettings() {
 }
 
 void CandidateWindow::EnsureFonts() {
-    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    const RuntimeConfig config = GetRuntimeConfig();
+    SkinManager::Instance().EnsureSkin(config.skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
-    const std::wstring family = skin.font_family.empty()
-        ? L"Microsoft YaHei UI" : skin.font_family;
+    const std::wstring family = CandidateFontFamilyForTheme(config, skin);
     const bool use_native_layout = skin.native_appearance &&
         !UsesPlainUtilityBackground();
-    const int candidate_size = use_native_layout
-        ? skin.font_size : GetRuntimeConfig().candidate_font_size;
-    const int utility_size = CandidateVModeListFontSize(
-        GetRuntimeConfig().candidate_font_size);
+    const int candidate_size = ResolveCandidateFontSize(
+        config.candidate_font_size_mode, skin.font_size);
+    const int utility_size = CandidateVModeListFontSize(candidate_size);
     const std::wstring signature = family + L"\n" +
         std::to_wstring(candidate_size) + L"\n" +
         std::to_wstring(utility_size) + L"\n" +
@@ -420,7 +486,7 @@ void CandidateWindow::EnsureFonts() {
     }
     if (font_meta_ == nullptr) {
         font_meta_ = CreateFontW(
-            -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
+            -Scale(CandidateMetadataFontSize(candidate_size)),
             0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             font_quality, DEFAULT_PITCH | FF_DONTCARE,
@@ -428,7 +494,7 @@ void CandidateWindow::EnsureFonts() {
     }
     if (font_header_title_ == nullptr) {
         font_header_title_ = CreateFontW(
-            -Scale(CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size)),
+            -Scale(CandidateMetadataFontSize(candidate_size)),
             0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             font_quality, DEFAULT_PITCH | FF_DONTCARE,
@@ -439,7 +505,7 @@ void CandidateWindow::EnsureFonts() {
             -Scale(utility_size), 0, 0, 0, FW_NORMAL,
             FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
             CLIP_DEFAULT_PRECIS, font_quality,
-            DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+            DEFAULT_PITCH | FF_DONTCARE, family.c_str());
     }
 
     if (gdip_font_ == nullptr) {
@@ -471,24 +537,30 @@ void CandidateWindow::EnsureFonts() {
         }
     }
     if (gdip_font_meta_ == nullptr) {
-        const int meta_size = CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size);
+        const int meta_size = CandidateMetadataFontSize(candidate_size);
         gdip_font_meta_ = new Gdiplus::Font(
             L"Microsoft YaHei UI",
             static_cast<Gdiplus::REAL>(Scale(meta_size)),
             Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
     }
     if (gdip_font_header_title_ == nullptr) {
-        const int meta_size = CandidateMetadataFontSize(GetRuntimeConfig().candidate_font_size);
+        const int meta_size = CandidateMetadataFontSize(candidate_size);
         gdip_font_header_title_ = new Gdiplus::Font(
             L"Microsoft YaHei UI",
             static_cast<Gdiplus::REAL>(Scale(meta_size)),
             Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
     }
     if (gdip_font_utility_ == nullptr) {
-        gdip_font_utility_ = new Gdiplus::Font(
-            L"Microsoft YaHei UI",
-            static_cast<Gdiplus::REAL>(Scale(utility_size)),
-            Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        Gdiplus::FontFamily font_family(family.c_str());
+        gdip_font_utility_ = font_family.IsAvailable()
+            ? static_cast<void*>(new Gdiplus::Font(
+                &font_family,
+                static_cast<Gdiplus::REAL>(Scale(utility_size)),
+                Gdiplus::FontStyleRegular, Gdiplus::UnitPixel))
+            : static_cast<void*>(new Gdiplus::Font(
+                L"Microsoft YaHei UI",
+                static_cast<Gdiplus::REAL>(Scale(utility_size)),
+                Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
     }
 }
 
@@ -648,7 +720,8 @@ bool CandidateWindow::DisplayContentEquals(
         if (candidates_[i].text != candidates[i].text ||
             candidates_[i].full_content != candidates[i].full_content ||
             candidates_[i].action != candidates[i].action ||
-            candidates_[i].action_data != candidates[i].action_data) {
+            candidates_[i].action_data != candidates[i].action_data ||
+            candidates_[i].pinned != candidates[i].pinned) {
             return false;
         }
     }
@@ -790,6 +863,21 @@ void CandidateWindow::SetTypingStats(const TypingStatsSnapshot& snapshot) {
     }
 }
 
+void CandidateWindow::SetPinningEnabled(bool enabled) {
+    if (pinning_enabled_ == enabled) return;
+    pinning_enabled_ = enabled;
+    hovered_candidate_ = -1;
+    hovered_pin_ = false;
+    pressed_pin_candidate_ = -1;
+    layout_dirty_ = true;
+    paint_dirty_ = true;
+    if (visible_ && hwnd_ != nullptr) {
+        const POINT anchor = ScreenPosition();
+        RecalcSize();
+        Show(anchor);
+    }
+}
+
 void CandidateWindow::RefreshTypingStats() {
     SetTypingStats(TypingStatsStore().Load());
 }
@@ -809,6 +897,27 @@ void CandidateWindow::StopReadyPolling() {
     }
     ready_poll_active_ = false;
     ready_poll_ = nullptr;
+}
+
+void CandidateWindow::StartShiftReleasePolling(
+    std::function<bool()> poll) {
+    if (hwnd_ == nullptr) return;
+    StopShiftReleasePolling();
+    shift_release_poll_ = std::move(poll);
+    if (shift_release_poll_) {
+        shift_release_poll_active_ = SetTimer(
+            hwnd_, kShiftReleasePollTimerId,
+            kShiftReleasePollIntervalMs, nullptr) != 0;
+        if (!shift_release_poll_active_) shift_release_poll_ = nullptr;
+    }
+}
+
+void CandidateWindow::StopShiftReleasePolling() {
+    if (shift_release_poll_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, kShiftReleasePollTimerId);
+    }
+    shift_release_poll_active_ = false;
+    shift_release_poll_ = nullptr;
 }
 
 void CandidateWindow::StartDeferredAction(
@@ -868,8 +977,13 @@ void CandidateWindow::OpenSettings() {
 void CandidateWindow::RecalcSize() {
     EnsureFonts();
     const auto& skin = SkinManager::Instance().CurrentTheme();
+    const RuntimeConfig config = GetRuntimeConfig();
     const bool use_native_layout = skin.native_appearance &&
         !UsesPlainUtilityBackground();
+    const int candidate_size = ResolveCandidateFontSize(
+        config.candidate_font_size_mode, skin.font_size);
+    const int line_height = Scale(CandidateLineHeightForTheme(
+        use_native_layout, candidate_size));
 
     if (gdip_font_ == nullptr || gdip_font_comp_ == nullptr ||
         gdip_font_meta_ == nullptr || gdip_font_utility_ == nullptr) {
@@ -913,10 +1027,7 @@ void CandidateWindow::RecalcSize() {
         return;
     }
 
-    const std::wstring family = skin.font_family.empty()
-        ? L"Microsoft YaHei UI" : skin.font_family;
-    const int candidate_size = use_native_layout
-        ? skin.font_size : GetRuntimeConfig().candidate_font_size;
+    const std::wstring family = CandidateFontFamilyForTheme(config, skin);
     const CandidateTextStyle candidate_style {
         family, static_cast<float>(candidate_size),
         CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
@@ -925,8 +1036,7 @@ void CandidateWindow::RecalcSize() {
         CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
     const CandidateTextStyle metadata_style {
         L"Microsoft YaHei UI",
-        static_cast<float>(CandidateMetadataFontSize(
-            GetRuntimeConfig().candidate_font_size)),
+        static_cast<float>(CandidateMetadataFontSize(candidate_size)),
         CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
     const int comp_w = measure_str(
         font_comp, composing_.empty() ? L" " : composing_, composing_style);
@@ -965,7 +1075,9 @@ void CandidateWindow::RecalcSize() {
                 item = std::to_wstring(i - begin + 1) + L".";
             }
             item += candidates_[i].text;
-            item_widths.push_back(measure_str(font, item, candidate_style));
+            int item_width = measure_str(font, item, candidate_style);
+            if (pinning_enabled_) item_width += Scale(kPinReservedWidth);
+            item_widths.push_back(item_width);
         }
         item_rows_.push_back(BuildCandidateRowLayout(
             item_widths, begin,
@@ -989,19 +1101,18 @@ void CandidateWindow::RecalcSize() {
     width_ = (std::max)(minimum_width,
         (std::min)(Scale(kMaxWidth), (std::max)(header_w, cand_w)));
     if (use_native_layout) {
-        const int native_line_height = Scale((std::max)(24, skin.font_size + 6));
         const int candidate_top = Scale(skin.pinyin_margin.top) +
-            native_line_height + Scale(
+            line_height + Scale(
                 skin.pinyin_margin.bottom + skin.candidate_margin.top);
         const int content_height = candidate_top +
-            static_cast<int>(row_count) * native_line_height +
+            static_cast<int>(row_count) * line_height +
             Scale(skin.candidate_margin.bottom);
         height_ = (std::max)(Scale(skin.native_height), content_height);
     } else {
         const auto vertical = BuildCandidateWindowVerticalLayout(
-            Scale(kVerticalPadding), Scale(kLineHeight), Scale(kRowGap));
+            Scale(kVerticalPadding), line_height, Scale(kRowGap));
         height_ = vertical.window_height +
-            static_cast<int>(row_count - 1) * Scale(kLineHeight);
+            static_cast<int>(row_count - 1) * line_height;
     }
     layout_dirty_ = false;
 }
@@ -1025,10 +1136,13 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
 
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
+    const RuntimeConfig config = GetRuntimeConfig();
     const bool use_native_layout = skin.native_appearance &&
         !UsesPlainUtilityBackground();
-    const int row_height = use_native_layout
-        ? Scale((std::max)(24, skin.font_size + 6)) : Scale(kLineHeight);
+    const int candidate_size = ResolveCandidateFontSize(
+        config.candidate_font_size_mode, skin.font_size);
+    const int row_height = Scale(CandidateLineHeightForTheme(
+        use_native_layout, candidate_size));
     const int candidate_top = use_native_layout
         ? Scale(skin.pinyin_margin.top) + row_height +
             Scale(skin.pinyin_margin.bottom + skin.candidate_margin.top)
@@ -1050,6 +1164,48 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
     return hit;
 }
 
+int CandidateWindow::HitTestPin(int x, int y) const {
+    if (!pinning_enabled_ || vertical_utility_mode_) return -1;
+    const int shadow_margin = ShadowMargin();
+    x -= shadow_margin;
+    y -= shadow_margin;
+
+    SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
+    const auto& skin = SkinManager::Instance().CurrentTheme();
+    const RuntimeConfig config = GetRuntimeConfig();
+    const bool use_native_layout = skin.native_appearance &&
+        !UsesPlainUtilityBackground();
+    const int candidate_size = ResolveCandidateFontSize(
+        config.candidate_font_size_mode, skin.font_size);
+    const int row_height = Scale(CandidateLineHeightForTheme(
+        use_native_layout, candidate_size));
+    const int candidate_top = use_native_layout
+        ? Scale(skin.pinyin_margin.top) + row_height +
+            Scale(skin.pinyin_margin.bottom + skin.candidate_margin.top)
+        : BuildCandidateWindowVerticalLayout(
+            Scale(kVerticalPadding), row_height, Scale(kRowGap)).candidate_top;
+    const int row = (y - candidate_top) / row_height;
+    if (y < candidate_top || row < 0 ||
+        static_cast<size_t>(row) >= item_rows_.size()) {
+        return -1;
+    }
+
+    const int content_right_padding = use_native_layout
+        ? Scale(skin.candidate_margin.right)
+        : Scale(kHorizontalPadding);
+    for (const auto& item : item_rows_[static_cast<size_t>(row)]) {
+        const RECT rect = BuildCandidatePinRect(
+            item, width_, content_right_padding,
+            Scale(kPinReservedWidth), candidate_top + row * row_height,
+            candidate_top + (row + 1) * row_height);
+        if (x >= rect.left && x < rect.right &&
+            y >= rect.top && y < rect.bottom) {
+            return static_cast<int>(item.index);
+        }
+    }
+    return -1;
+}
+
 void CandidateWindow::DrawContent(
     void* graphics_ptr, uint8_t* pixels, int bitmap_width, int bitmap_height,
     int content_offset) {
@@ -1059,6 +1215,7 @@ void CandidateWindow::DrawContent(
 
     SkinManager::Instance().EnsureSkin(GetRuntimeConfig().skin_id);
     const auto& skin = SkinManager::Instance().CurrentTheme();
+    const RuntimeConfig config = GetRuntimeConfig();
     const bool plain_utility_background = UsesPlainUtilityBackground();
     const bool use_native_layout = skin.native_appearance &&
         !plain_utility_background;
@@ -1098,10 +1255,10 @@ void CandidateWindow::DrawContent(
     auto* font_header_title = static_cast<Gdiplus::Font*>(gdip_font_header_title_);
     auto* font_utility = static_cast<Gdiplus::Font*>(gdip_font_utility_);
     const UINT dpi = hwnd_ == nullptr ? 96 : GetDpiForWindow(hwnd_);
-    const int candidate_size = use_native_layout
-        ? skin.font_size : GetRuntimeConfig().candidate_font_size;
+    const int candidate_size = ResolveCandidateFontSize(
+        config.candidate_font_size_mode, skin.font_size);
     const std::wstring candidate_family = directwrite_text_.ResolveFontFamily(
-        skin.font_family.empty() ? L"Microsoft YaHei UI" : skin.font_family);
+        CandidateFontFamilyForTheme(config, skin));
     const bool directwrite_frame_started = directwrite_text_.BeginFrame(
         bitmap_width, bitmap_height, dpi);
 
@@ -1156,8 +1313,7 @@ void CandidateWindow::DrawContent(
                              Scale(4) + top_bar_h};
         const CandidateTextStyle title_style {
             L"Microsoft YaHei UI",
-            static_cast<float>(CandidateMetadataFontSize(
-                GetRuntimeConfig().candidate_font_size)),
+            static_cast<float>(CandidateMetadataFontSize(candidate_size)),
             CandidateTextWeight::SemiBold, CandidateTextAlignment::Near, true};
         const COLORREF title_color = plain_utility_background
             ? EnsureCandidateTextContrast(
@@ -1219,9 +1375,8 @@ void CandidateWindow::DrawContent(
             const RECT empty_rc {padding, top_bar_h + Scale(16),
                                  width_ - padding, top_bar_h + Scale(50)};
             const CandidateTextStyle empty_style {
-                L"Microsoft YaHei UI",
-                static_cast<float>(CandidateVModeListFontSize(
-                    GetRuntimeConfig().candidate_font_size)),
+                candidate_family,
+                static_cast<float>(CandidateVModeListFontSize(candidate_size)),
                 CandidateTextWeight::Regular, CandidateTextAlignment::Center, true};
             const COLORREF empty_color = plain_utility_background
                 ? EnsureCandidateTextContrast(
@@ -1270,9 +1425,8 @@ void CandidateWindow::DrawContent(
                         item_text_color, row_background);
                 }
                 const CandidateTextStyle utility_style {
-                    L"Microsoft YaHei UI",
-                    static_cast<float>(CandidateVModeListFontSize(
-                        GetRuntimeConfig().candidate_font_size)),
+                    candidate_family,
+                    static_cast<float>(CandidateVModeListFontSize(candidate_size)),
                     CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
                 const RECT dot_rc {Scale(14), row_y, Scale(26), row_y + row_h};
                 draw_text(L"•", dot_rc, dot_color, utility_style,
@@ -1340,8 +1494,8 @@ void CandidateWindow::DrawContent(
     const int horizontal_padding = use_native_layout
         ? Scale(skin.candidate_margin.left)
         : Scale(kHorizontalPadding);
-    const int line_height = use_native_layout
-        ? Scale((std::max)(24, skin.font_size + 6)) : Scale(kLineHeight);
+    const int line_height = Scale(CandidateLineHeightForTheme(
+        use_native_layout, candidate_size));
     CandidateWindowVerticalLayout vertical;
     if (use_native_layout) {
         vertical.composing_top = Scale(skin.pinyin_margin.top);
@@ -1362,8 +1516,7 @@ void CandidateWindow::DrawContent(
 
     const CandidateTextStyle metadata_style {
         L"Microsoft YaHei UI",
-        static_cast<float>(CandidateMetadataFontSize(
-            GetRuntimeConfig().candidate_font_size)),
+        static_cast<float>(CandidateMetadataFontSize(candidate_size)),
         CandidateTextWeight::Regular, CandidateTextAlignment::Near, false};
     float status_width_value = directwrite_text_.MeasureText(
         status_text, metadata_style, dpi);
@@ -1496,10 +1649,21 @@ void CandidateWindow::DrawContent(
                     txt_color, text_background);
             }
 
-            const int item_text_right = CandidateItemTextRight(
+            const int visible_item_right = CandidateItemTextRight(
                 width_, hit_right, use_native_layout
                     ? Scale(skin.candidate_margin.right)
                     : horizontal_padding);
+            const RECT candidate_pin_rect = BuildCandidatePinRect(
+                item_rows_[row][slot], width_,
+                use_native_layout
+                    ? Scale(skin.candidate_margin.right)
+                    : horizontal_padding,
+                Scale(kPinReservedWidth), row_top, row_bottom);
+            const int item_text_right = pinning_enabled_
+                ? (std::max)(
+                    text_left,
+                    static_cast<int>(candidate_pin_rect.left) - Scale(2))
+                : visible_item_right;
             const CandidateTextStyle candidate_style {
                 candidate_family, static_cast<float>(candidate_size),
                 CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
@@ -1527,6 +1691,22 @@ void CandidateWindow::DrawContent(
                                     item_text_right, row_bottom};
                 draw_text(candidates_[i].text, text_rc, txt_color,
                           candidate_style, font, &format);
+            }
+
+            if (pinning_enabled_ &&
+                (candidates_[i].pinned ||
+                 static_cast<int>(i) == hovered_candidate_)) {
+                const bool pin_hovered = static_cast<int>(i) == hovered_candidate_ &&
+                    hovered_pin_;
+                COLORREF pin_color = candidates_[i].pinned
+                    ? skin.highlight_bg_color : skin.candidate_color;
+                const COLORREF icon_background = is_selected && !use_native_layout
+                    ? skin.highlight_bg_color : skin.utility_background_color;
+                pin_color = EnsureCandidateTextContrast(
+                    pin_color, icon_background, 3.0);
+                DrawCandidatePinIcon(
+                    g, candidate_pin_rect, pin_color,
+                    candidates_[i].pinned, pin_hovered);
             }
         }
     }
@@ -1724,6 +1904,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             if (action) action();
             return 0;
         }
+        if (wparam == kShiftReleasePollTimerId) {
+            const std::function<bool()> poll = self->shift_release_poll_;
+            if (!poll || !poll()) {
+                self->StopShiftReleasePolling();
+            }
+            return 0;
+        }
         if (wparam == kReadyPollTimerId) {
             // 先拷贝再调用：回调内部可能触发 Stop/StartReadyPolling 替换
             // ready_poll_，直接调用成员会销毁正在执行的 lambda。
@@ -1757,6 +1944,15 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             y >= self->expand_toggle_rect_.top &&
             y < self->expand_toggle_rect_.bottom) {
             self->ToggleExpanded();
+            return 0;
+        }
+
+        const int pin_candidate = self->HitTestPin(
+            static_cast<short>(LOWORD(lparam)),
+            static_cast<short>(HIWORD(lparam)));
+        if (pin_candidate >= 0) {
+            self->pressed_pin_candidate_ = pin_candidate;
+            SetCapture(hwnd);
             return 0;
         }
 
@@ -1811,6 +2007,10 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
 
+        TRACKMOUSEEVENT tracking {
+            sizeof(tracking), TME_LEAVE, hwnd, 0};
+        TrackMouseEvent(&tracking);
+
         if (self->vertical_utility_mode_) {
             bool need_redraw = false;
 
@@ -1861,6 +2061,20 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             if (need_redraw) {
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+        } else {
+            const int hovered_candidate = self->HitTestCandidate(
+                static_cast<short>(LOWORD(lparam)),
+                static_cast<short>(HIWORD(lparam)));
+            const bool hovered_pin = self->HitTestPin(
+                static_cast<short>(LOWORD(lparam)),
+                static_cast<short>(HIWORD(lparam))) >= 0;
+            if (hovered_candidate != self->hovered_candidate_ ||
+                hovered_pin != self->hovered_pin_) {
+                self->hovered_candidate_ = hovered_candidate;
+                self->hovered_pin_ = hovered_pin;
+                self->paint_dirty_ = true;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
         }
 
         if (!self->mouse_down_) {
@@ -1883,12 +2097,38 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                      0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
+    case WM_MOUSELEAVE:
+        if (self->hovered_row_ != -1 || self->hovered_delete_ ||
+            self->hovered_candidate_ != -1 || self->hovered_pin_ ||
+            self->scrollbar_hovered_) {
+            self->hovered_row_ = -1;
+            self->hovered_delete_ = false;
+            self->hovered_candidate_ = -1;
+            self->hovered_pin_ = false;
+            self->scrollbar_hovered_ = false;
+            self->paint_dirty_ = true;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        return 0;
     case WM_CAPTURECHANGED:
         self->mouse_down_ = false;
         self->dragging_ = false;
         self->scrollbar_dragging_ = false;
+        self->pressed_pin_candidate_ = -1;
         break;
     case WM_LBUTTONUP: {
+        if (self->pressed_pin_candidate_ >= 0) {
+            const int pressed = self->pressed_pin_candidate_;
+            self->pressed_pin_candidate_ = -1;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            const int released = self->HitTestPin(
+                static_cast<short>(LOWORD(lparam)),
+                static_cast<short>(HIWORD(lparam)));
+            if (released == pressed && self->on_pin_) {
+                self->on_pin_(static_cast<size_t>(pressed));
+            }
+            return 0;
+        }
         if (self->scrollbar_dragging_) {
             self->scrollbar_dragging_ = false;
             if (GetCapture() == hwnd) ReleaseCapture();

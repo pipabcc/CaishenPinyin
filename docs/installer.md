@@ -8,7 +8,8 @@
 - `scripts\install_ime.ps1` 负责清单校验、side-by-side 复制、注册、健康检查和回滚；
 - `ShuruSettings.exe` 连同 .NET 8 Desktop Runtime 一起部署，目标电脑不需要另装 .NET；
 - 原生 `ShuruIme.dll` 使用静态 MSVC 运行库，目标电脑不需要 VC++ Redistributable；
-- 安装后由 NSIS 生成 `%ProgramFiles%\CaishenPinyin\Uninstall.exe`。
+- 默认安装到 `%ProgramFiles%\CaishenPinyin`，安装后由 NSIS 在安装根目录生成
+  `Uninstall.exe`。
 
 安装包仅支持 AMD64 Windows 10/11。NSIS 是 32 位进程，因此通过 `Sysnative` 启动
 64 位 Windows PowerShell，保证注册 x64 TSF DLL 时使用的是 64 位 `regsvr32.exe`。
@@ -39,12 +40,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
 - 已安装版本更高时阻止降级；
 - 安装失败时恢复旧 DLL 注册、版本指针、快捷方式和默认输入法状态。
 
+全新安装可输入或浏览选择本机任意磁盘上的专用安装目录。安装器拒绝磁盘根目录、
+Windows/Program Files/ProgramData/用户配置根目录，以及已经含有其他文件的目录。
+升级和修复始终锁定现有安装路径，避免同一产品被拆成两个安装根。
+
 “设为默认输入法”默认勾选。安装器保存安装前的
 `HKCU\Control Panel\International\User Profile\InputMethodOverride`，但只有在它实际改变
-默认输入法时才取得该状态的管理权。卸载时仅在当前值仍为财神拼音 TIP 时恢复原值；
+默认输入法时才取得该状态的管理权。卸载时仅在当前值仍为财神输入法 TIP 时恢复原值；
 如果用户安装后手动换过默认输入法，卸载器不会覆盖用户选择。
 
-静默安装默认同样设置财神拼音为默认输入法：
+静默安装默认同样设置财神输入法为默认输入法：
 
 ```powershell
 CaishenPinyin-<version>-win-x64-Setup.exe /S
@@ -68,7 +73,7 @@ CaishenPinyin-<version>-win-x64-Setup.exe /S /NODEFAULTIME
 数据；显式删除数据使用：
 
 ```powershell
-"%ProgramFiles%\CaishenPinyin\Uninstall.exe" /S /DELETEUSERDATA
+"<安装目录>\Uninstall.exe" /S /DELETEUSERDATA
 ```
 
 卸载先恢复受安装器管理的默认输入法，再注销 TSF DLL。若 DLL 丢失或注册路径不属于

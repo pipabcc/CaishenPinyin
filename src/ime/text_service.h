@@ -80,6 +80,7 @@ private:
     bool shuangpin_mode_ = false;  // 小鹤双拼
     SchemaSyncState schema_sync_;
     ShiftTapState shift_tap_;
+    ShortcutModifierState shortcut_modifier_state_;
     ShortcutModifierDecisionCache shortcut_modifier_cache_;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
     DWORD owner_thread_id_ = 0;
@@ -102,6 +103,7 @@ private:
     bool candidate_layout_notified_ = false;
     std::uint64_t candidate_layout_generation_ = 0;
     std::uint64_t candidate_layout_serial_ = 0;
+    unsigned candidate_position_attempts_ = 0;
     // 用户拖动候选窗后的固定位置；仅当前组合会话内有效，组合结束即恢复跟随光标。
     bool candidate_pos_overridden_ = false;
     POINT candidate_override_pos_ {};
@@ -141,6 +143,9 @@ private:
     void TryResolveCandidateAnchor(
         std::uint64_t generation, std::uint64_t layout_serial);
     bool GetCaretScreenRect(ITfContext* context, RECT* rect);
+    void StartShiftReleasePolling();
+    void StopShiftReleasePolling();
+    void CompleteShiftTap(ITfContext* context);
     void ResetCandidateAnchor() noexcept;
     void ClearCompositionState();
     void ToggleEnglishMode();
@@ -148,6 +153,7 @@ private:
     void ToggleSoftKeyboard();
     void OnSoftKey(wchar_t ch, bool is_special);
     void OnCandidateSelected(size_t index);
+    void OnCandidatePinToggled(size_t index);
     bool CommitCandidate(ITfContext* context, const Candidate& candidate);
     bool CommitRawComposition(ITfContext* context);
     static void SendVirtualKey(WORD vk);

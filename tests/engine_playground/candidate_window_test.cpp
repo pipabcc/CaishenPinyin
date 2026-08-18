@@ -224,6 +224,13 @@ int wmain(int argc, wchar_t** argv) {
             return 40;
         }
     }
+    const RECT pin_rect = shuru::BuildCandidatePinRect(
+        diary_row.front(), diary_window_width, 140, 18, 42, 72);
+    if (pin_rect.right - pin_rect.left != 18 || pin_rect.top != 42 ||
+        pin_rect.bottom != 72 || pin_rect.left < diary_row.front().text_left) {
+        std::fwprintf(stderr, L"candidate pin rectangle is invalid\n");
+        return 50;
+    }
     const auto header = shuru::BuildCandidateHeaderLayout(
         required_width, 50, 13, 9, 12);
     if (header.composing_left != 13 || header.composing_right != 213 ||
@@ -285,11 +292,33 @@ int wmain(int argc, wchar_t** argv) {
         return 48;
     }
 
+    int shift_poll_calls = 0;
+    window.StartShiftReleasePolling([&shift_poll_calls]() {
+        ++shift_poll_calls;
+        return false;
+    });
+    const ULONGLONG shift_poll_deadline = GetTickCount64() + 500;
+    while (shift_poll_calls == 0 && GetTickCount64() < shift_poll_deadline) {
+        while (PeekMessageW(
+                &queued_timer, window.GetHwnd(), 0, 0, PM_REMOVE)) {
+            TranslateMessage(&queued_timer);
+            DispatchMessageW(&queued_timer);
+        }
+        Sleep(2);
+    }
+    if (shift_poll_calls != 1) {
+        std::fwprintf(stderr,
+                      L"shift release polling calls=%d expected=1\n",
+                      shift_poll_calls);
+        return 49;
+    }
+
     std::vector<shuru::Candidate> candidates(63);
     for (size_t i = 0; i < candidates.size(); ++i) {
         candidates[i].text = L"候选" + std::to_wstring(i + 1);
     }
     window.SetContent(L"bao", candidates, 0, 0, 9);
+    window.SetPinningEnabled(true);
     window.SetTypingStats(shuru::TypingStatsSnapshot {1286, true});
     const SIZE size_before_show = window.WindowSize();
     window.Show(POINT {40, 40});
@@ -325,6 +354,39 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"candidate layout changed during first Show\n");
         return 7;
     }
+
+    int pin_clicks = 0;
+    int selection_clicks = 0;
+    window.SetPinHandler([&pin_clicks](size_t) { ++pin_clicks; });
+    window.SetSelectionHandler(
+        [&selection_clicks](size_t) { ++selection_clicks; });
+    const int candidate_row_y = shadow_margin +
+        MulDiv(5 + 30 + 4 + 15, static_cast<int>(dpi), 96);
+    bool found_pin_target = false;
+    for (int x = shadow_margin; x < shadow_margin + size.cx; ++x) {
+        pin_clicks = 0;
+        selection_clicks = 0;
+        const LPARAM point = MAKELPARAM(x, candidate_row_y);
+        SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, point);
+        SendMessageW(handle, WM_LBUTTONUP, 0, point);
+        if (pin_clicks == 0) continue;
+        if (pin_clicks != 1 || selection_clicks != 0) {
+            std::fwprintf(
+                stderr,
+                L"pin click dispatched pin=%d selection=%d\n",
+                pin_clicks, selection_clicks);
+            return 51;
+        }
+        found_pin_target = true;
+        break;
+    }
+    if (!found_pin_target) {
+        std::fwprintf(stderr, L"candidate pin target was not clickable\n");
+        return 52;
+    }
+    window.SetPinHandler({});
+    window.SetSelectionHandler({});
+    window.SetSelectedIndex(0);
 
     if (window.IsExpanded() || !window.ToggleExpanded()) {
         std::fwprintf(stderr, L"candidate did not expand\n");

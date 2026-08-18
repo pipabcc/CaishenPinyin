@@ -30,6 +30,43 @@ constexpr bool IsFunctionKey(WPARAM wparam) noexcept {
     return wparam >= VK_F1 && wparam <= VK_F24;
 }
 
+constexpr bool IsShortcutModifierKey(WPARAM wparam) noexcept {
+    return wparam == VK_CONTROL || wparam == VK_LCONTROL ||
+           wparam == VK_RCONTROL || wparam == VK_MENU ||
+           wparam == VK_LMENU || wparam == VK_RMENU ||
+           wparam == VK_LWIN || wparam == VK_RWIN;
+}
+
+struct ShortcutModifierPhysicalState {
+    bool control = false;
+    bool alt = false;
+    bool left_windows = false;
+    bool right_windows = false;
+};
+
+// TSF 的测试回调和真实回调并不总是成对到达。显式记录修饰键的
+// 按下/释放世代，避免 Ctrl+C 松开后仍用消息队列中的旧键态放走首字母。
+class ShortcutModifierState {
+public:
+    void KeyDown(WPARAM key) noexcept;
+    void KeyUp(WPARAM key) noexcept;
+    void Reset() noexcept;
+    void ResetFromPhysical(
+        const ShortcutModifierPhysicalState& physical) noexcept;
+    bool IsActive(
+        const ShortcutModifierPhysicalState& physical) noexcept;
+
+private:
+    enum class Phase : std::uint8_t { Unknown, Released, Pressed };
+
+    static bool Resolve(Phase* phase, bool physical_down) noexcept;
+
+    Phase control_ = Phase::Unknown;
+    Phase alt_ = Phase::Unknown;
+    Phase left_windows_ = Phase::Unknown;
+    Phase right_windows_ = Phase::Unknown;
+};
+
 // Cross-process marker used by ShuruSettings when it injects its Ctrl+V paste
 // sequence. It prevents the injected V from being interpreted as v-mode input.
 inline constexpr ULONG_PTR kClipboardPasteInputMarker = 0x4350494DUL;  // "CPIM"

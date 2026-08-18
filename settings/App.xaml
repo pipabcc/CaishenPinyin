@@ -402,7 +402,7 @@
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="Button">
-            <Border x:Name="CloseBorder" Background="{TemplateBinding Background}" CornerRadius="8">
+            <Border x:Name="CloseBorder" Background="{TemplateBinding Background}" CornerRadius="17">
               <Path x:Name="CloseIcon" Data="M 0 0 L 10 10 M 10 0 L 0 10" Stroke="#8A94A3"
                     StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                     HorizontalAlignment="Center" VerticalAlignment="Center"/>

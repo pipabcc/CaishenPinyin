@@ -76,7 +76,9 @@ public:
     bool IsExpanded() const noexcept { return expanded_; }
     void SetEnglishMode(bool english);
     void SetTypingStats(const TypingStatsSnapshot& snapshot);
+    void SetPinningEnabled(bool enabled);
     void SetSelectionHandler(std::function<void(size_t)> handler) { on_select_ = std::move(handler); }
+    void SetPinHandler(std::function<void(size_t)> handler) { on_pin_ = std::move(handler); }
     void SetDragHandler(std::function<void(POINT)> handler) { on_drag_ = std::move(handler); }
     void SetSearchHandler(std::function<void()> handler) { on_search_clicked_ = std::move(handler); }
     void SetClearSearchHandler(std::function<void()> handler) { on_search_cleared_ = std::move(handler); }
@@ -85,6 +87,10 @@ public:
     // 引擎就绪轮询：poll 返回 true 继续轮询，false 停止。
     void StartReadyPolling(std::function<bool()> poll);
     void StopReadyPolling();
+
+    // 某些宿主不派发 Shift KeyUp；在窗口线程轮询物理释放状态。
+    void StartShiftReleasePolling(std::function<bool()> poll);
+    void StopShiftReleasePolling();
 
     // 将需要读取宿主布局的操作推迟到当前 TSF 编辑消息返回后执行。
     // 连续请求会合并为一次回调，避免在旧布局和新布局之间来回移动。
@@ -114,11 +120,14 @@ private:
     static constexpr int kExpandedMaxRows = 5;
     static constexpr int kExpandToggleWidth = 16;
     static constexpr int kExpandToggleGap = 5;
+    static constexpr int kPinReservedWidth = 18;
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
     static constexpr UINT_PTR kVModeTimerId = 1002;
     static constexpr UINT_PTR kSkinAnimationTimerId = 1003;
     static constexpr UINT_PTR kDeferredActionTimerId = 1004;
+    static constexpr UINT_PTR kShiftReleasePollTimerId = 1005;
+    static constexpr UINT kShiftReleasePollIntervalMs = 10;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -141,12 +150,16 @@ private:
     POINT drag_start_cursor_ {};
     POINT drag_start_window_ {};
     bool ready_poll_active_ = false;
+    bool shift_release_poll_active_ = false;
     int width_ = kMinWidth;
     int height_ = kLineHeight * 2 + kVerticalPadding * 2 + kRowGap;
 
     // 竖向与滚动条交互状态
     int hovered_row_ = -1;
     bool hovered_delete_ = false;
+    int hovered_candidate_ = -1;
+    bool hovered_pin_ = false;
+    int pressed_pin_candidate_ = -1;
     bool scrollbar_hovered_ = false;
     bool scrollbar_dragging_ = false;
     int scroll_offset_ = 0;
@@ -164,15 +177,18 @@ private:
     size_t page_size_ = 9;
     bool utility_mode_ = false;
     bool vertical_utility_mode_ = false;
+    bool pinning_enabled_ = false;
     std::vector<std::vector<CandidateItemLayout>> item_rows_;
     bool layout_dirty_ = true;
     bool paint_dirty_ = true;
     std::function<void(size_t)> on_select_;
+    std::function<void(size_t)> on_pin_;
     std::function<void(POINT)> on_drag_;
     std::function<void()> on_search_clicked_;
     std::function<void()> on_search_cleared_;
     std::function<void(size_t)> on_delete_item_;
     std::function<bool()> ready_poll_;
+    std::function<bool()> shift_release_poll_;
     bool vmode_timer_active_ = false;
     std::function<void()> vmode_timer_cb_;
     bool deferred_action_active_ = false;
@@ -201,6 +217,7 @@ private:
         size_t page_size) const;
     int MeasureText(HDC hdc, HFONT font, const std::wstring& text) const;
     int HitTestCandidate(int x, int y) const;
+    int HitTestPin(int x, int y) const;
     void RefreshTypingStats();
     void OpenSettings();
     void DrawContent(

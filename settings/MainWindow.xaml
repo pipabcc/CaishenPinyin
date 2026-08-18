@@ -58,7 +58,7 @@
             <StackPanel Grid.Row="2" Margin="20,16,20,20">
               <Border Height="1" Background="#2E3542" Margin="0,0,0,16"/>
               <TextBlock Text="2.0.1" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12"/>
-              <TextBlock Text="本地运行 · 数据归您所有" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12" Margin="0,4,0,0"/>
+              <TextBlock Text="纯净离线 · 安全高效" Foreground="{StaticResource SidebarTextMutedBrush}" FontSize="12" Margin="0,4,0,0"/>
             </StackPanel>
           </Grid>
         </Border>
@@ -77,7 +77,7 @@
             <!-- 右上角自定义关闭按钮 -->
             <Button x:Name="CloseButton" Style="{StaticResource WindowCloseButtonStyle}"
                     HorizontalAlignment="Right" VerticalAlignment="Top"
-                    Margin="0,16,20,0" Panel.ZIndex="30"
+                    Margin="0,10,14,0" Panel.ZIndex="30"
                     ToolTip="关闭窗口" Click="Close_Click"/>
 
             <!-- 页面内容统一容器：左右留白舒适，与图2一致 -->
@@ -114,7 +114,7 @@
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
                         <TextBlock x:Name="DisplayNameLabel" Text="输入法列表名称" Style="{StaticResource SectionTitleStyle}"/>
-                        <TextBlock Text="显示在 Windows 输入法切换列表中；任务栏的语言名称“简体”由系统管理。"
+                        <TextBlock Text="显示在 Windows 输入法切换列表中。"
                                    Style="{StaticResource SectionDescriptionStyle}"/>
                         <TextBox x:Name="DisplayNameBox" MaxLength="24" Width="320"
                                  HorizontalAlignment="Left" Margin="0,16,0,0"
@@ -127,24 +127,31 @@
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
                         <TextBlock Text="候选窗口" Style="{StaticResource SectionTitleStyle}"/>
-                        <TextBlock Text="设置每页显示数量与候选文字大小。" Style="{StaticResource SectionDescriptionStyle}"/>
+                        <TextBlock Text="设置每页显示数量、候选字体与字号。" Style="{StaticResource SectionDescriptionStyle}"/>
                         <WrapPanel Margin="0,16,0,0" VerticalAlignment="Center">
-                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,32,0">
-                            <TextBlock Text="每页候选数量" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,28,10">
+                            <TextBlock Text="候选词数量" VerticalAlignment="Center" Margin="0,0,14,0"/>
                             <ComboBox x:Name="CandidateCountBox" Width="96" SelectedValuePath="Content">
                               <ComboBoxItem Content="3"/><ComboBoxItem Content="4"/><ComboBoxItem Content="5"/>
                               <ComboBoxItem Content="6"/><ComboBoxItem Content="7"/><ComboBoxItem Content="8"/>
-                              <ComboBoxItem Content="9"/><ComboBoxItem Content="11"/>
+                              <ComboBoxItem Content="9"/><ComboBoxItem Content="10"/><ComboBoxItem Content="11"/>
                             </ComboBox>
                           </StackPanel>
 
-                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <TextBlock Text="候选字体大小" VerticalAlignment="Center" Margin="0,0,14,0"/>
-                            <ComboBox x:Name="CandidateFontSizeBox" Width="96" SelectedValuePath="Content">
-                              <ComboBoxItem Content="14"/><ComboBoxItem Content="16"/><ComboBoxItem Content="18"/>
-                              <ComboBoxItem Content="19"/><ComboBoxItem Content="20"/><ComboBoxItem Content="22"/>
-                              <ComboBoxItem Content="24"/><ComboBoxItem Content="26"/><ComboBoxItem Content="28"/>
-                              <ComboBoxItem Content="30"/><ComboBoxItem Content="32"/>
+                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,28,10">
+                            <TextBlock Text="候选词字体" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                            <ComboBox x:Name="CandidateFontFamilyBox" Width="168" MaxDropDownHeight="320"
+                                      SelectedValuePath="Tag"/>
+                          </StackPanel>
+
+                          <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,10">
+                            <TextBlock Text="候选词大小" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                            <ComboBox x:Name="CandidateFontSizeBox" Width="120" SelectedValuePath="Tag">
+                              <ComboBoxItem Content="跟随皮肤" Tag="follow_skin"/>
+                              <ComboBoxItem Content="小" Tag="small"/>
+                              <ComboBoxItem Content="标准" Tag="standard"/>
+                              <ComboBoxItem Content="大" Tag="large"/>
+                              <ComboBoxItem Content="特大" Tag="extra_large"/>
                             </ComboBox>
                           </StackPanel>
                         </WrapPanel>
@@ -169,7 +176,7 @@
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
                         <TextBlock Text="关于" Style="{StaticResource SectionTitleStyle}"/>
-                        <TextBlock Text="财神输入法 2.0.1 · 本地运行，数据归您所有。" Style="{StaticResource SectionDescriptionStyle}"/>
+                        <TextBlock Text="财神输入法 2.0.1 · 纯净离线 · 安全高效" Style="{StaticResource SectionDescriptionStyle}"/>
                       </StackPanel>
                     </Border>
                   </StackPanel>

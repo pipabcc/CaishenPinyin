@@ -158,6 +158,16 @@ if (-not (Test-Path -LiteralPath $setupPath -PathType Leaf)) {
     throw "NSIS output missing: $setupPath"
 }
 
+$setupVersionInfo = (Get-Item -LiteralPath $setupPath).VersionInfo
+$expectedProductName = -join @(
+    [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5)
+$expectedFileDescription = $expectedProductName + ' ' + (-join @(
+    [char]0x5B89, [char]0x88C5, [char]0x7A0B, [char]0x5E8F))
+if ($setupVersionInfo.ProductName -ne $expectedProductName -or
+    $setupVersionInfo.FileDescription -ne $expectedFileDescription) {
+    throw "installer product metadata is invalid: product=$($setupVersionInfo.ProductName) description=$($setupVersionInfo.FileDescription)"
+}
+
 $signature = Get-AuthenticodeSignature -LiteralPath $setupPath
 if ($signature.Status -ne 'NotSigned') {
     throw "unsigned installer expected, signature status=$($signature.Status)"

@@ -5,6 +5,7 @@
 #include "dictionary.h"
 #include "english_dict.h"
 #include "fuzzy_pinyin.h"
+#include "pinned_candidate_store.h"
 #include "system_language_model.h"
 #include "system_lexeme_prior.h"
 #include "user_bigram.h"
@@ -61,6 +62,10 @@ public:
     std::string ToFullPinyinForLearn(const std::string& raw_input) const;
 
     void Learn(const std::string& pinyin, const std::wstring& word);
+    PinnedCandidateToggleResult TogglePinnedCandidate(
+        InputSchema schema,
+        const std::string& raw_input,
+        const std::wstring& candidate_text);
     bool UndoLastLearning();
     // 记录「上一个上屏词 -> 本次上屏词」的搭配；由 TextService 在成功
     // 上屏后调用（密码域/关闭学习时不调用）。
@@ -114,6 +119,7 @@ private:
     bool lock_ready_ = false;
     std::wstring user_dict_path_;
     std::wstring custom_phrase_path_;
+    mutable PinnedCandidateStore pinned_candidates_;
     std::wstring bigram_path_;
     bool bigram_dirty_ = false;
     std::wstring lexicon_dir_;

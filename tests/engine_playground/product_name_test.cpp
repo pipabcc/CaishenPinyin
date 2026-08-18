@@ -38,10 +38,18 @@ bool ReadRegistryString(
 }  // namespace
 
 int wmain() {
-    const std::wstring product_name = shuru::GetRuntimeConfig().display_name;
-    if (product_name != L"财神输入法") {
-        std::wcerr << L"产品名不是财神输入法，实际为: " << product_name << L'\n';
+    const std::wstring default_product_name =
+        shuru::RuntimeConfig {}.display_name;
+    if (default_product_name != L"财神输入法") {
+        std::wcerr << L"默认产品名不是财神输入法，实际为: "
+                   << default_product_name << L'\n';
         return 1;
+    }
+
+    const std::wstring product_name = shuru::GetRuntimeConfig().display_name;
+    if (!shuru::IsValidDisplayName(product_name)) {
+        std::wcerr << L"运行时输入法名称无效，实际为: " << product_name << L'\n';
+        return 2;
     }
 
     // 注册表不存在时不阻止纯构建环境测试；存在时必须与产品名一致。
@@ -56,9 +64,9 @@ int wmain() {
             &registered_description) &&
         registered_description != product_name) {
         std::wcerr << L"已注册输入法名称仍为: " << registered_description << L'\n';
-        return 2;
+        return 3;
     }
 
-    std::wcout << L"product_name: 财神输入法\n";
+    std::wcout << L"product_name: " << product_name << L'\n';
     return 0;
 }

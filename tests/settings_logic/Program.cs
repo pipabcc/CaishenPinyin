@@ -336,13 +336,33 @@ static void TestSettingsAndCustomPhrases(string root)
     File.WriteAllText(settingsPath,
         "CandidateCount=99\nCandidateFontSize=no\nContentLogging=maybe\nFuzzyEnabled=0\n");
     var fallback = SettingsStore.Load(settingsPath);
-    Require(fallback.CandidateCount == 9 && fallback.CandidateFontSize == 19 &&
+    Require(fallback.CandidateCount == 9 &&
+            fallback.CandidateFontSizeMode == SettingsStore.FollowSkinFontSizeMode &&
             !fallback.ContentLogging && !fallback.FuzzyEnabled,
         "非法设置回退错误");
 
+    File.WriteAllText(settingsPath,
+        "CandidateCount=11\nCandidateFontFamily=DengXian\nCandidateFontSize=24\n");
+    var migrated = SettingsStore.Load(settingsPath);
+    Require(migrated.CandidateCount == 11 &&
+            migrated.CandidateFontFamily == "DengXian" &&
+            migrated.CandidateFontSizeMode == "large",
+        "旧版候选字号迁移错误");
+
     var expected = new AppSettings(
-        true, false, true, true, false, true, false, true, false,
-        5, 24, "加油拼音");
+        EnglishDefault: true,
+        LearningEnabled: false,
+        ContentLogging: true,
+        FuzzyEnabled: true,
+        FuzzyInitials: false,
+        FuzzyFinals: true,
+        FuzzyMissingVowel: false,
+        ShuangpinXiaohe: true,
+        FullWidthPunctuation: false,
+        CandidateCount: 5,
+        CandidateFontFamily: "Microsoft YaHei UI",
+        CandidateFontSizeMode: "extra_large",
+        DisplayName: "加油拼音");
     SettingsStore.Save(expected, settingsPath);
     Require(SettingsStore.Load(settingsPath) == expected,
         "设置保存后不一致");
@@ -352,6 +372,13 @@ static void TestSettingsAndCustomPhrases(string root)
             SettingsStore.NormalizeDisplayName("\r\n") is null &&
             SettingsStore.NormalizeDisplayName(new string('a', 25)) is null,
         "输入法名称规范化错误");
+    Require(SettingsStore.CandidateFontSizeModeFromLegacy(16) == "small" &&
+            SettingsStore.CandidateFontSizeModeFromLegacy(19) == "standard" &&
+            SettingsStore.CandidateFontSizeModeFromLegacy(24) == "large" &&
+            SettingsStore.CandidateFontSizeModeFromLegacy(30) == "extra_large" &&
+            SettingsStore.LegacyCandidateFontSize("extra_large") == 26 &&
+            new AppSettings(CandidateCount: 10).Validated().CandidateCount == 10,
+        "候选设置映射错误");
 
     var phrasePath = Path.Combine(root, "custom_phrases.txt");
     var phrases = new[]

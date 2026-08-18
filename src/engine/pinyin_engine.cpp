@@ -600,6 +600,10 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     const bool fuzzy_enabled = options.fuzzy_enabled;
     FuzzyConfig fuzzy_config = options.fuzzy_config;
     const InputSchema schema = options.schema;
+    const PinnedCandidateSchema pinned_schema =
+        schema == InputSchema::ShuangpinXiaohe
+        ? PinnedCandidateSchema::ShuangpinXiaohe
+        : PinnedCandidateSchema::Quanpin;
     std::string repeat_pinyin;
     std::wstring repeat_text;
     int repeat_count = 0;
@@ -698,6 +702,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             if (result.candidates.size() >= limit) break;
         }
         if (!result.candidates.empty()) result.matched_pinyin_len = raw_input.size();
+        pinned_candidates_.Promote(
+            pinned_schema, raw_input, &result.candidates);
         return result;
     }
 
@@ -1712,6 +1718,9 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             }
         }
     }
+    // 先在候选池截断前提升一次，保证原本位于首屏缓冲区尾部的固定项不会
+    // 被动态候选或自定义短语插入时挤掉；最终组装后再恢复为真正首位。
+    pinned_candidates_.Promote(pinned_schema, raw_input, &pool);
     if(pool.size()>limit)pool.resize(limit);
     if (!dynamic_candidates.empty()) {
         std::unordered_set<std::wstring> dynamic_text;
@@ -1733,6 +1742,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             custom_phrases->LookupExact(normalized), normalized,
             raw_input.size(), limit, &pool);
     }
+    pinned_candidates_.Promote(pinned_schema, raw_input, &pool);
     if (schema == InputSchema::Quanpin) {
         std::unordered_map<size_t, std::vector<pinyin_data::SyllablePath>>
             segmentation_lattices;
@@ -1753,6 +1763,18 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     }
     for(const auto& c:pool) result.matched_pinyin_len=(std::max)(result.matched_pinyin_len,c.covered_input_len);
     result.candidates=std::move(pool); return result;
+}
+
+PinnedCandidateToggleResult PinyinEngine::TogglePinnedCandidate(
+    InputSchema schema,
+    const std::string& raw_input,
+    const std::wstring& candidate_text) {
+    return pinned_candidates_.Toggle(
+        schema == InputSchema::ShuangpinXiaohe
+            ? PinnedCandidateSchema::ShuangpinXiaohe
+            : PinnedCandidateSchema::Quanpin,
+        raw_input,
+        candidate_text);
 }
 
 bool PinyinEngine::CaptureUserDictSnapshot(UserDictSnapshot* snapshot) {

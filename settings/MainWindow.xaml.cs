@@ -34,6 +34,7 @@ public partial class MainWindow : Window
             Icon = new System.Windows.Media.Imaging.BitmapImage(iconUri);
         }
         catch { }
+        PopulateCandidateFonts();
         var settings = SettingsStore.Load();
         skinCatalog_ = SkinCatalog.Load();
         var resolvedSkinId = SkinCatalog.ResolveSelectedId(settings.SkinId, skinCatalog_);
@@ -110,7 +111,8 @@ public partial class MainWindow : Window
         FullWidthBox.IsChecked = settings.FullWidthPunctuation;
         HalfWidthBox.IsChecked = !settings.FullWidthPunctuation;
         SelectComboValue(CandidateCountBox, settings.CandidateCount);
-        SelectComboValue(CandidateFontSizeBox, settings.CandidateFontSize);
+        SelectComboTag(CandidateFontFamilyBox, settings.CandidateFontFamily);
+        SelectComboTag(CandidateFontSizeBox, settings.CandidateFontSizeMode);
         DisplayNameBox.Text = settings.DisplayName;
         if (PhraseDirectWindowBox != null) PhraseDirectWindowBox.IsChecked = settings.VvModeOpenWindow;
         if (ClipboardDirectWindowBox != null) ClipboardDirectWindowBox.IsChecked = settings.VModeOpenWindow;
@@ -309,26 +311,64 @@ public partial class MainWindow : Window
             : throw new InvalidDataException($"请选择{fieldName}。");
     }
 
+    private static void SelectComboTag(ComboBox box, string value)
+    {
+        box.SelectedItem = box.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => string.Equals(
+                item.Tag?.ToString() ?? "", value,
+                StringComparison.OrdinalIgnoreCase)) ?? box.Items[0];
+    }
+
+    private void PopulateCandidateFonts()
+    {
+        CandidateFontFamilyBox.Items.Clear();
+        CandidateFontFamilyBox.Items.Add(new ComboBoxItem
+        {
+            Content = "跟随皮肤",
+            Tag = ""
+        });
+        foreach (var family in System.Windows.Media.Fonts.SystemFontFamilies
+                     .Select(item => item.Source.Trim())
+                     .Where(item => item.Length > 0)
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(item => item, StringComparer.CurrentCultureIgnoreCase))
+        {
+            CandidateFontFamilyBox.Items.Add(new ComboBoxItem
+            {
+                Content = family,
+                Tag = family,
+                FontFamily = new System.Windows.Media.FontFamily(family)
+            });
+        }
+    }
+
+    private static string ReadComboTag(ComboBox box, string fieldName)
+    {
+        return (box.SelectedItem as ComboBoxItem)?.Tag?.ToString() ??
+            throw new InvalidDataException($"请选择{fieldName}。");
+    }
+
     private AppSettings ReadSettings()
     {
         var displayName = SettingsStore.NormalizeDisplayName(DisplayNameBox.Text) ??
             throw new InvalidDataException("输入法列表名称须为 1 至 24 个可见字符。");
         return new AppSettings(
-            EnglishDefaultBox.IsChecked == true,
-            LearningBox.IsChecked == true,
-            ContentLoggingBox.IsChecked == true,
-            FuzzyEnabledBox.IsChecked == true,
-            FuzzyInitialsBox.IsChecked == true,
-            FuzzyFinalsBox.IsChecked == true,
-            FuzzyMissingVowelBox.IsChecked == true,
-            ShuangpinBox.IsChecked == true,
-            FullWidthBox.IsChecked == true,
-            ReadComboValue(CandidateCountBox, "每页候选数量"),
-            ReadComboValue(CandidateFontSizeBox, "候选字体大小"),
-            displayName,
-            ClipboardDirectWindowBox?.IsChecked == true,
-            PhraseDirectWindowBox?.IsChecked == true,
-            currentSkinId_);
+            EnglishDefault: EnglishDefaultBox.IsChecked == true,
+            LearningEnabled: LearningBox.IsChecked == true,
+            ContentLogging: ContentLoggingBox.IsChecked == true,
+            FuzzyEnabled: FuzzyEnabledBox.IsChecked == true,
+            FuzzyInitials: FuzzyInitialsBox.IsChecked == true,
+            FuzzyFinals: FuzzyFinalsBox.IsChecked == true,
+            FuzzyMissingVowel: FuzzyMissingVowelBox.IsChecked == true,
+            ShuangpinXiaohe: ShuangpinBox.IsChecked == true,
+            FullWidthPunctuation: FullWidthBox.IsChecked == true,
+            CandidateCount: ReadComboValue(CandidateCountBox, "候选词数量"),
+            CandidateFontFamily: ReadComboTag(CandidateFontFamilyBox, "候选词字体"),
+            CandidateFontSizeMode: ReadComboTag(CandidateFontSizeBox, "候选词大小"),
+            DisplayName: displayName,
+            VModeOpenWindow: ClipboardDirectWindowBox?.IsChecked == true,
+            VvModeOpenWindow: PhraseDirectWindowBox?.IsChecked == true,
+            SkinId: currentSkinId_);
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)

@@ -27,7 +27,7 @@ CRCCheck on
   !define ESTIMATED_SIZE_KB 0
 !endif
 
-!define PRODUCT_NAME "财神拼音"
+!define PRODUCT_NAME "财神输入法"
 !define PRODUCT_PUBLISHER "Caishen IME"
 !define PRODUCT_ARCH "win-x64"
 !define PRODUCT_ID "CaishenPinyin"
@@ -81,7 +81,9 @@ Var PageDialog
 Var PageTitle
 Var PageMode
 Var PageBody
+Var PagePathLabel
 Var PagePath
+Var PageBrowse
 Var PageCheckbox
 Var PageNote
 Var TitleFont
@@ -161,6 +163,10 @@ Function .onInit
   SetShellVarContext all
   StrCpy $PowerShellPath "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
   ExpandEnvStrings $ProgramDataPath "%ProgramData%"
+  ReadRegStr $0 HKLM "${UNINSTALL_KEY}" "InstallLocation"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+  ${EndIf}
   StrCpy $DefaultInputState ${BST_CHECKED}
   ${GetParameters} $0
   ClearErrors
@@ -205,28 +211,43 @@ Function InstallOptionsCreate
     StrCpy $1 "将安装输入法核心、内置皮肤和自包含设置中心。"
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 30u 100% 14u "$0 · ${PRODUCT_VERSION} · ${PRODUCT_ARCH}"
+  ${NSD_CreateLabel} 0 26u 100% 14u "$0 · ${PRODUCT_VERSION} · ${PRODUCT_ARCH}"
   Pop $PageMode
   SendMessage $PageMode ${WM_SETFONT} $ModeFont 0
   SetCtlColors $PageMode 0xA16207 0xFFFFFF
 
-  ${NSD_CreateLabel} 0 48u 100% 28u "$1 设置中心已包含 .NET 8 桌面运行时，目标电脑无需另行安装。"
+  ${NSD_CreateLabel} 0 43u 100% 24u "$1 设置中心已包含 .NET 8 桌面运行时，目标电脑无需另行安装。"
   Pop $PageBody
   SendMessage $PageBody ${WM_SETFONT} $BodyFont 0
   SetCtlColors $PageBody 0x404040 0xFFFFFF
 
-  ${NSD_CreateLabel} 0 80u 100% 16u "安装位置：$INSTDIR"
+  ${NSD_CreateLabel} 0 69u 100% 12u "安装位置"
+  Pop $PagePathLabel
+  SendMessage $PagePathLabel ${WM_SETFONT} $NoteFont 0
+  SetCtlColors $PagePathLabel 0x525252 0xFFFFFF
+
+  ${NSD_CreateText} 0 81u 82% 20u "$INSTDIR"
   Pop $PagePath
   SendMessage $PagePath ${WM_SETFONT} $BodyFont 0
-  SetCtlColors $PagePath 0x525252 0xFFFFFF
+  SetCtlColors $PagePath 0x171717 0xFFFFFF
 
-  ${NSD_CreateCheckbox} 0 98u 100% 16u "设为默认输入法"
+  ${NSD_CreateBrowseButton} 84% 81u 16% 20u "浏览..."
+  Pop $PageBrowse
+  SendMessage $PageBrowse ${WM_SETFONT} $BodyFont 0
+  ${NSD_OnClick} $PageBrowse BrowseInstallDirectory
+
+  ${If} $HasExistingInstall == 1
+    SendMessage $PagePath ${EM_SETREADONLY} 1 0
+    EnableWindow $PageBrowse 0
+  ${EndIf}
+
+  ${NSD_CreateCheckbox} 0 105u 100% 14u "设为默认输入法"
   Pop $PageCheckbox
   SendMessage $PageCheckbox ${WM_SETFONT} $BodyFont 0
   ${NSD_SetState} $PageCheckbox $DefaultInputState
   SetCtlColors $PageCheckbox 0x171717 0xFFFFFF
 
-  ${NSD_CreateLabel} 0 116u 100% 18u "安装需要管理员权限。当前安装包未签名，Windows 可能显示“未知发布者”。"
+  ${NSD_CreateLabel} 0 122u 100% 16u "安装需要管理员权限。当前安装包未签名，Windows 可能显示“未知发布者”。"
   Pop $PageNote
   SendMessage $PageNote ${WM_SETFONT} $NoteFont 0
   SetCtlColors $PageNote 0x737373 0xFFFFFF
@@ -236,8 +257,64 @@ Function InstallOptionsCreate
   nsDialogs::Show
 FunctionEnd
 
+Function BrowseInstallDirectory
+  nsDialogs::SelectFolderDialog "选择 ${PRODUCT_NAME} 安装位置" "$INSTDIR"
+  Pop $0
+  ${If} $0 != "error"
+  ${AndIf} $0 != ""
+    ${NSD_SetText} $PagePath $0
+  ${EndIf}
+FunctionEnd
+
+Function ValidateInstallDirectory
+  ${If} $INSTDIR == ""
+    MessageBox MB_ICONSTOP|MB_OK "安装路径不能为空。" /SD IDOK
+    Abort
+  ${EndIf}
+  GetFullPathName $INSTDIR "$INSTDIR"
+
+  normalize_install_directory:
+  ${GetRoot} "$INSTDIR" $0
+  ${If} $INSTDIR != $0
+    StrCpy $1 "$INSTDIR" 1 -1
+    ${If} $1 == "\"
+      StrCpy $INSTDIR "$INSTDIR" -1
+      Goto normalize_install_directory
+    ${EndIf}
+  ${EndIf}
+  StrCpy $1 "$INSTDIR" 1 1
+  ${If} $0 == ""
+  ${OrIf} $1 != ":"
+    MessageBox MB_ICONSTOP|MB_OK "请选择本机磁盘上的绝对安装路径。" /SD IDOK
+    Abort
+  ${EndIf}
+  ${If} $INSTDIR == $0
+  ${OrIf} $INSTDIR == $WINDIR
+  ${OrIf} $INSTDIR == $SYSDIR
+  ${OrIf} $INSTDIR == $PROGRAMFILES64
+  ${OrIf} $INSTDIR == $ProgramDataPath
+  ${OrIf} $INSTDIR == $PROFILE
+  ${OrIf} $INSTDIR == $LOCALAPPDATA
+    MessageBox MB_ICONSTOP|MB_OK "该目录范围过大或属于系统目录，请选择专用子目录，例如 D:\CaishenPinyin。" /SD IDOK
+    Abort
+  ${EndIf}
+  ${If} $HasExistingInstall == 0
+    IfFileExists "$INSTDIR\*" 0 validate_install_directory_done
+    MessageBox MB_ICONSTOP|MB_OK "所选目录已经包含其他文件。请选择空目录或新的专用目录。" /SD IDOK
+    Abort
+  ${EndIf}
+
+  validate_install_directory_done:
+FunctionEnd
+
 Function InstallOptionsLeave
   ${NSD_GetState} $PageCheckbox $DefaultInputState
+  ${If} $HasExistingInstall == 0
+    ${NSD_GetText} $PagePath $0
+    ExpandEnvStrings $0 $0
+    StrCpy $INSTDIR $0
+  ${EndIf}
+  Call ValidateInstallDirectory
 FunctionEnd
 
 Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
@@ -249,6 +326,7 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   SetOutPath "$PLUGINSDIR"
   File /oname=install_ime.ps1 "${DEPLOY_SCRIPT}"
 
+  Call ValidateInstallDirectory
   CreateDirectory "$INSTDIR"
 
   StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Install -DllPath "$PLUGINSDIR\payload\ShuruIme.dll" -SettingsPath "$PLUGINSDIR\payload" -PackagePath "$PLUGINSDIR\payload\data\lexicon" -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -UserDataRoot "$LOCALAPPDATA\CaishenPinyin" -Version "$DeploymentVersion" -SigningPolicy Off'
@@ -322,7 +400,7 @@ Function un.UninstallOptionsCreate
   SendMessage $PageMode ${WM_SETFONT} $ModeFont 0
   SetCtlColors $PageMode 0xA16207 0xFFFFFF
 
-  ${NSD_CreateLabel} 0 52u 100% 30u "卸载程序会注销财神拼音，并且仅在当前默认输入法仍为财神拼音时恢复安装前的默认值。"
+  ${NSD_CreateLabel} 0 52u 100% 30u "卸载程序会注销财神输入法，并且仅在当前默认输入法仍为财神输入法时恢复安装前的默认值。"
   Pop $PageBody
   SendMessage $PageBody ${WM_SETFONT} $BodyFont 0
   SetCtlColors $PageBody 0x404040 0xFFFFFF

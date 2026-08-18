@@ -21,7 +21,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action Cleanup
 ```
 
-程序安装到 `%ProgramFiles%\CaishenPinyin\versions\<version>`，每个版本包含 `ShuruIme.dll`、`ShuruSettings.exe`、完整的 `win-x64` 自包含 .NET 8 Desktop Runtime、法律声明和发布包内的 `data\skins` 内置皮肤资源。安装脚本把文件哈希写入组件清单并在健康检查时验证，同时在公共开始菜单创建“财神输入法设置”快捷方式，并在升级或回滚时同步到当前版本。
+程序默认安装到 `%ProgramFiles%\CaishenPinyin\versions\<version>`；NSIS 全新安装也可选择其他本机专用目录。每个版本包含 `ShuruIme.dll`、`ShuruSettings.exe`、完整的 `win-x64` 自包含 .NET 8 Desktop Runtime、法律声明和发布包内的 `data\skins` 内置皮肤资源。安装脚本把文件哈希写入组件清单并在健康检查时验证，同时在公共开始菜单创建“财神输入法设置”快捷方式，并在升级或回滚时同步到当前版本。
 
 所有原生 C++ 目标均使用静态 MSVC 运行库（Release 为 `/MT`，Debug 为 `/MTd`）。`ShuruIme.dll` 不依赖目标机器的 `MSVCP140.dll`、`VCRUNTIME140.dll` 或 `VCRUNTIME140_1.dll`；设置程序把 .NET 8 Desktop Runtime 一同发布，因此目标电脑无需另装 VC++ Redistributable 或 .NET Desktop Runtime。
 
@@ -29,7 +29,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Act
 
 正式发布包入口为 `scripts\build.ps1`：Release configure/build 后强制运行完整 CTest，任一失败立即停止，并输出到显式 `-OutputDir`。发布包 `release-manifest.json` 记录全部文件的组件类别、SHA-256、大小和 DLL 文件版本。当前采用无签名分发，`scripts\build_installer.ps1` 固定使用 `SigningPolicy=Off` 并验证最终 Setup 确实未签名；Windows 显示“未知发布者”或 SmartScreen 提示是该方案无法消除的系统行为。未来取得 Authenticode 证书后应改为 `Required`。
 
-安装采用 staged → manifest/组件验证 → 版本目录原子切换 → 注册 → 可选默认输入法 → current 指针 → 快捷方式 → 真实健康检查。安装器只在自己实际改变默认输入法时记录原值；失败会恢复安装前值，卸载时也仅在当前默认值仍为财神拼音时恢复，避免覆盖用户之后的手动修改。任一阶段失败会恢复旧 DLL 注册、current 指针和快捷方式；以下当前用户数据均不进入发布包，也不会被升级覆盖：
+安装采用 staged → manifest/组件验证 → 版本目录原子切换 → 注册 → 可选默认输入法 → current 指针 → 快捷方式 → 真实健康检查。安装器只在自己实际改变默认输入法时记录原值；失败会恢复安装前值，卸载时也仅在当前默认值仍为财神输入法时恢复，避免覆盖用户之后的手动修改。任一阶段失败会恢复旧 DLL 注册、current 指针和快捷方式；以下当前用户数据均不进入发布包，也不会被升级覆盖：
 
 - `%LOCALAPPDATA%\CaishenPinyin\settings.ini`
 - `%LOCALAPPDATA%\CaishenPinyin\data\lexicon\user_dict.txt`

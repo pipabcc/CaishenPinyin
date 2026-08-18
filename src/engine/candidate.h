@@ -43,6 +43,7 @@ struct Candidate {
     int learning_score = 0;   // 经时间衰减后的有界、可解释加分
     bool from_user = false;
     bool is_english = false;  // 英文单词候选
+    bool pinned = false;      // 当前输入方案与输入码下的用户固定首选
     bool learnable = true;    // 动态结果不写入用户词库
     size_t covered_input_len = 0; // candidate-local raw input coverage
     size_t segment_count = 1;
