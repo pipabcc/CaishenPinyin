@@ -10,6 +10,7 @@
     <Compile Include="..\..\settings\ClipboardStore.cs" Link="ClipboardStore.cs" />
     <Compile Include="..\..\settings\ClipboardDatabase.cs" Link="ClipboardDatabase.cs" />
     <Compile Include="..\..\settings\ClipboardImageService.cs" Link="ClipboardImageService.cs" />
+    <Compile Include="..\..\settings\ClipboardPasteInputProtocol.cs" Link="ClipboardPasteInputProtocol.cs" />
     <Compile Include="..\..\settings\ClipboardMonitor.cs" Link="ClipboardMonitor.cs" />
     <Compile Include="..\..\settings\TextPasteRequestStore.cs" Link="TextPasteRequestStore.cs" />
     <Compile Include="..\..\settings\CrashLogger.cs" Link="CrashLogger.cs" />

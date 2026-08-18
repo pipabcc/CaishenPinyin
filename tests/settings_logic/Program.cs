@@ -113,29 +113,9 @@ static int RunInstalledImagePasteTest(string helperPath)
 
         var handle = editor.Handle;
         Require(handle != IntPtr.Zero, "端到端测试编辑窗口句柄无效");
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = helper,
-            Arguments = $"-paste-record {recordId} -target-hwnd {handle.ToInt64()}",
-            WorkingDirectory = Path.GetDirectoryName(helper),
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        startInfo.Environment["CAISHEN_CLIPBOARD_DATA_DIR"] = root;
-        using var pasteProcess = Process.Start(startInfo) ??
-            throw new InvalidOperationException("无法启动安装版图片粘贴助手");
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!pasteProcess.HasExited && DateTime.UtcNow < deadline)
-            PumpWindowsForms(TimeSpan.FromMilliseconds(20));
-        if (!pasteProcess.HasExited)
-        {
-            pasteProcess.Kill(entireProcessTree: true);
-            throw new TimeoutException("安装版图片粘贴助手执行超时");
-        }
+        RunImagePasteHelper(helper, recordId, handle, root);
         PumpWindowsForms(TimeSpan.FromMilliseconds(300));
 
-        Require(pasteProcess.ExitCode == 0,
-            $"安装版图片粘贴助手退出码错误：{pasteProcess.ExitCode}");
         var clipboardFormats = System.Windows.Clipboard.GetDataObject()?
             .GetFormats(autoConvert: true) ?? Array.Empty<string>();
         Require(editor.PasteMessageCount > 0 || editor.PasteKeyCount > 0,
@@ -147,6 +127,27 @@ static int RunInstalledImagePasteTest(string helperPath)
             $"剪贴板格式：{string.Join(',', clipboardFormats)}");
         Require(!editor.Text.Contains(imagePath, StringComparison.OrdinalIgnoreCase),
             "图片被错误地作为文件路径插入编辑框");
+
+        window.Controls.Clear();
+        editor.Dispose();
+        var browserLikeEditor = new PasteTrackingCustomControl
+        {
+            Dock = WinForms.DockStyle.Fill
+        };
+        window.Controls.Add(browserLikeEditor);
+        browserLikeEditor.Focus();
+        PumpWindowsForms(TimeSpan.FromMilliseconds(150));
+
+        RunImagePasteHelper(
+            helper, recordId, browserLikeEditor.Handle, root);
+        PumpWindowsForms(TimeSpan.FromMilliseconds(300));
+        Require(browserLikeEditor.PasteKeyCount > 0,
+            "非标准编辑控件未收到 Ctrl+V，SendInput 分支未覆盖");
+        Require(browserLikeEditor.LastExtraInfo ==
+                ClipboardPasteInputProtocol.Marker,
+            $"合成粘贴键缺少 CPIM 标记：0x{browserLikeEditor.LastExtraInfo:X}");
+        Require(browserLikeEditor.ReceivedImage,
+            "非标准编辑控件收到 Ctrl+V 后未读取到剪贴板图片");
         Console.WriteLine("installed_image_paste: OK");
         return 0;
     }
@@ -162,6 +163,36 @@ static int RunInstalledImagePasteTest(string helperPath)
         try { Directory.Delete(root, recursive: true); }
         catch (Exception ex) { Console.Error.WriteLine("cleanup: " + ex.Message); }
     }
+}
+
+static void RunImagePasteHelper(
+    string helper,
+    string recordId,
+    IntPtr targetHandle,
+    string dataRoot)
+{
+    Require(targetHandle != IntPtr.Zero, "图片粘贴测试目标窗口句柄无效");
+    var startInfo = new ProcessStartInfo
+    {
+        FileName = helper,
+        Arguments = $"-paste-record {recordId} -target-hwnd {targetHandle.ToInt64()}",
+        WorkingDirectory = Path.GetDirectoryName(helper),
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+    startInfo.Environment["CAISHEN_CLIPBOARD_DATA_DIR"] = dataRoot;
+    using var pasteProcess = Process.Start(startInfo) ??
+        throw new InvalidOperationException("无法启动安装版图片粘贴助手");
+    var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+    while (!pasteProcess.HasExited && DateTime.UtcNow < deadline)
+        PumpWindowsForms(TimeSpan.FromMilliseconds(20));
+    if (!pasteProcess.HasExited)
+    {
+        pasteProcess.Kill(entireProcessTree: true);
+        throw new TimeoutException("安装版图片粘贴助手执行超时");
+    }
+    Require(pasteProcess.ExitCode == 0,
+        $"安装版图片粘贴助手退出码错误：{pasteProcess.ExitCode}");
 }
 
 static int RunInstalledImagePasteTestOnStaThread(string helperPath)
@@ -784,4 +815,36 @@ sealed class PasteTrackingRichTextBox : WinForms.RichTextBox
         }
         base.WndProc(ref message);
     }
+}
+
+sealed class PasteTrackingCustomControl : WinForms.Control
+{
+    private const int KeyDownMessage = 0x0100;
+    private const int VirtualKeyV = 0x56;
+
+    internal int PasteKeyCount { get; private set; }
+    internal ulong LastExtraInfo { get; private set; }
+    internal bool ReceivedImage { get; private set; }
+
+    internal PasteTrackingCustomControl()
+    {
+        SetStyle(WinForms.ControlStyles.Selectable, true);
+        TabStop = true;
+    }
+
+    protected override void WndProc(ref WinForms.Message message)
+    {
+        if (message.Msg == KeyDownMessage &&
+            message.WParam.ToInt32() == VirtualKeyV)
+        {
+            ++PasteKeyCount;
+            LastExtraInfo = GetMessageExtraInfo().ToUInt64();
+            ReceivedImage = System.Windows.Clipboard.ContainsImage();
+            return;
+        }
+        base.WndProc(ref message);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern UIntPtr GetMessageExtraInfo();
 }

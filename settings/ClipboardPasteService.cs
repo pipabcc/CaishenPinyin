@@ -338,7 +338,8 @@ internal static class ClipboardPasteService
             Keyboard = new KeyboardInputData
             {
                 VirtualKey = virtualKey,
-                Flags = flags
+                Flags = flags,
+                ExtraInfo = ClipboardPasteInputProtocol.MarkerValue
             }
         }
     };

@@ -766,6 +766,14 @@ void TextService::OnCandidateSelected(size_t index) {
 
 bool TextService::ShortcutModifierForKey(
     WPARAM wparam, LPARAM lparam, bool test_callback) {
+    if (IsClipboardPasteInjectedShortcut(
+            wparam, static_cast<ULONG_PTR>(GetMessageExtraInfo()))) {
+        // SendInput queues Ctrl down/V/Ctrl up as one batch. By the time TSF
+        // examines V, the asynchronous Ctrl state can already be up. The
+        // marker is therefore the authoritative signal for our own paste.
+        shortcut_modifier_cache_.Clear();
+        return true;
+    }
     const DWORD now = GetTickCount();
     if (!test_callback) {
         bool cached_decision = false;

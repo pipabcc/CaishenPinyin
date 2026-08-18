@@ -30,6 +30,16 @@ constexpr bool IsFunctionKey(WPARAM wparam) noexcept {
     return wparam >= VK_F1 && wparam <= VK_F24;
 }
 
+// Cross-process marker used by ShuruSettings when it injects its Ctrl+V paste
+// sequence. It prevents the injected V from being interpreted as v-mode input.
+inline constexpr ULONG_PTR kClipboardPasteInputMarker = 0x4350494DUL;  // "CPIM"
+
+constexpr bool IsClipboardPasteInjectedShortcut(
+    WPARAM wparam,
+    ULONG_PTR extra_info) noexcept {
+    return wparam == 'V' && extra_info == kClipboardPasteInputMarker;
+}
+
 struct NumpadDecision {
     bool handled = false;
     std::wstring text;

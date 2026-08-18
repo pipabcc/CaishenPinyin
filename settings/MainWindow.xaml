@@ -1207,10 +1207,10 @@
                       </StackPanel>
                     </Border>
 
-                    <!-- 四、 特殊模式与效率工具（V / VV 模式） -->
+                    <!-- 四、 特殊模式与效率工具 -->
                     <Border Style="{StaticResource SectionStyle}">
                       <StackPanel>
-                        <TextBlock Text="四、 特殊模式与效率工具（V / VV 模式）" Style="{StaticResource SectionTitleStyle}"/>
+                        <TextBlock Text="四、 特殊模式与效率工具" Style="{StaticResource SectionTitleStyle}"/>
                         <TextBlock Text="剪贴板历史、短语速查、计算器与动态日期时间。" Style="{StaticResource SectionDescriptionStyle}" Margin="0,4,0,14"/>
 
                         <Border Background="#FFFFFF" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
@@ -1242,17 +1242,17 @@
                               </Grid>
                             </Border>
 
-                            <!-- 行 1: 连续按 v 或停顿 -->
+                            <!-- 行 1: 按 v 键 -->
                             <Border Grid.Row="1" Grid.Column="0" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
                               <Border Background="#EEF2F6" BorderBrush="#D0D7DE" BorderThickness="1" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
-                                <TextBlock Text="连续按 v 或停顿" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
+                                <TextBlock Text="按 v 键" FontWeight="SemiBold" FontSize="12" Foreground="#1E293B"/>
                               </Border>
                             </Border>
                             <Border Grid.Row="1" Grid.Column="1" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
                               <TextBlock Text="剪贴板历史弹窗" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" FontSize="12"/>
                             </Border>
                             <Border Grid.Row="1" Grid.Column="2" Padding="14,8" BorderBrush="#F1F5F9" BorderThickness="0,0,0,1">
-                              <TextBlock Text="输入单个 v 后停顿（或按空格/回车），立即唤起现代化圆角浮窗剪贴板历史，支持搜索与快捷粘贴" TextWrapping="Wrap"/>
+                              <TextBlock Text="按 v 键，立即唤起现代化圆角浮窗剪贴板历史，支持搜索与快捷粘贴" TextWrapping="Wrap"/>
                             </Border>
 
                             <!-- 行 2: 连续按 vv -->

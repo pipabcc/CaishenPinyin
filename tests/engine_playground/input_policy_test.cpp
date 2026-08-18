@@ -304,6 +304,11 @@ int main() {
     CHECK(!IsVirtualKeyAlpha(VK_RETURN));
     CHECK(!IsVirtualKeyAlpha(VK_ESCAPE));
     CHECK(!IsVirtualKeyAlpha(VK_TAB));
+    CHECK(IsClipboardPasteInjectedShortcut(
+        'V', kClipboardPasteInputMarker));
+    CHECK(!IsClipboardPasteInjectedShortcut(
+        'A', kClipboardPasteInputMarker));
+    CHECK(!IsClipboardPasteInjectedShortcut('V', 0));
 
     std::cout << "input_policy: OK\n";
     return 0;
