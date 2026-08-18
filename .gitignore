@@ -1,13 +1,14 @@
+# 构建产物与输出目录
 build*/
 out/
 artifacts/
 dist/
-.vs/
-.idea/
-*.user
-*.suo
-*.sdf
-*.opensdf
+bin/
+obj/
+settings/bin/
+settings/obj/
+**/bin/
+**/obj/
 *.obj
 *.pdb
 *.ilk
@@ -18,20 +19,25 @@ dist/
 *.log
 *.pyc
 __pycache__/
-settings/bin/
-settings/obj/
-**/bin/
-**/obj/
+
+# IDE 与编辑器临时文件
+.vs/
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
 .DS_Store
 
+# 运行环境与本地包缓存
 .dotnet_home/
 .nuget_packages/
 
-# 本机开发工具链体积很大，只保留环境入口脚本。
+# 本地工具链（只保留环境入口脚本）
 tools/*
 !tools/env.ps1
 
-# 本地运行、测试和外部工具状态。
+# 本地运行、测试日志与外部工具状态
 .postman/
 postman/
 userdata/
@@ -40,10 +46,34 @@ userdata/
 *-result.txt
 /1
 
-# 用户学习数据不属于系统词库或源码。
-data/lexicon/user_dict.txt
+# 根目录临时调试脚本与图片
+conv.ps1
+ocr*.ps1
+snap*.ps1
+tojpg.ps1
+upscale.ps1
+*.ssf
+*.png
+*.jpg
+*.jpeg
 
-# 上游下载区和超过 GitHub 普通 Git 单文件上限的完整语言模型。
+# 用户隐私数据与本地词库
+data/lexicon/user_dict.txt
+data/typing_stats.txt
+
+# 大体积外部语言模型（防止超过 GitHub 100MB 限制）
 /ciku/
-/data/lexicon/rime-moqi-zh.gram
-/data/lexicon/zh-moqi.gram
+/data/lexicon/*.gram
+*.gram
+
+# 敏感凭据与代码签名私钥防泄漏规则
+*.pfx
+*.p12
+*.cer
+*.key
+*.snk
+*.pem
+*.env
+*.token
+secrets.*
+credentials.*

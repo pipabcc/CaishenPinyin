@@ -1,0 +1,56 @@
+name: 自动发布 Release 安装包
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: 打包并发布 Windows 安装包
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 3.11 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 配置 .NET 8.0 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 配置 MSVC C++ 开发者命令行环境 (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 安装 Ninja 构建工具
+        uses: numa08/setup-ninja@v1
+
+      - name: 安装 NSIS 3 打包工具
+        run: |
+          choco install nsis -y
+
+      - name: 构建 Release 产物与 NSIS 图形安装包
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_installer.ps1 -Config Release
+
+      - name: 发布至 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/installer/*.exe
+            artifacts/installer/*.sha256
+            artifacts/installer/*.json
+          draft: false
+          prerelease: false
+          generate_release_notes: true

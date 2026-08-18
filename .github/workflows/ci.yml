@@ -1,0 +1,46 @@
+name: 持续集成构建与测试 (CI)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Windows 构建与自动化测试
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 3.11 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 配置 .NET 8.0 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 配置 MSVC C++ 开发者命令行环境 (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: 安装 Ninja 构建工具
+        uses: numa08/setup-ninja@v1
+
+      - name: 执行正式构建与全量 CTest 自动化测试
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1 -Config Release -SigningPolicy Off
+
+      - name: 上传构建产物 (Release Artifacts)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CaishenPinyin-Release-Binaries
+          path: artifacts/release/
+          if-no-files-found: error

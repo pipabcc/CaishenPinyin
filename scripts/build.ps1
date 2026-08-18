@@ -9,12 +9,25 @@ param(
 )
 $ErrorActionPreference='Stop'
 $Root=Split-Path -Parent $PSScriptRoot;$ToolsRoot=Join-Path $Root 'tools';Set-Location $Root
-. (Join-Path $ToolsRoot 'env.ps1')
+$localEnv=Join-Path $ToolsRoot 'env.ps1'
+if(Test-Path -LiteralPath $localEnv){. $localEnv}
 if(-not(Get-Command cmake -ErrorAction SilentlyContinue)){throw 'cmake not found'}
 if(-not(Get-Command ctest -ErrorAction SilentlyContinue)){throw 'ctest not found'}
 if(-not(Get-Command dotnet -ErrorAction SilentlyContinue)){throw 'dotnet not found'}
 if(-not(Get-Command python -ErrorAction SilentlyContinue)){throw 'python not found'}
-$dev=Join-Path $ToolsRoot 'vs2022\Common7\Tools\VsDevCmd.bat';if(-not(Test-Path $dev)){throw 'VS C++ toolchain missing'}
+$dev=Join-Path $ToolsRoot 'vs2022\Common7\Tools\VsDevCmd.bat'
+if(-not(Test-Path -LiteralPath $dev)){
+  $vswhere=Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+  if(Test-Path -LiteralPath $vswhere){
+    $vsPath=& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if($vsPath){$dev=Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'}
+  }
+}
+if(-not(Test-Path -LiteralPath $dev) -and $env:VSINSTALLDIR){
+  $candidate=Join-Path $env:VSINSTALLDIR 'Common7\Tools\VsDevCmd.bat'
+  if(Test-Path -LiteralPath $candidate){$dev=$candidate}
+}
+if(-not(Test-Path -LiteralPath $dev)){throw 'VS C++ toolchain missing (VsDevCmd.bat not found)'}
 $build=Join-Path $Root $BuildDir;$out=Join-Path $Root $OutputDir
 $grammarTarget=Join-Path $Root 'data\lexicon\rime-moqi-zh.gram'
 $grammarHash='35993085E9CE5D9722050BD548B807572EDCDD784ABF8079152091F8CD9BC731'
