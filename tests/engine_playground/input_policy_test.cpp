@@ -1,4 +1,5 @@
 #include "ime/activation_state.h"
+#include "ime/first_key_recovery.h"
 #include "ime/input_policy.h"
 #include "ime/punctuation_state.h"
 #include "ime/ui/ime_ui_logic.h"
@@ -9,6 +10,64 @@
 
 int main() {
     using namespace shuru;
+    CHECK(IsRecoverableAsciiLetter(L'j'));
+    CHECK(IsRecoverableAsciiLetter(L'Z'));
+    CHECK(!IsRecoverableAsciiLetter(L'1'));
+    CHECK(!IsRecoverableAsciiLetter(L'中'));
+
+    FirstKeyRecoverySignals recovery {
+        1500, 1000, 1200,
+        true, false, true, false, true, true, false, false};
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::Eligible);
+    recovery.now = recovery.copy_tick + kFirstKeyRecoveryWindowMs;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::Eligible);
+    recovery.now = 1500;
+    recovery.copy_tick = 0;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::CopyNotObserved);
+    recovery.copy_tick = 1000;
+    recovery.now = 1000 + kFirstKeyRecoveryWindowMs + 1;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::CopyExpired);
+    recovery.now = 1500;
+    recovery.focus_tick = 999;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::FocusNotRebuilt);
+    recovery.focus_tick = 1200;
+    recovery.chinese_mode = false;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::EnglishMode);
+    recovery.chinese_mode = true;
+    recovery.has_composition = true;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::CompositionActive);
+    recovery.has_composition = false;
+    recovery.current_context = false;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::DifferentContext);
+    recovery.current_context = true;
+    recovery.self_edit = true;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::SelfEdit);
+    recovery.self_edit = false;
+    recovery.single_text_range = false;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::UnexpectedRangeCount);
+    recovery.single_text_range = true;
+    recovery.single_ascii_letter = false;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::UnexpectedText);
+    recovery.single_ascii_letter = true;
+    recovery.sensitive_context = true;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::SensitiveContext);
+    recovery.sensitive_context = false;
+    recovery.recovery_pending = true;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::AlreadyPending);
+
     CHECK(CandidateQueryLimit(9, false) == 90);
     CHECK(CandidateQueryLimit(3, false) == 30);
     CHECK(CandidateQueryLimit(9, true) == 256);
@@ -148,22 +207,22 @@ int main() {
     ShortcutModifierPhysicalState physical;
     CHECK(!modifiers.IsActive(physical));
     modifiers.KeyDown(VK_CONTROL);
-    physical.control = true;
+    physical.left_control = true;
     CHECK(modifiers.IsActive(physical));
     modifiers.KeyUp(VK_CONTROL);
     // Ctrl+C 松开后的线程键态即使暂时仍显示按下，也不能放走下一字母。
     CHECK(!modifiers.IsActive(physical));
-    physical.control = false;
+    physical.left_control = false;
     CHECK(!modifiers.IsActive(physical));
     modifiers.KeyDown(VK_CONTROL);
-    physical.control = true;
+    physical.left_control = true;
     CHECK(modifiers.IsActive(physical));
     modifiers.KeyUp(VK_CONTROL);
-    physical.control = false;
-    physical.alt = true;
+    physical.left_control = false;
+    physical.left_alt = true;
     modifiers.Reset();
     CHECK(modifiers.IsActive(physical));
-    physical.alt = false;
+    physical.left_alt = false;
     CHECK(!modifiers.IsActive(physical));
     physical.left_windows = true;
     physical.right_windows = true;
@@ -172,6 +231,37 @@ int main() {
     modifiers.KeyUp(VK_LWIN);
     modifiers.KeyUp(VK_RWIN);
     CHECK(!modifiers.IsActive(physical));
+
+    // Ctrl+C 被宿主接管且不回调 Ctrl KeyUp：释放轮询观察到左 Ctrl
+    // 已物理弹起后必须清除旧世代，随后输入 J 应进入拼音组合。
+    ShortcutModifierState missing_ctrl_key_up;
+    ShortcutModifierPhysicalState copy_physical;
+    missing_ctrl_key_up.KeyDown(VK_CONTROL, 0);
+    copy_physical.left_control = true;
+    CHECK(missing_ctrl_key_up.IsActive(copy_physical));
+    CHECK(missing_ctrl_key_up.HasPressedModifier());
+    copy_physical.left_control = false;
+    CHECK(!missing_ctrl_key_up.IsActive(copy_physical));
+    CHECK(!missing_ctrl_key_up.HasPressedModifier());
+    // 已确认释放的世代不能被一次滞后的物理键态重新激活。
+    copy_physical.left_control = true;
+    CHECK(!missing_ctrl_key_up.IsActive(copy_physical));
+
+    // 扫描码扩展位区分左右 Ctrl；持续按住右 Ctrl 时仍保持快捷键。
+    ShortcutModifierState held_right_ctrl;
+    constexpr LPARAM kExtendedKeyMessage = LPARAM {1} << 24;
+    CHECK(ResolveShortcutModifierSide(VK_CONTROL, 0) == VK_LCONTROL);
+    CHECK(ResolveShortcutModifierSide(
+        VK_CONTROL, kExtendedKeyMessage) == VK_RCONTROL);
+    CHECK(ResolveShortcutModifierSide(
+        VK_MENU, kExtendedKeyMessage) == VK_RMENU);
+    held_right_ctrl.KeyDown(VK_CONTROL, kExtendedKeyMessage);
+    ShortcutModifierPhysicalState held_physical;
+    held_physical.right_control = true;
+    CHECK(held_right_ctrl.IsActive(held_physical));
+    CHECK(held_right_ctrl.HasPressedModifier());
+    held_right_ctrl.KeyUp(VK_CONTROL, kExtendedKeyMessage);
+    CHECK(!held_right_ctrl.IsActive(held_physical));
     CHECK(IsShortcutModifierKey(VK_CONTROL));
     CHECK(IsShortcutModifierKey(VK_RMENU));
     CHECK(IsShortcutModifierKey(VK_LWIN));
@@ -300,13 +390,18 @@ int main() {
     CHECK(CandidateCommitText(clipboard_candidate) ==
           clipboard_candidate.full_content);
 
+    const std::vector<int> row_widths(9, 48);
     const auto row = BuildCandidateRowLayout(
-        std::vector<int>(9, 48), 0, 13, 4, 8, 16);
+        row_widths, row_widths, 0, 13, 4, 18, 12);
     CHECK(row.size() == 9 && row.back().index == 8);
     CHECK(CandidateRowRequiredWidth(row, 9) == row.back().hit_right + 9);
-    CHECK(CandidateItemTextRight(710, row.front().hit_right, 140) ==
-          row.front().hit_right);
-    CHECK(CandidateItemTextRight(710, 700, 140) == 570);
+    CHECK(CandidateItemTextRight(710, row.front(), 140) ==
+          row.front().highlight_right);
+    CandidateItemLayout clipped_item;
+    clipped_item.text_left = 560;
+    clipped_item.text_right = 700;
+    clipped_item.highlight_right = 704;
+    CHECK(CandidateItemTextRight(710, clipped_item, 140) == 570);
     CHECK(CandidateExpandedFirstPage(0, 5) == 0);
     CHECK(CandidateExpandedFirstPage(4, 5) == 0);
     CHECK(CandidateExpandedFirstPage(5, 5) == 5);

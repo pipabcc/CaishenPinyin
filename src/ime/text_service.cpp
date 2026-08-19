@@ -8,6 +8,7 @@
 #include "display_attribute.h"
 #include "../common/guid_def.h"
 #include "edit_sessions.h"
+#include "first_key_recovery.h"
 #include <new>
 
 
@@ -41,8 +42,10 @@ constexpr unsigned kCandidatePositionMaximumAttempts = 6;
 // 决定修饰键世代，避免线程队列残留的 Ctrl/Alt/Win 状态污染下一键。
 ShortcutModifierPhysicalState ReadShortcutModifierPhysicalState() {
     return ShortcutModifierPhysicalState {
-        (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0,
-        (GetAsyncKeyState(VK_MENU) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0,
+        (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0,
         (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0,
         (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0,
     };
@@ -76,11 +79,66 @@ HWND ActiveContextWindow(ITfContext* context) {
     return window;
 }
 
-bool IsMinttyWindow(HWND window) {
-    if (window == nullptr) return false;
+bool HasWindowClass(HWND window, const wchar_t* expected) {
+    if (window == nullptr || expected == nullptr) return false;
     wchar_t class_name[64] = {};
     return GetClassNameW(window, class_name, ARRAYSIZE(class_name)) > 0 &&
-           _wcsicmp(class_name, L"mintty") == 0;
+           _wcsicmp(class_name, expected) == 0;
+}
+
+using HostWindowPredicate = bool (*)(HWND);
+
+bool IsMinttyClass(HWND window) {
+    return HasWindowClass(window, L"mintty");
+}
+
+// conhost（cmd / powershell）与 Windows Terminal 都走 TSF，但既不提供
+// 可用的 GetTextExt，也不发 ITfTextLayoutSink 布局通知，只在 GUI 线程上
+// 公开真实的 Win32 光标。
+bool IsConsoleHostClass(HWND window) {
+    return HasWindowClass(window, L"ConsoleWindowClass") ||
+           HasWindowClass(window, L"PseudoConsoleWindow") ||
+           HasWindowClass(window, L"CASCADIA_HOSTING_WINDOW_CLASS");
+}
+
+HWND FindHostRootWindow(HWND window, HostWindowPredicate match) {
+    if (window == nullptr) return nullptr;
+    if (match(window)) return window;
+    HWND root = GetAncestor(window, GA_ROOT);
+    return match(root) ? root : nullptr;
+}
+
+HWND FindHostRootForTarget(HWND target, HostWindowPredicate match) {
+    HWND host = FindHostRootWindow(target, match);
+    if (host != nullptr) return host;
+
+    HWND foreground = GetForegroundWindow();
+    host = FindHostRootWindow(foreground, match);
+    if (host == nullptr) return nullptr;
+    if (target == nullptr) return host;
+
+    DWORD target_process = 0;
+    DWORD foreground_process = 0;
+    GetWindowThreadProcessId(target, &target_process);
+    GetWindowThreadProcessId(foreground, &foreground_process);
+    return target_process != 0 && target_process == foreground_process
+        ? host : nullptr;
+}
+
+HWND FindMinttyRootForTarget(HWND target) {
+    return FindHostRootForTarget(target, IsMinttyClass);
+}
+
+HWND FindConsoleHostForTarget(HWND target) {
+    return FindHostRootForTarget(target, IsConsoleHostClass);
+}
+
+// 终端类宿主不发布局通知，候选框定位只能靠有界轮询读取真实光标；
+// 普通 TSF 宿主必须继续由 OnLayoutChange 驱动，否则会读到上一代排版
+// 而产生逐键闪跳。
+bool HostNeedsCaretPolling(HWND target) {
+    return FindMinttyRootForTarget(target) != nullptr ||
+           FindConsoleHostForTarget(target) != nullptr;
 }
 
 bool GetClientScreenRect(HWND window, RECT* rect) {
@@ -92,56 +150,85 @@ bool GetClientScreenRect(HWND window, RECT* rect) {
            GetLastError() == ERROR_SUCCESS;
 }
 
-bool TryGetImmCaretScreenRect(HWND window, RECT* rect) {
-    if (window == nullptr || rect == nullptr) return false;
-    HIMC input_context = ImmGetContext(window);
-    if (input_context == nullptr) return false;
+bool TryGetGuiThreadCaretScreenRect(HWND target, RECT* rect) {
+    if (target == nullptr || rect == nullptr) return false;
+    const DWORD thread_id = GetWindowThreadProcessId(target, nullptr);
+    if (thread_id == 0) return false;
 
-    POINT client_point {};
-    bool found = false;
-    COMPOSITIONFORM composition_form {};
-    if (ImmGetCompositionWindow(input_context, &composition_form)) {
-        if (composition_form.dwStyle == CFS_POINT ||
-            composition_form.dwStyle == CFS_FORCE_POSITION) {
-            client_point = composition_form.ptCurrentPos;
-            found = true;
-        } else if (composition_form.dwStyle == CFS_RECT) {
-            client_point = POINT {
-                composition_form.rcArea.left,
-                composition_form.rcArea.bottom,
-            };
-            found = true;
-        }
-    }
-    if (!found) {
-        CANDIDATEFORM candidate_form {};
-        if (ImmGetCandidateWindow(input_context, 0, &candidate_form)) {
-            if (candidate_form.dwStyle == CFS_CANDIDATEPOS) {
-                client_point = candidate_form.ptCurrentPos;
-                found = true;
-            } else if (candidate_form.dwStyle == CFS_EXCLUDE) {
-                client_point = POINT {
-                    candidate_form.rcArea.left,
-                    candidate_form.rcArea.bottom,
-                };
-                found = true;
-            }
-        }
-    }
-    ImmReleaseContext(window, input_context);
-    if (!found || (client_point.x == 0 && client_point.y == 0) ||
-        !ClientToScreen(window, &client_point)) {
+    GUITHREADINFO info {};
+    info.cbSize = sizeof(info);
+    if (!GetGUIThreadInfo(thread_id, &info) || info.hwndCaret == nullptr ||
+        !IsWindow(info.hwndCaret)) {
         return false;
     }
 
-    const UINT dpi = (std::max)(UINT {96}, GetDpiForWindow(window));
-    const int caret_height = MulDiv(20, static_cast<int>(dpi), 96);
-    *rect = RECT {
-        client_point.x,
-        client_point.y,
-        client_point.x + 1,
-        client_point.y + caret_height,
-    };
+    RECT caret = info.rcCaret;
+    if (!IsReliableCandidateRect(caret)) return false;
+    SetLastError(ERROR_SUCCESS);
+    if (MapWindowPoints(
+            info.hwndCaret, nullptr,
+            reinterpret_cast<POINT*>(&caret), 2) == 0 &&
+        GetLastError() != ERROR_SUCCESS) {
+        return false;
+    }
+    if (!IsReliableCandidateRect(caret)) return false;
+    *rect = caret;
+    return true;
+}
+
+bool SetMinttyImmPosition(
+    HWND context_window, HWND mintty_root, const RECT& caret_screen) {
+    if (mintty_root == nullptr || !IsReliableCandidateRect(caret_screen)) {
+        return false;
+    }
+
+    HWND imm_window = context_window;
+    HIMC input_context = imm_window == nullptr
+        ? nullptr : ImmGetContext(imm_window);
+    if (input_context == nullptr && imm_window != mintty_root) {
+        imm_window = mintty_root;
+        input_context = ImmGetContext(imm_window);
+    }
+    if (input_context == nullptr || imm_window == nullptr) return false;
+
+    RECT caret_client = caret_screen;
+    SetLastError(ERROR_SUCCESS);
+    const bool mapped = MapWindowPoints(
+        nullptr, imm_window, reinterpret_cast<POINT*>(&caret_client), 2) != 0 ||
+        GetLastError() == ERROR_SUCCESS;
+    bool updated = false;
+    if (mapped) {
+        COMPOSITIONFORM composition_form {};
+        composition_form.dwStyle = CFS_POINT;
+        composition_form.ptCurrentPos = POINT {
+            caret_client.left, caret_client.top};
+        const bool composition_updated =
+            ImmSetCompositionWindow(input_context, &composition_form) != FALSE;
+
+        CANDIDATEFORM candidate_form {};
+        candidate_form.dwIndex = 0;
+        candidate_form.dwStyle = CFS_CANDIDATEPOS;
+        candidate_form.ptCurrentPos = POINT {
+            caret_client.left, caret_client.bottom};
+        const bool candidate_updated =
+            ImmSetCandidateWindow(input_context, &candidate_form) != FALSE;
+        updated = composition_updated || candidate_updated;
+    }
+    ImmReleaseContext(imm_window, input_context);
+    return updated;
+}
+
+bool SyncMinttyImmPosition(ITfContext* context, RECT* caret_screen = nullptr) {
+    HWND context_window = ActiveContextWindow(context);
+    HWND target = context_window;
+    if (target == nullptr) target = GetForegroundWindow();
+    HWND mintty_root = FindMinttyRootForTarget(target);
+    if (mintty_root == nullptr) return false;
+
+    RECT caret {};
+    if (!TryGetGuiThreadCaretScreenRect(mintty_root, &caret)) return false;
+    SetMinttyImmPosition(context_window, mintty_root, caret);
+    if (caret_screen != nullptr) *caret_screen = caret;
     return true;
 }
 
@@ -239,6 +326,7 @@ TextService::TextService() {
 }
 
 TextService::~TextService() {
+    CancelFirstKeyRecovery(true);
     RollbackActivation();
     ClearCompositionState();
     candidate_window_.SetSelectionHandler({});
@@ -474,6 +562,11 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD /
         goto failed;
     }
 
+    hr = InitLangBarItem();
+    if (SUCCEEDED(hr)) {
+        activation_state_.Add(ActivationResource::LangBarItem);
+    }
+
     SHURU_LOG_INFO("TextService activated, client_id=%u", static_cast<unsigned>(client_id_));
     return S_OK;
 
@@ -488,11 +581,13 @@ bool TextService::IsOwnerThread() const noexcept {
 }
 
 void TextService::RollbackActivation() noexcept {
+    CancelFirstKeyRecovery(true);
     shift_tap_.Reset();
     shortcut_modifier_state_.Reset();
     shortcut_modifier_cache_.Clear();
     if (IsOwnerThread()) {
         StopShiftReleasePolling();
+        StopShortcutReleasePolling();
         EndComposition();
         candidate_window_.Hide();
         SharedStatusUi::HideSoftKeyboard();
@@ -515,6 +610,7 @@ void TextService::RollbackActivation() noexcept {
         status_ui_acquired_ = false;
         status_ui_thread_id_ = 0;
     }
+    UninitLangBarItem();
     client_id_ = TF_CLIENTID_NULL;
     display_atom_ = TF_INVALID_GUIDATOM;
     owner_thread_id_ = 0;
@@ -641,8 +737,18 @@ STDMETHODIMP TextService::OnInitDocumentMgr(ITfDocumentMgr* /*pdim*/) { return S
 STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* /*pdim*/) { return S_OK; }
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* pdimFocus, ITfDocumentMgr* /*pdimPrevFocus*/) {
+    CancelFirstKeyRecovery(false);
+    const std::uint64_t now = GetTickCount64();
+    if (first_key_copy_tick_ != 0 &&
+        now >= first_key_copy_tick_ &&
+        now - first_key_copy_tick_ <= kFirstKeyRecoveryWindowMs) {
+        if (pdimFocus != nullptr) first_key_focus_tick_ = now;
+    } else {
+        DisarmFirstKeyRecoveryTrigger();
+    }
     shift_tap_.Reset();
     StopShiftReleasePolling();
+    StopShortcutReleasePolling();
     shortcut_modifier_state_.ResetFromPhysical(
         ReadShortcutModifierPhysicalState());
     shortcut_modifier_cache_.Clear();
@@ -655,25 +761,37 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* pdimFocus, ITfDocumentMgr* 
     AdviseTextEditSink(pdimFocus);
     if (pdimFocus == nullptr) {
         candidate_window_.Hide();
+    } else {
+        SyncMinttyImmPosition(edit_context_);
     }
     return S_OK;
 }
 
 STDMETHODIMP TextService::OnPushContext(ITfContext* /*pic*/) { return S_OK; }
-STDMETHODIMP TextService::OnPopContext(ITfContext* /*pic*/) { return S_OK; }
+
+STDMETHODIMP TextService::OnPopContext(ITfContext* pic) {
+    if (pic == pending_first_key_context_) {
+        CancelFirstKeyRecovery(true);
+    }
+    return S_OK;
+}
 
 STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     if (fForeground) {
+        StopShortcutReleasePolling();
         shortcut_modifier_state_.ResetFromPhysical(
             ReadShortcutModifierPhysicalState());
         shortcut_modifier_cache_.Clear();
         EnsureUiWindows();
+        SyncMinttyImmPosition(edit_context_);
         SharedStatusUi::Bind(this);
         SyncStatusUi();
         SharedStatusUi::Hide();
     } else {
+        CancelFirstKeyRecovery(false);
         shift_tap_.Reset();
         StopShiftReleasePolling();
+        StopShortcutReleasePolling();
         shortcut_modifier_state_.Reset();
         shortcut_modifier_cache_.Clear();
         SharedStatusUi::Unbind(this);
@@ -935,6 +1053,339 @@ void TextService::StopShiftReleasePolling() {
     candidate_window_.StopShiftReleasePolling();
 }
 
+void TextService::StartShortcutReleasePolling() {
+    EnsureUiWindows();
+    if (!shortcut_modifier_state_.HasPressedModifier()) return;
+    candidate_window_.StartShortcutReleasePolling([this]() {
+        const bool active = shortcut_modifier_state_.IsActive(
+            ReadShortcutModifierPhysicalState());
+        if (!active) shortcut_modifier_cache_.Clear();
+        return active;
+    });
+}
+
+void TextService::StopShortcutReleasePolling() {
+    candidate_window_.StopShortcutReleasePolling();
+}
+
+void TextService::RecordCopyShortcutForFirstKeyRecovery(
+    WPARAM wparam, bool shortcut_modifier) noexcept {
+    if (wparam != 'C' || !shortcut_modifier) return;
+    const ShortcutModifierPhysicalState physical =
+        ReadShortcutModifierPhysicalState();
+    if (!physical.left_control && !physical.right_control) return;
+
+    const std::uint64_t now = GetTickCount64();
+    if (first_key_copy_tick_ == 0 || now < first_key_copy_tick_ ||
+        now - first_key_copy_tick_ > 100) {
+        CancelFirstKeyRecovery(false);
+        first_key_copy_tick_ = now;
+        first_key_focus_tick_ = 0;
+    }
+}
+
+void TextService::DisarmFirstKeyRecoveryTrigger() noexcept {
+    first_key_copy_tick_ = 0;
+    first_key_focus_tick_ = 0;
+}
+
+void TextService::CancelFirstKeyRecovery(bool disarm_trigger) noexcept {
+    first_key_recovery_pending_ = false;
+    pending_first_key_generation_ = 0;
+    pending_first_key_started_tick_ = 0;
+    pending_first_key_character_ = 0;
+    pending_first_key_inputs_.clear();
+    first_key_recovery_adopted_ = false;
+    SafeRelease(&pending_first_key_context_);
+    ++first_key_recovery_generation_;
+    if (disarm_trigger) DisarmFirstKeyRecoveryTrigger();
+}
+
+void TextService::ExpireFirstKeyRecovery() noexcept {
+    if (!first_key_recovery_pending_) return;
+    const std::uint64_t now = GetTickCount64();
+    if (now < pending_first_key_started_tick_ ||
+        now - pending_first_key_started_tick_ >
+            kFirstKeyRecoveryPendingTimeoutMs) {
+        CancelFirstKeyRecovery(true);
+        ResetCandidateAnchor();
+    }
+}
+
+bool TextService::CanAdoptFirstKeyRecovery(
+    std::uint64_t generation, ITfContext* context) const noexcept {
+    if (!first_key_recovery_pending_ ||
+        generation != pending_first_key_generation_ ||
+        context == nullptr || context != pending_first_key_context_ ||
+        context != edit_context_ || english_mode_ || composition_ != nullptr ||
+        !composing_pinyin_.empty()) {
+        return false;
+    }
+    const std::uint64_t now = GetTickCount64();
+    return now >= pending_first_key_started_tick_ &&
+        now - pending_first_key_started_tick_ <=
+            kFirstKeyRecoveryPendingTimeoutMs;
+}
+
+bool TextService::HandlePendingFirstKeyInput(
+    ITfContext* context, WPARAM wparam, LPARAM lparam,
+    bool shortcut_modifier, bool test_callback, bool* eaten) {
+    if (eaten == nullptr) return false;
+    ExpireFirstKeyRecovery();
+    if (!first_key_recovery_pending_) return false;
+    if (first_key_recovery_adopted_) return false;
+    if (context != pending_first_key_context_) {
+        CancelFirstKeyRecovery(true);
+        ResetCandidateAnchor();
+        return false;
+    }
+    if (!shortcut_modifier && IsVirtualKeyAlpha(wparam)) {
+        *eaten = true;
+        if (!test_callback) {
+            pending_first_key_inputs_.push_back({wparam, lparam});
+        }
+        return true;
+    }
+
+    // 非字母动作按宿主原语义继续执行；取消尚未落地的接管，防止随后
+    // 才执行的异步会话把已经移动过的文本重新变成组合。
+    CancelFirstKeyRecovery(true);
+    ResetCandidateAnchor();
+    return false;
+}
+
+bool TextService::BeginFirstKeyRecovery(
+    ITfContext* context, ITfRange* range, wchar_t character) {
+    if (context == nullptr || range == nullptr ||
+        !IsRecoverableAsciiLetter(character) ||
+        first_key_recovery_pending_) {
+        return false;
+    }
+
+    EnsureUiWindows();
+    if (candidate_window_.GetHwnd() == nullptr) return false;
+
+    const std::uint64_t generation = ++first_key_recovery_generation_;
+    first_key_recovery_pending_ = true;
+    pending_first_key_generation_ = generation;
+    pending_first_key_started_tick_ = GetTickCount64();
+    pending_first_key_context_ = context;
+    pending_first_key_context_->AddRef();
+    pending_first_key_character_ = character;
+    pending_first_key_inputs_.clear();
+    first_key_recovery_adopted_ = false;
+
+    ResetCandidateAnchor();
+    candidate_position_pending_ = true;
+
+    auto* session = new (std::nothrow) AdoptExistingTextEditSession(
+        context,
+        static_cast<ITfCompositionSink*>(this),
+        range,
+        character,
+        &composition_,
+        display_atom_,
+        [this, generation, context]() {
+            return CanAdoptFirstKeyRecovery(generation, context);
+        },
+        [this, generation](ExistingTextCompositionResult result) {
+            if (result == ExistingTextCompositionResult::Adopted &&
+                first_key_recovery_pending_ &&
+                pending_first_key_generation_ == generation) {
+                composing_pinyin_.assign(
+                    1, static_cast<char>(pending_first_key_character_));
+                candidate_state_ = {};
+                current_result_ = {};
+                candidate_display_.clear();
+                candidate_display_fallback_.clear();
+                candidate_window_.StopVModeTimer();
+                candidate_window_.SetExpanded(false);
+                DismissAssociation();
+                // 外部插入的字符已经完成排版。接管本身未修改文本，普通
+                // 宿主未必再补发 OnLayoutChange，因此允许下一轮消息直接
+                // 读取该字符末端，并继续使用既有的防抖和有界重试。
+                candidate_layout_notified_ = true;
+                ++candidate_layout_serial_;
+                first_key_recovery_adopted_ = true;
+            }
+            const bool posted = candidate_window_.PostOwnerThreadAction(
+                [this, generation, result]() {
+                    CompleteFirstKeyRecovery(generation, result);
+            });
+            if (!posted) {
+                // 当前仍处于 TSF 写会话，不能同步进入候选刷新或新的编辑
+                // 会话。保留已接管的组合状态，释放恢复事务资源；下一键
+                // 会按 composing_pinyin_ 继续正常更新。
+                if (first_key_recovery_pending_ &&
+                    pending_first_key_generation_ == generation) {
+                    first_key_recovery_pending_ = false;
+                    pending_first_key_generation_ = 0;
+                    pending_first_key_started_tick_ = 0;
+                    pending_first_key_character_ = 0;
+                    pending_first_key_inputs_.clear();
+                    first_key_recovery_adopted_ = false;
+                    SafeRelease(&pending_first_key_context_);
+                    DisarmFirstKeyRecoveryTrigger();
+                }
+            }
+        });
+    if (session == nullptr) {
+        CancelFirstKeyRecovery(true);
+        ResetCandidateAnchor();
+        return false;
+    }
+
+    HRESULT session_result = E_FAIL;
+    const HRESULT request_result = context->RequestEditSession(
+        client_id_, session, TF_ES_ASYNC | TF_ES_READWRITE,
+        &session_result);
+    session->Release();
+    if (FAILED(request_result) || FAILED(session_result)) {
+        if (first_key_recovery_pending_ &&
+            pending_first_key_generation_ == generation) {
+            CancelFirstKeyRecovery(true);
+            ResetCandidateAnchor();
+        }
+        return false;
+    }
+
+    DisarmFirstKeyRecoveryTrigger();
+    return true;
+}
+
+void TextService::CompleteFirstKeyRecovery(
+    std::uint64_t generation, ExistingTextCompositionResult result) {
+    if (!first_key_recovery_pending_ ||
+        generation != pending_first_key_generation_) {
+        return;
+    }
+
+    if (result != ExistingTextCompositionResult::Adopted ||
+        !first_key_recovery_adopted_ ||
+        composition_ == nullptr ||
+        pending_first_key_context_ != edit_context_) {
+        CancelFirstKeyRecovery(true);
+        ResetCandidateAnchor();
+        return;
+    }
+
+    ITfContext* context = pending_first_key_context_;
+    pending_first_key_context_ = nullptr;
+    const wchar_t character = pending_first_key_character_;
+    std::vector<BufferedFirstKeyInput> buffered_inputs =
+        std::move(pending_first_key_inputs_);
+    first_key_recovery_pending_ = false;
+    pending_first_key_generation_ = 0;
+    pending_first_key_started_tick_ = 0;
+    pending_first_key_character_ = 0;
+    pending_first_key_inputs_.clear();
+    first_key_recovery_adopted_ = false;
+    DisarmFirstKeyRecoveryTrigger();
+
+    if (buffered_inputs.empty() && composing_pinyin_.size() == 1 &&
+        composing_pinyin_[0] == static_cast<char>(character)) {
+        const RuntimeConfig config = GetRuntimeConfig();
+        if ((character == L'v' || character == L'V') &&
+            config.v_mode_open_window) {
+            StartVModeWindowTimer();
+        } else {
+            RefreshCandidates();
+            UpdateCandidateWindow(context);
+        }
+    } else {
+        for (const BufferedFirstKeyInput& input : buffered_inputs) {
+            bool eaten = false;
+            HandleKeyDown(context, input.wparam, input.lparam, &eaten);
+        }
+    }
+
+    context->Release();
+}
+
+void TextService::TryRecoverExternalFirstKey(
+    ITfContext* context, TfEditCookie read_cookie,
+    ITfEditRecord* edit_record) {
+    if (context == nullptr || edit_record == nullptr) return;
+    const std::uint64_t now = GetTickCount64();
+    InputScopePrivacy privacy = InputScopePrivacy::Unknown;
+    ReadContextInputScopePrivacy(context, read_cookie, &privacy);
+    const bool sensitive = privacy == InputScopePrivacy::Sensitive ||
+        IsPasswordWindow(ActiveContextWindow(context));
+
+    FirstKeyRecoverySignals signals {
+        now,
+        first_key_copy_tick_,
+        first_key_focus_tick_,
+        !english_mode_,
+        composition_ != nullptr || !composing_pinyin_.empty(),
+        context == edit_context_,
+        composition_edit_in_progress_,
+        true,
+        true,
+        sensitive,
+        first_key_recovery_pending_,
+    };
+    if (EvaluateFirstKeyRecovery(signals) !=
+        FirstKeyRecoveryDecision::Eligible) {
+        return;
+    }
+
+    IEnumTfRanges* ranges = nullptr;
+    const HRESULT record_hr = edit_record->GetTextAndPropertyUpdates(
+        TF_GTP_INCL_TEXT, nullptr, 0, &ranges);
+    if (FAILED(record_hr) || ranges == nullptr) {
+        SafeRelease(&ranges);
+        return;
+    }
+
+    ITfRange* range = nullptr;
+    ULONG fetched = 0;
+    const HRESULT first_hr = ranges->Next(1, &range, &fetched);
+    bool single_range = SUCCEEDED(first_hr) && fetched == 1 && range != nullptr;
+    if (single_range) {
+        ITfRange* extra_range = nullptr;
+        ULONG extra_fetched = 0;
+        const HRESULT extra_hr = ranges->Next(
+            1, &extra_range, &extra_fetched);
+        single_range = SUCCEEDED(extra_hr) && extra_fetched == 0;
+        SafeRelease(&extra_range);
+    }
+    ranges->Release();
+
+    wchar_t character = 0;
+    bool single_ascii_letter = false;
+    if (single_range) {
+        ITfRange* read_range = nullptr;
+        if (SUCCEEDED(range->Clone(&read_range)) && read_range != nullptr) {
+            wchar_t text[2] = {};
+            ULONG length = 0;
+            const HRESULT text_hr = read_range->GetText(
+                read_cookie, TF_TF_MOVESTART, text, ARRAYSIZE(text), &length);
+            if (SUCCEEDED(text_hr) && length == 1 &&
+                IsRecoverableAsciiLetter(text[0])) {
+                character = text[0];
+                single_ascii_letter = true;
+            }
+            read_range->Release();
+        }
+    }
+
+    signals.single_text_range = single_range;
+    signals.single_ascii_letter = single_ascii_letter;
+    const FirstKeyRecoveryDecision decision =
+        EvaluateFirstKeyRecovery(signals);
+    if (decision == FirstKeyRecoveryDecision::Eligible) {
+        if (!BeginFirstKeyRecovery(context, range, character)) {
+            DisarmFirstKeyRecoveryTrigger();
+        }
+    } else if (range != nullptr) {
+        // 焦点重建后的第一次真实文本写入若不是精确的单字母场景，
+        // 当前 Ctrl+C 触发器立即失效，避免稍后的无关字母被误接管。
+        DisarmFirstKeyRecoveryTrigger();
+    }
+    SafeRelease(&range);
+}
+
 bool TextService::IsKeyEaten(
     ITfContext* context, WPARAM wparam, bool shortcut_modifier) const {
     if (IsPasswordContext(context)) {
@@ -947,6 +1398,10 @@ bool TextService::IsKeyEaten(
     // F9/F10 在中英文模式、空闲或组合状态下都保持一致；带修饰键的
     // 系统快捷键仍交给宿主。
     if ((wparam == VK_F9 || wparam == VK_F10) && !shortcut_modifier) {
+        return true;
+    }
+    if (first_key_recovery_pending_ && !shortcut_modifier &&
+        IsVirtualKeyAlpha(wparam)) {
         return true;
     }
     if (english_mode_) {
@@ -1012,18 +1467,33 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
         return E_INVALIDARG;
     }
     if (IsPasswordContext(pic)) {
+        CancelFirstKeyRecovery(true);
         shift_tap_.Reset();
         StopShiftReleasePolling();
+        StopShortcutReleasePolling();
         shortcut_modifier_state_.Reset();
         shortcut_modifier_cache_.Clear();
         *pfEaten = FALSE;
         return S_OK;
     }
     if (IsShortcutModifierKey(wParam)) {
-        shortcut_modifier_state_.KeyDown(wParam);
+        shortcut_modifier_state_.KeyDown(wParam, lParam);
     }
     const bool shortcut_modifier = ShortcutModifierForKey(
         wParam, lParam, true);
+    RecordCopyShortcutForFirstKeyRecovery(wParam, shortcut_modifier);
+    bool pending_eaten = false;
+    if (HandlePendingFirstKeyInput(
+            pic, wParam, lParam, shortcut_modifier, true,
+            &pending_eaten)) {
+        *pfEaten = pending_eaten ? TRUE : FALSE;
+        shortcut_modifier_cache_.Store(
+            wParam, lParam, shortcut_modifier, GetTickCount());
+        return S_OK;
+    }
+    if (!shortcut_modifier && IsVirtualKeyAlpha(wParam)) {
+        DisarmFirstKeyRecoveryTrigger();
+    }
     if (IsShiftKey(wParam)) {
         // 单独按 Shift：预备在 KeyUp 切换中/英；与其它键组合则取消
         // bit30=1 表示按键重复，不重新武装
@@ -1036,6 +1506,9 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
                 wParam, lParam, shortcut_modifier, GetTickCount());
         } else {
             shortcut_modifier_cache_.Clear();
+        }
+        if (shortcut_modifier && !IsShortcutModifierKey(wParam)) {
+            StartShortcutReleasePolling();
         }
         return S_OK;
     }
@@ -1063,10 +1536,13 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
     } else {
         shortcut_modifier_cache_.Clear();
     }
+    if (shortcut_modifier && !IsShortcutModifierKey(wParam)) {
+        StartShortcutReleasePolling();
+    }
     return S_OK;
 }
 
-STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*lParam*/, BOOL* pfEaten) {
+STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -1078,14 +1554,17 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*l
         return S_OK;
     }
     if (IsShortcutModifierKey(wParam)) {
-        shortcut_modifier_state_.KeyUp(wParam);
+        shortcut_modifier_state_.KeyUp(wParam, lParam);
         shortcut_modifier_cache_.Clear();
+        if (!shortcut_modifier_state_.HasPressedModifier()) {
+            StopShortcutReleasePolling();
+        }
     }
     *pfEaten = FALSE;
     return S_OK;
 }
 
-STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*lParam*/, BOOL* pfEaten) {
+STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -1104,8 +1583,11 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM /*lPara
         return S_OK;
     }
     if (IsShortcutModifierKey(wParam)) {
-        shortcut_modifier_state_.KeyUp(wParam);
+        shortcut_modifier_state_.KeyUp(wParam, lParam);
         shortcut_modifier_cache_.Clear();
+        if (!shortcut_modifier_state_.HasPressedModifier()) {
+            StopShortcutReleasePolling();
+        }
     }
     *pfEaten = FALSE;
     return S_OK;
@@ -1120,7 +1602,6 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* /*pic*/, REFGUID /*rguid*/,
 }
 
 STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
-    SHURU_LOG_INFO("OnKeyDown wParam=%u", static_cast<unsigned>(wParam));
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -1137,8 +1618,10 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     *eaten = false;
 
     if (IsPasswordContext(context)) {
+        CancelFirstKeyRecovery(true);
         shift_tap_.Reset();
         StopShiftReleasePolling();
+        StopShortcutReleasePolling();
         shortcut_modifier_state_.Reset();
         shortcut_modifier_cache_.Clear();
         if (!composing_pinyin_.empty()) {
@@ -1154,11 +1637,19 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     }
 
     if (IsShortcutModifierKey(wparam)) {
-        shortcut_modifier_state_.KeyDown(wparam);
+        shortcut_modifier_state_.KeyDown(wparam, lparam);
     }
 
     const bool shortcut_modifier = ShortcutModifierForKey(
         wparam, lparam, false);
+    RecordCopyShortcutForFirstKeyRecovery(wparam, shortcut_modifier);
+    if (HandlePendingFirstKeyInput(
+            context, wparam, lparam, shortcut_modifier, false, eaten)) {
+        return true;
+    }
+    if (!shortcut_modifier && IsVirtualKeyAlpha(wparam)) {
+        DisarmFirstKeyRecoveryTrigger();
+    }
 
     // Shift 本身不在 KeyDown 切换；部分宿主跳过 OnTestKeyDown 直接派发
     // OnKeyDown，这里兜底武装状态机（与 Test 路径同一时刻状态，结果幂等）。
@@ -1185,6 +1676,9 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     // Ctrl+A/C/V 等：绝不当拼音字母处理
     if (shortcut_modifier) {
+        if (!IsShortcutModifierKey(wparam)) {
+            StartShortcutReleasePolling();
+        }
         if (wparam == VK_SPACE && IsCtrlOnlyDown()) {
             // 落到下方中英切换
         } else {
@@ -1594,17 +2088,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             *eaten = true;
             composing_pinyin_.push_back(ch);
             (void)SetCompositionString(context, PinyinToWide(composing_pinyin_));
-            candidate_window_.Hide();
-            // 启动 220ms 延时定时器：停顿未按第2个v时自动唤起剪贴板弹窗
-            candidate_window_.StartVModeTimer([this]() {
-                if (composing_pinyin_ == "v" || composing_pinyin_ == "V") {
-                    LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick");
-                    ClearCompositionState();
-                    if (edit_context_) {
-                        (void)SetCompositionString(edit_context_, L"");
-                    }
-                }
-            }, 220);
+            StartVModeWindowTimer();
             return true;
         }
 
@@ -1777,14 +2261,46 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
     HWND target = context_target;
     if (target == nullptr) target = GetForegroundWindow();
     const bool tsf_view_available = context_target != nullptr;
-    const bool mintty_host = IsMinttyWindow(target);
+    HWND mintty_root = FindMinttyRootForTarget(target);
+    const bool mintty_host = mintty_root != nullptr;
+    HWND console_root = mintty_host ? nullptr : FindConsoleHostForTarget(target);
     RECT host_rect {};
-    const bool has_host_rect = GetClientScreenRect(target, &host_rect);
+    const bool has_host_rect = GetClientScreenRect(
+        mintty_host ? mintty_root
+                    : (console_root != nullptr ? console_root : target),
+        &host_rect);
     const auto plausible_for_host = [&](const RECT& candidate) {
         return IsReliableCandidateRect(candidate) &&
             (!has_host_rect || IsCandidateRectPlausibleForHost(
                 candidate, host_rect));
     };
+
+    // mintty 的 TSF ActiveView 会先返回窗口左上角的占位矩形，但其 GUI
+    // 线程公开了真实 Win32 光标。该宿主只接受真实光标，取不到时保持
+    // 隐藏并由有界重试继续等待，绝不让占位矩形曝光。
+    if (mintty_host) {
+        RECT caret {};
+        if (TryGetGuiThreadCaretScreenRect(mintty_root, &caret) &&
+            plausible_for_host(caret)) {
+            SetMinttyImmPosition(context_target, mintty_root, caret);
+            *rect = caret;
+            return true;
+        }
+        return false;
+    }
+
+    // conhost / Windows Terminal 有 ActiveView，但 GetTextExt 不可用；
+    // 若不在这里直接读 GUI 线程光标，下面的 tsf_view_available 分支会
+    // 一律返回 false，候选框将永远解析不出锚点而保持隐藏。
+    if (console_root != nullptr) {
+        RECT caret {};
+        if (TryGetGuiThreadCaretScreenRect(console_root, &caret) &&
+            plausible_for_host(caret)) {
+            *rect = caret;
+            return true;
+        }
+        return false;
+    }
 
     // 1) 只读 edit session + 合法 cookie 的 GetTextExt（多应用更稳）
     if (context != nullptr && client_id_ != TF_CLIENTID_NULL) {
@@ -1803,17 +2319,6 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
         }
     }
 
-    // mintty 不公开 Win32 caret，首次激活时 TSF 还可能返回屏幕原点的
-    // 占位矩形。其 IMM 桥接层若已经给出组合/候选位置，则优先使用。
-    if (mintty_host) {
-        RECT imm_rect {};
-        if (TryGetImmCaretScreenRect(target, &imm_rect) &&
-            plausible_for_host(imm_rect)) {
-            *rect = imm_rect;
-            return true;
-        }
-    }
-
     // 如果是 TSF 兼容宿主（存在 ActiveView），但当前 GetTextExt 尚未就绪（如初次输入排版中），
     // 绝对不能回退到 GetGUIThreadInfo 过期的系统光标坐标（那会导致候选框从上一次输入的历史位置跳跃闪烁）。
     // 应该直接返回 false，等待随之而来的 OnLayoutChange 通知拿到真实的当前光标后再呈现。
@@ -1823,20 +2328,11 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
 
     // 3) GUITHREADINFO 光标（仅用于不支持 TSF ActiveView 的纯旧式宿主）
     if (target != nullptr) {
-        DWORD tid = GetWindowThreadProcessId(target, nullptr);
-        GUITHREADINFO gi {};
-        gi.cbSize = sizeof(gi);
-        if (GetGUIThreadInfo(tid, &gi)) {
-            if (gi.hwndCaret != nullptr) {
-                RECT rc = gi.rcCaret;
-                if (IsReliableCandidateRect(rc)) {
-                    MapWindowPoints(gi.hwndCaret, nullptr, reinterpret_cast<POINT*>(&rc), 2);
-                    if (plausible_for_host(rc)) {
-                        *rect = rc;
-                        return true;
-                    }
-                }
-            }
+        RECT caret {};
+        if (TryGetGuiThreadCaretScreenRect(target, &caret) &&
+            plausible_for_host(caret)) {
+            *rect = caret;
+            return true;
         }
     }
 
@@ -1934,7 +2430,51 @@ void TextService::TryResolveCandidateAnchor(
                 TryResolveCandidateAnchor(generation, layout_serial);
             },
             kCandidatePositionRetryMs);
+        return;
     }
+
+    // 重试用尽：宿主始终给不出可用坐标。此时若继续隐藏，候选框会永久
+    // 不可见（组合与上屏照常工作，用户却看不到候选）。退而求其次，用
+    // 宿主窗口自身的位置兜底显示一次。
+    RECT fallback {};
+    if (!TryGetHostFallbackRect(edit_context_, &fallback)) return;
+    candidate_anchor_rect_ = fallback;
+    has_candidate_anchor_ = true;
+    candidate_position_pending_ = false;
+    candidate_layout_notified_ = false;
+    candidate_position_attempts_ = 0;
+    UpdateCandidateWindow(edit_context_);
+}
+
+// 只在有界重试彻底失败后调用：优先真实光标，再退到宿主客户区左下角。
+bool TextService::TryGetHostFallbackRect(ITfContext* context, RECT* rect) {
+    if (rect == nullptr) return false;
+    HWND target = ActiveContextWindow(context);
+    if (target == nullptr) target = GetForegroundWindow();
+    if (target == nullptr) return false;
+
+    HWND host = FindMinttyRootForTarget(target);
+    if (host == nullptr) host = FindConsoleHostForTarget(target);
+    if (host == nullptr) host = target;
+
+    RECT caret {};
+    if (TryGetGuiThreadCaretScreenRect(host, &caret)) {
+        *rect = caret;
+        return true;
+    }
+
+    RECT client {};
+    if (!GetClientScreenRect(host, &client) ||
+        !IsReliableCandidateRect(client)) {
+        return false;
+    }
+    *rect = RECT {
+        client.left,
+        (std::max)(client.top, client.bottom - 1),
+        client.left + 1,
+        client.bottom,
+    };
+    return true;
 }
 
 void TextService::ClearCompositionState() {
@@ -2017,11 +2557,30 @@ bool TextService::CommitRawComposition(ITfContext* context) {
     return true;
 }
 
+void TextService::StartVModeWindowTimer() {
+    candidate_window_.Hide();
+    candidate_window_.StartVModeTimer([this]() {
+        if (composing_pinyin_ == "v" || composing_pinyin_ == "V") {
+            LaunchSettingsExecutable(
+                candidate_window_.GetHwnd(), g_module, L"-quick");
+            ClearCompositionState();
+            if (edit_context_ != nullptr) {
+                (void)SetCompositionString(edit_context_, L"");
+            }
+        }
+    }, 220);
+}
+
 HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstring& text) {
     if (context == nullptr) {
         return E_FAIL;
     }
     const bool starts_composition = composition_ == nullptr;
+    if (starts_composition) {
+        // mintty 会在同步编辑会话内立即绘制预编辑文本，必须在写入首字符前
+        // 先把 IMM 组合区定位到真实终端光标，避免左上角占位位置闪现。
+        SyncMinttyImmPosition(context);
+    }
     candidate_window_.StopDeferredAction();
     ++candidate_layout_generation_;
     candidate_layout_serial_ = 0;
@@ -2049,13 +2608,15 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
         candidate_layout_notified_ = false;
         candidate_window_.StopDeferredAction();
     } else {
+        if (starts_composition) SyncMinttyImmPosition(context);
         // 每次改写组合串都产生新的末端位置。已显示窗口先保持上一次
         // 稳定坐标，只有当前文本世代收到布局通知后才允许重新定位。
         candidate_position_pending_ = true;
         HWND position_target = ActiveContextWindow(context);
         if (position_target == nullptr) position_target = GetForegroundWindow();
-        if (IsMinttyWindow(position_target)) {
-            // mintty 未必发送 TSF 布局通知；允许有界轮询等待其 IMM 桥接坐标。
+        if (HostNeedsCaretPolling(position_target)) {
+            // mintty / conhost / Windows Terminal 都不发 TSF 布局通知；
+            // 允许有界轮询等待它们 GUI 线程上的真实光标。
             candidate_layout_notified_ = true;
         }
         ScheduleCandidateWindowUpdate();
@@ -2063,8 +2624,9 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     return SUCCEEDED(hr) ? hr_session : hr;
 }
 
-STDMETHODIMP TextService::OnEndEdit(ITfContext* pic, TfEditCookie /*ecReadOnly*/, ITfEditRecord* /*pEditRecord*/) {
-    (void)pic;
+STDMETHODIMP TextService::OnEndEdit(
+    ITfContext* pic, TfEditCookie ecReadOnly, ITfEditRecord* pEditRecord) {
+    TryRecoverExternalFirstKey(pic, ecReadOnly, pEditRecord);
     // OnEndEdit 发生在宿主布局刷新之前，不能在这里读取并应用候选窗坐标。
     // SetCompositionString/OnLayoutChange 会安排合并后的延迟刷新。
     return S_OK;
@@ -2095,6 +2657,7 @@ STDMETHODIMP TextService::OnLayoutChange(
 }
 
 STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie /*ecWrite*/, ITfComposition* /*pComposition*/) {
+    CancelFirstKeyRecovery(true);
     SafeRelease(&composition_);
     ClearCompositionState();
     candidate_window_.Hide();
@@ -2124,6 +2687,66 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
 
 void TextService::SyncStatusUi() {
     SharedStatusUi::SyncFrom(english_mode_, shuangpin_mode_);
+    SyncLangBarItemEnglishMode();
+}
+
+void TextService::SyncLangBarItemEnglishMode() {
+    if (langbar_item_ != nullptr) {
+        langbar_item_->SetEnglishMode(english_mode_);
+    }
+}
+
+HRESULT TextService::InitLangBarItem() {
+    if (thread_mgr_ == nullptr) {
+        return E_FAIL;
+    }
+    if (langbar_item_ != nullptr) {
+        return S_OK;
+    }
+
+    langbar_item_ = new (std::nothrow) LangBarItemButton();
+    if (langbar_item_ == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    langbar_item_->SetEnglishMode(english_mode_);
+    langbar_item_->SetToggleCallback([this]() {
+        OnStatusToggleEnglish();
+    });
+    langbar_item_->SetMenuCallback([]() {
+        LaunchSettingsExecutable(nullptr, g_module);
+    });
+
+    HRESULT hr = thread_mgr_->QueryInterface(
+        IID_ITfLangBarItemMgr, reinterpret_cast<void**>(&langbar_item_mgr_));
+    if (FAILED(hr) || langbar_item_mgr_ == nullptr) {
+        hr = CoCreateInstance(
+            CLSID_TF_LangBarItemMgr, nullptr, CLSCTX_INPROC_SERVER,
+            IID_ITfLangBarItemMgr, reinterpret_cast<void**>(&langbar_item_mgr_));
+    }
+    if (SUCCEEDED(hr) && langbar_item_mgr_ != nullptr) {
+        hr = langbar_item_mgr_->AddItem(langbar_item_);
+        if (FAILED(hr)) {
+            SHURU_LOG_WARN("ITfLangBarItemMgr::AddItem failed: 0x%08X", hr);
+        }
+    } else {
+        SHURU_LOG_WARN("Query/Create ITfLangBarItemMgr failed: 0x%08X", hr);
+    }
+    return S_OK;
+}
+
+void TextService::UninitLangBarItem() noexcept {
+    if (langbar_item_mgr_ != nullptr) {
+        if (langbar_item_ != nullptr) {
+            langbar_item_mgr_->RemoveItem(langbar_item_);
+        }
+        langbar_item_mgr_->Release();
+        langbar_item_mgr_ = nullptr;
+    }
+    if (langbar_item_ != nullptr) {
+        langbar_item_->Detach();
+        langbar_item_->Release();
+        langbar_item_ = nullptr;
+    }
 }
 
 void TextService::ToggleSoftKeyboard() {

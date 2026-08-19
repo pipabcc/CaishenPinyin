@@ -7,6 +7,7 @@
 
 #include <Windows.h>
 
+#include <deque>
 #include <string>
 #include <functional>
 #include <vector>
@@ -92,6 +93,11 @@ public:
     void StartShiftReleasePolling(std::function<bool()> poll);
     void StopShiftReleasePolling();
 
+    // 宿主接管 Ctrl/Alt/Win 快捷键后可能不再回调 KeyUp；独立轮询用于
+    // 清理输入法内部的旧修饰键世代，不与 Shift 单击状态机共用定时器。
+    void StartShortcutReleasePolling(std::function<bool()> poll);
+    void StopShortcutReleasePolling();
+
     // 将需要读取宿主布局的操作推迟到当前 TSF 编辑消息返回后执行。
     // 连续请求会合并为一次回调，避免在旧布局和新布局之间来回移动。
     void StartDeferredAction(std::function<void()> action, UINT delay_ms = 16);
@@ -99,6 +105,10 @@ public:
     bool IsDeferredActionActive() const noexcept {
         return deferred_action_active_;
     }
+
+    // 在候选窗所属 UI 线程的下一轮消息中执行。用于等待当前 TSF
+    // 编辑会话完全退出，不与候选定位、V 模式或轮询定时器共享状态。
+    bool PostOwnerThreadAction(std::function<void()> action);
 
     // V/VV 模式延时唤起独立窗口定时器
     void StartVModeTimer(std::function<void()> callback, UINT delay_ms = 220);
@@ -113,21 +123,30 @@ private:
     static constexpr int kCornerRadius = 8;
     static constexpr int kShadowMargin = 16;
     static constexpr int kShadowBlurPasses = 3;
-    static constexpr int kMinWidth = 280;
+    static constexpr int kMinWidth = 220;
     static constexpr int kMaxWidth = 1440;
     static constexpr int kVerticalRowHeight = 32;
     static constexpr int kVerticalMaxVisible = 10;
     static constexpr int kExpandedMaxRows = 5;
     static constexpr int kExpandToggleWidth = 16;
     static constexpr int kExpandToggleGap = 5;
-    static constexpr int kPinReservedWidth = 18;
+    static constexpr int kPinReservedWidth = 14;
+    // 选中胶囊在序号左侧与候选词右侧各留出的空白；同时为排版误差
+    // 提供余量，避免末字被绘制矩形裁掉。项间距必须大于两倍内边距，
+    // 否则相邻胶囊会咬合在一起。
+    static constexpr int kHighlightPaddingX = 8;
+    static constexpr int kCandidateItemGap = 18;
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
     static constexpr UINT_PTR kVModeTimerId = 1002;
     static constexpr UINT_PTR kSkinAnimationTimerId = 1003;
-    static constexpr UINT_PTR kDeferredActionTimerId = 1004;
+    // 延迟动作会为每一代递增编号，使用独立区间避免与固定轮询定时器碰撞。
+    static constexpr UINT_PTR kDeferredActionTimerId = 0x4000;
     static constexpr UINT_PTR kShiftReleasePollTimerId = 1005;
     static constexpr UINT kShiftReleasePollIntervalMs = 10;
+    static constexpr UINT_PTR kShortcutReleasePollTimerId = 1006;
+    static constexpr UINT kShortcutReleasePollIntervalMs = 10;
+    static constexpr UINT kOwnerThreadActionMessage = WM_APP + 0x31A;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -151,6 +170,7 @@ private:
     POINT drag_start_window_ {};
     bool ready_poll_active_ = false;
     bool shift_release_poll_active_ = false;
+    bool shortcut_release_poll_active_ = false;
     int width_ = kMinWidth;
     int height_ = kLineHeight * 2 + kVerticalPadding * 2 + kRowGap;
 
@@ -189,6 +209,7 @@ private:
     std::function<void(size_t)> on_delete_item_;
     std::function<bool()> ready_poll_;
     std::function<bool()> shift_release_poll_;
+    std::function<bool()> shortcut_release_poll_;
     bool vmode_timer_active_ = false;
     std::function<void()> vmode_timer_cb_;
     bool deferred_action_active_ = false;
@@ -197,6 +218,7 @@ private:
     UINT_PTR deferred_timer_id_ = kDeferredActionTimerId;
     UINT_PTR deferred_timer_serial_ = 0;
     std::function<void()> deferred_action_;
+    std::deque<std::function<void()>> owner_thread_actions_;
     bool skin_animation_timer_active_ = false;
     std::wstring font_signature_;
     std::wstring layout_skin_id_;

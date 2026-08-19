@@ -24,3 +24,8 @@ static const GUID GUID_ShuruInputScopeProperty = {
 
 // zh-CN；用字面量避免依赖 Windows.h 的 LANGID  typedef 顺序
 static const unsigned short SHURU_LANGID = 0x0804;
+
+// 语言栏中英状态按钮 GUID：{8E2B543D-3B52-4E5F-A413-5A27BEB04128}
+static const GUID GUID_ShuruLangBarItem_Mode = {
+    0x8e2b543d, 0x3b52, 0x4e5f,
+    {0xa4, 0x13, 0x5a, 0x27, 0xbe, 0xb0, 0x41, 0x28}};

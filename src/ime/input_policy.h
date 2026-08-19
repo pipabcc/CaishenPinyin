@@ -38,31 +38,45 @@ constexpr bool IsShortcutModifierKey(WPARAM wparam) noexcept {
 }
 
 struct ShortcutModifierPhysicalState {
-    bool control = false;
-    bool alt = false;
+    bool left_control = false;
+    bool right_control = false;
+    bool left_alt = false;
+    bool right_alt = false;
     bool left_windows = false;
     bool right_windows = false;
 };
+
+constexpr WPARAM ResolveShortcutModifierSide(
+    WPARAM key, LPARAM key_message) noexcept {
+    const bool extended =
+        (static_cast<ULONG_PTR>(key_message) & (ULONG_PTR {1} << 24)) != 0;
+    if (key == VK_CONTROL) return extended ? VK_RCONTROL : VK_LCONTROL;
+    if (key == VK_MENU) return extended ? VK_RMENU : VK_LMENU;
+    return key;
+}
 
 // TSF 的测试回调和真实回调并不总是成对到达。显式记录修饰键的
 // 按下/释放世代，避免 Ctrl+C 松开后仍用消息队列中的旧键态放走首字母。
 class ShortcutModifierState {
 public:
-    void KeyDown(WPARAM key) noexcept;
-    void KeyUp(WPARAM key) noexcept;
+    void KeyDown(WPARAM key, LPARAM key_message = 0) noexcept;
+    void KeyUp(WPARAM key, LPARAM key_message = 0) noexcept;
     void Reset() noexcept;
     void ResetFromPhysical(
         const ShortcutModifierPhysicalState& physical) noexcept;
     bool IsActive(
         const ShortcutModifierPhysicalState& physical) noexcept;
+    bool HasPressedModifier() const noexcept;
 
 private:
     enum class Phase : std::uint8_t { Unknown, Released, Pressed };
 
     static bool Resolve(Phase* phase, bool physical_down) noexcept;
 
-    Phase control_ = Phase::Unknown;
-    Phase alt_ = Phase::Unknown;
+    Phase left_control_ = Phase::Unknown;
+    Phase right_control_ = Phase::Unknown;
+    Phase left_alt_ = Phase::Unknown;
+    Phase right_alt_ = Phase::Unknown;
     Phase left_windows_ = Phase::Unknown;
     Phase right_windows_ = Phase::Unknown;
 };

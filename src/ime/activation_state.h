@@ -6,7 +6,7 @@
 namespace shuru {
 
 enum class ActivationResource : std::uint8_t {
-    ThreadManager, Engine, ThreadSink, KeySink, TextSink, Ui
+    ThreadManager, Engine, ThreadSink, KeySink, TextSink, Ui, LangBarItem
 };
 
 class ActivationState {

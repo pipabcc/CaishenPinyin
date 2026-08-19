@@ -142,6 +142,69 @@ private:
     TfActiveSelEnd* ase_ = nullptr;
 };
 
+class InsertPlainTextEditSession final : public ITfEditSession {
+public:
+    InsertPlainTextEditSession(
+        ITfContext* context, const std::wstring& text, ITfRange** output_range)
+        : context_(context), text_(text), output_range_(output_range) {
+        if (context_ != nullptr) context_->AddRef();
+        if (output_range_ != nullptr) *output_range_ = nullptr;
+    }
+    ~InsertPlainTextEditSession() {
+        if (context_ != nullptr) context_->Release();
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (object == nullptr) return E_INVALIDARG;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_ITfEditSession) {
+            *object = static_cast<ITfEditSession*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return InterlockedIncrement(&refs_);
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG refs = InterlockedDecrement(&refs_);
+        if (refs == 0) delete this;
+        return static_cast<ULONG>(refs);
+    }
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie ec) override {
+        if (context_ == nullptr || output_range_ == nullptr) return E_INVALIDARG;
+        ITfInsertAtSelection* insert = nullptr;
+        HRESULT hr = context_->QueryInterface(
+            IID_ITfInsertAtSelection, reinterpret_cast<void**>(&insert));
+        if (FAILED(hr) || insert == nullptr) return FAILED(hr) ? hr : E_FAIL;
+        ITfRange* range = nullptr;
+        hr = insert->InsertTextAtSelection(
+            ec, 0, text_.c_str(), static_cast<LONG>(text_.size()), &range);
+        insert->Release();
+        if (FAILED(hr) || range == nullptr) {
+            if (range != nullptr) range->Release();
+            return FAILED(hr) ? hr : E_FAIL;
+        }
+        ITfRange* caret = nullptr;
+        if (SUCCEEDED(range->Clone(&caret)) && caret != nullptr) {
+            caret->Collapse(ec, TF_ANCHOR_END);
+            TF_SELECTION selection {};
+            selection.range = caret;
+            selection.style.ase = TF_AE_END;
+            selection.style.fInterimChar = FALSE;
+            context_->SetSelection(ec, 1, &selection);
+            caret->Release();
+        }
+        *output_range_ = range;
+        return S_OK;
+    }
+private:
+    LONG refs_ = 1;
+    ITfContext* context_ = nullptr;
+    std::wstring text_;
+    ITfRange** output_range_ = nullptr;
+};
+
 bool RunEditSession(
     ITfContext* context,
     TfClientId client_id,
@@ -272,6 +335,60 @@ int wmain() {
                 TF_ES_SYNC | TF_ES_READ) ||
             text != L"\u968f\u5fc3\u8f93\u51651 ") {
             std::fwprintf(stderr, L"unexpected real TSF text: %ls\n", text.c_str());
+            goto cleanup;
+        }
+    }
+
+    // 某些宿主在 Ctrl+C 后绕过按键 sink，先把首字母作为普通文本写入。
+    // 恢复路径必须直接接管该范围，再继续写入后续拼音，不能丢失或重复首字母。
+    {
+        ITfRange* plain_range = nullptr;
+        if (!RunEditSession(
+                context, client_id,
+                new InsertPlainTextEditSession(
+                    context, L"j", &plain_range)) ||
+            plain_range == nullptr) {
+            if (plain_range != nullptr) plain_range->Release();
+            goto cleanup;
+        }
+
+        shuru::ExistingTextCompositionResult adoption =
+            shuru::ExistingTextCompositionResult::Failed;
+        if (!RunEditSession(
+                context, client_id,
+                new shuru::AdoptExistingTextEditSession(
+                    context, sink, plain_range, L'j', &composition,
+                    TF_INVALID_GUIDATOM, []() { return true; },
+                    [&adoption](shuru::ExistingTextCompositionResult result) {
+                        adoption = result;
+                    })) ||
+            adoption != shuru::ExistingTextCompositionResult::Adopted ||
+            composition == nullptr) {
+            plain_range->Release();
+            goto cleanup;
+        }
+        plain_range->Release();
+
+        if (!RunEditSession(
+                context, client_id,
+                new shuru::SetCompositionEditSession(
+                    context, client_id, sink, &composition, L"jix",
+                    TF_INVALID_GUIDATOM, false)) ||
+            !RunEditSession(
+                context, client_id,
+                new shuru::InsertTextEditSession(
+                    context, client_id, &composition, L"jix"))) {
+            goto cleanup;
+        }
+
+        std::wstring text;
+        if (!RunEditSession(
+                context, client_id, new ReadTextEditSession(context, &text),
+                TF_ES_SYNC | TF_ES_READ) ||
+            text != L"\u968f\u5fc3\u8f93\u51651 jix") {
+            std::fwprintf(
+                stderr, L"unexpected adopted first-key text: %ls\n",
+                text.c_str());
             goto cleanup;
         }
     }

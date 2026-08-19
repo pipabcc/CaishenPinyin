@@ -211,13 +211,14 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"candidate header width=%d expected=284\n", required_width);
         return 1;
     }
+    const std::vector<int> diary_widths(9, 36);
     const auto diary_row = shuru::BuildCandidateRowLayout(
-        std::vector<int>(9, 36), 0, 46, 4, 8, 16);
+        diary_widths, diary_widths, 0, 46, 4, 18, 12);
     const int diary_window_width = shuru::CandidateRowRequiredWidth(
         diary_row, 140);
     for (const auto& item : diary_row) {
         const int text_right = shuru::CandidateItemTextRight(
-            diary_window_width, item.hit_right, 140);
+            diary_window_width, item, 140);
         if (text_right <= item.text_left) {
             std::fwprintf(stderr,
                 L"native skin right margin clipped candidate text\n");
@@ -225,11 +226,81 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
     const RECT pin_rect = shuru::BuildCandidatePinRect(
-        diary_row.front(), diary_window_width, 140, 18, 42, 72);
+        diary_row.front(), diary_window_width, 140, 42, 72);
     if (pin_rect.right - pin_rect.left != 18 || pin_rect.top != 42 ||
-        pin_rect.bottom != 72 || pin_rect.left < diary_row.front().text_left) {
+        pin_rect.bottom != 72 ||
+        pin_rect.left != diary_row.front().highlight_right) {
         std::fwprintf(stderr, L"candidate pin rectangle is invalid\n");
         return 50;
+    }
+    if (diary_row.front().highlight_left != 42 ||
+        diary_row.front().highlight_right != 86 ||
+        diary_row[1].text_left - diary_row.front().text_left != 66) {
+        std::fwprintf(stderr, L"candidate compact bounds are invalid\n");
+        return 51;
+    }
+
+    const std::vector<std::vector<int>> expanded_widths {
+        {60, 20, 40},
+        {30, 50, 35},
+    };
+    const auto expanded_columns = shuru::BuildCandidateColumnWidths(
+        expanded_widths);
+    const auto expanded_first = shuru::BuildCandidateRowLayout(
+        expanded_widths[0], expanded_columns, 0, 13, 4, 18, 12);
+    const auto expanded_second = shuru::BuildCandidateRowLayout(
+        expanded_widths[1], expanded_columns, 3, 13, 4, 18, 12);
+    for (std::size_t column = 0; column < expanded_first.size(); ++column) {
+        if (expanded_first[column].text_left !=
+                expanded_second[column].text_left ||
+            expanded_first[column].pin_left !=
+                expanded_second[column].pin_left ||
+            expanded_first[column].hit_left !=
+                expanded_second[column].hit_left) {
+            std::fwprintf(stderr, L"expanded candidate columns are not aligned\n");
+            return 52;
+        }
+    }
+    if (expanded_first[1].highlight_right ==
+        expanded_second[1].highlight_right) {
+        std::fwprintf(stderr, L"candidate highlight did not follow text width\n");
+        return 53;
+    }
+
+    // 选中胶囊在序号左侧和候选词右侧各留内边距。项间距必须大于两倍
+    // 内边距，否则相邻胶囊会咬合；首项胶囊也不能越出窗口左边。
+    // 数值需与 candidate_window.h 的 kHighlightPaddingX/kCandidateItemGap 一致。
+    constexpr int kHighlightPaddingX = 8;
+    constexpr int kCandidateItemGap = 18;
+    const std::vector<int> capsule_widths(4, 52);
+    const auto capsule_row = shuru::BuildCandidateRowLayout(
+        capsule_widths, capsule_widths, 0, 13, kHighlightPaddingX, 0,
+        kCandidateItemGap);
+    if (capsule_row.front().highlight_left < 0) {
+        std::fwprintf(stderr,
+            L"first candidate highlight overflows the window left edge\n");
+        return 54;
+    }
+    for (std::size_t slot = 0; slot < capsule_row.size(); ++slot) {
+        const auto& item = capsule_row[slot];
+        if (item.highlight_left != item.text_left - kHighlightPaddingX ||
+            item.highlight_right != item.text_right + kHighlightPaddingX) {
+            std::fwprintf(stderr,
+                L"candidate highlight padding is not applied\n");
+            return 55;
+        }
+        if (slot + 1 < capsule_row.size() &&
+            capsule_row[slot + 1].highlight_left <= item.highlight_right) {
+            std::fwprintf(stderr, L"adjacent candidate highlights overlap\n");
+            return 56;
+        }
+    }
+    // 行宽必须把末项右侧的胶囊内边距一起算进去，否则末字会被裁掉。
+    if (shuru::CandidateRowRequiredWidth(capsule_row, 9) <
+        capsule_row.back().highlight_right + 9) {
+        std::fwprintf(stderr,
+            L"candidate row width excludes the trailing highlight padding\n");
+        return 57;
     }
     const auto header = shuru::BuildCandidateHeaderLayout(
         required_width, 50, 13, 9, 12);
@@ -311,6 +382,28 @@ int wmain(int argc, wchar_t** argv) {
                       L"shift release polling calls=%d expected=1\n",
                       shift_poll_calls);
         return 49;
+    }
+
+    int shortcut_poll_calls = 0;
+    window.StartShortcutReleasePolling([&shortcut_poll_calls]() {
+        ++shortcut_poll_calls;
+        return false;
+    });
+    const ULONGLONG shortcut_poll_deadline = GetTickCount64() + 500;
+    while (shortcut_poll_calls == 0 &&
+           GetTickCount64() < shortcut_poll_deadline) {
+        while (PeekMessageW(
+                &queued_timer, window.GetHwnd(), 0, 0, PM_REMOVE)) {
+            TranslateMessage(&queued_timer);
+            DispatchMessageW(&queued_timer);
+        }
+        Sleep(2);
+    }
+    if (shortcut_poll_calls != 1) {
+        std::fwprintf(stderr,
+                      L"shortcut release polling calls=%d expected=1\n",
+                      shortcut_poll_calls);
+        return 54;
     }
 
     std::vector<shuru::Candidate> candidates(63);

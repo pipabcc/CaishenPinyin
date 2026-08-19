@@ -2,11 +2,17 @@
 
 #include <Windows.h>
 #include <msctf.h>
+#include <functional>
 #include <string>
 
 #include "input_policy.h"
 
 namespace shuru {
+
+HRESULT ReadContextInputScopePrivacy(
+    ITfContext* context,
+    TfEditCookie edit_cookie,
+    InputScopePrivacy* privacy);
 
 class InsertTextEditSession : public ITfEditSession {
 public:
@@ -49,6 +55,53 @@ private:
     std::wstring text_;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
     bool move_caret_to_end_ = true;
+};
+
+enum class ExistingTextCompositionResult {
+    Adopted,
+    StaleRequest,
+    SensitiveContext,
+    RangeChanged,
+    SelectionChanged,
+    CompositionActive,
+    Failed,
+};
+
+// 将宿主已经写入的单字符范围直接纳入 TSF 组合，不删除或重插该字符。
+class AdoptExistingTextEditSession : public ITfEditSession {
+public:
+    using Preflight = std::function<bool()>;
+    using Completion = std::function<void(ExistingTextCompositionResult)>;
+
+    AdoptExistingTextEditSession(
+        ITfContext* context,
+        ITfCompositionSink* sink,
+        ITfRange* range,
+        wchar_t expected_character,
+        ITfComposition** composition,
+        TfGuidAtom display_atom,
+        Preflight preflight,
+        Completion completion);
+    virtual ~AdoptExistingTextEditSession();
+
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
+    STDMETHODIMP_(ULONG) AddRef() override;
+    STDMETHODIMP_(ULONG) Release() override;
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    HRESULT Finish(ExistingTextCompositionResult result, HRESULT hr);
+
+    LONG ref_ = 1;
+    ITfContext* context_ = nullptr;
+    ITfCompositionSink* sink_ = nullptr;
+    ITfRange* range_ = nullptr;
+    wchar_t expected_character_ = 0;
+    ITfComposition** composition_ = nullptr;
+    TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
+    Preflight preflight_;
+    Completion completion_;
+    bool completed_ = false;
 };
 
 class EndCompositionEditSession : public ITfEditSession {

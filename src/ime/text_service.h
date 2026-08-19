@@ -8,14 +8,18 @@
 #include "ui/shared_status_ui.h"
 #include "activation_state.h"
 #include "input_policy.h"
+#include "langbar_item.h"
 #include "punctuation_state.h"
 
 #include <msctf.h>
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace shuru {
+
+enum class ExistingTextCompositionResult;
 
 class TextService :
     public ITfTextInputProcessorEx,
@@ -116,9 +120,25 @@ private:
     PinyinEngine* engine_ = nullptr;  // 进程内共享
     CandidateWindow candidate_window_;
     TypingStatsStore typing_stats_;
+    LangBarItemButton* langbar_item_ = nullptr;
+    ITfLangBarItemMgr* langbar_item_mgr_ = nullptr;
     bool status_ui_acquired_ = false;
     DWORD status_ui_thread_id_ = 0;
     bool clipboard_monitor_checked_ = false;
+    std::uint64_t first_key_copy_tick_ = 0;
+    std::uint64_t first_key_focus_tick_ = 0;
+    std::uint64_t first_key_recovery_generation_ = 0;
+    std::uint64_t pending_first_key_generation_ = 0;
+    std::uint64_t pending_first_key_started_tick_ = 0;
+    ITfContext* pending_first_key_context_ = nullptr;
+    wchar_t pending_first_key_character_ = 0;
+    struct BufferedFirstKeyInput {
+        WPARAM wparam = 0;
+        LPARAM lparam = 0;
+    };
+    std::vector<BufferedFirstKeyInput> pending_first_key_inputs_;
+    bool first_key_recovery_pending_ = false;
+    bool first_key_recovery_adopted_ = false;
 
     HRESULT InitEngine();
     void EnsureUiWindows();
@@ -143,13 +163,37 @@ private:
     void TryResolveCandidateAnchor(
         std::uint64_t generation, std::uint64_t layout_serial);
     bool GetCaretScreenRect(ITfContext* context, RECT* rect);
+    bool TryGetHostFallbackRect(ITfContext* context, RECT* rect);
     void StartShiftReleasePolling();
     void StopShiftReleasePolling();
+    void StartShortcutReleasePolling();
+    void StopShortcutReleasePolling();
+    void RecordCopyShortcutForFirstKeyRecovery(
+        WPARAM wparam, bool shortcut_modifier) noexcept;
+    void TryRecoverExternalFirstKey(
+        ITfContext* context, TfEditCookie read_cookie,
+        ITfEditRecord* edit_record);
+    bool BeginFirstKeyRecovery(
+        ITfContext* context, ITfRange* range, wchar_t character);
+    bool CanAdoptFirstKeyRecovery(
+        std::uint64_t generation, ITfContext* context) const noexcept;
+    void CompleteFirstKeyRecovery(
+        std::uint64_t generation, ExistingTextCompositionResult result);
+    void CancelFirstKeyRecovery(bool disarm_trigger) noexcept;
+    void DisarmFirstKeyRecoveryTrigger() noexcept;
+    void ExpireFirstKeyRecovery() noexcept;
+    bool HandlePendingFirstKeyInput(
+        ITfContext* context, WPARAM wparam, LPARAM lparam, bool shortcut_modifier,
+        bool test_callback, bool* eaten);
+    void StartVModeWindowTimer();
     void CompleteShiftTap(ITfContext* context);
     void ResetCandidateAnchor() noexcept;
     void ClearCompositionState();
     void ToggleEnglishMode();
     void SyncStatusUi();
+    void SyncLangBarItemEnglishMode();
+    HRESULT InitLangBarItem();
+    void UninitLangBarItem() noexcept;
     void ToggleSoftKeyboard();
     void OnSoftKey(wchar_t ch, bool is_special);
     void OnCandidateSelected(size_t index);

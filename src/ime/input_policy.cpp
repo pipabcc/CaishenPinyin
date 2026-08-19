@@ -40,17 +40,20 @@ void SchemaSyncState::ApplyConfigured(bool configured) noexcept {
     }
 }
 
-void ShortcutModifierState::KeyDown(WPARAM key) noexcept {
-    switch (key) {
-    case VK_CONTROL:
+void ShortcutModifierState::KeyDown(
+    WPARAM key, LPARAM key_message) noexcept {
+    switch (ResolveShortcutModifierSide(key, key_message)) {
     case VK_LCONTROL:
-    case VK_RCONTROL:
-        control_ = Phase::Pressed;
+        left_control_ = Phase::Pressed;
         break;
-    case VK_MENU:
+    case VK_RCONTROL:
+        right_control_ = Phase::Pressed;
+        break;
     case VK_LMENU:
+        left_alt_ = Phase::Pressed;
+        break;
     case VK_RMENU:
-        alt_ = Phase::Pressed;
+        right_alt_ = Phase::Pressed;
         break;
     case VK_LWIN:
         left_windows_ = Phase::Pressed;
@@ -63,17 +66,20 @@ void ShortcutModifierState::KeyDown(WPARAM key) noexcept {
     }
 }
 
-void ShortcutModifierState::KeyUp(WPARAM key) noexcept {
-    switch (key) {
-    case VK_CONTROL:
+void ShortcutModifierState::KeyUp(
+    WPARAM key, LPARAM key_message) noexcept {
+    switch (ResolveShortcutModifierSide(key, key_message)) {
     case VK_LCONTROL:
-    case VK_RCONTROL:
-        control_ = Phase::Released;
+        left_control_ = Phase::Released;
         break;
-    case VK_MENU:
+    case VK_RCONTROL:
+        right_control_ = Phase::Released;
+        break;
     case VK_LMENU:
+        left_alt_ = Phase::Released;
+        break;
     case VK_RMENU:
-        alt_ = Phase::Released;
+        right_alt_ = Phase::Released;
         break;
     case VK_LWIN:
         left_windows_ = Phase::Released;
@@ -87,16 +93,22 @@ void ShortcutModifierState::KeyUp(WPARAM key) noexcept {
 }
 
 void ShortcutModifierState::Reset() noexcept {
-    control_ = Phase::Unknown;
-    alt_ = Phase::Unknown;
+    left_control_ = Phase::Unknown;
+    right_control_ = Phase::Unknown;
+    left_alt_ = Phase::Unknown;
+    right_alt_ = Phase::Unknown;
     left_windows_ = Phase::Unknown;
     right_windows_ = Phase::Unknown;
 }
 
 void ShortcutModifierState::ResetFromPhysical(
     const ShortcutModifierPhysicalState& physical) noexcept {
-    control_ = physical.control ? Phase::Pressed : Phase::Released;
-    alt_ = physical.alt ? Phase::Pressed : Phase::Released;
+    left_control_ = physical.left_control
+        ? Phase::Pressed : Phase::Released;
+    right_control_ = physical.right_control
+        ? Phase::Pressed : Phase::Released;
+    left_alt_ = physical.left_alt ? Phase::Pressed : Phase::Released;
+    right_alt_ = physical.right_alt ? Phase::Pressed : Phase::Released;
     left_windows_ = physical.left_windows ? Phase::Pressed : Phase::Released;
     right_windows_ = physical.right_windows ? Phase::Pressed : Phase::Released;
 }
@@ -117,11 +129,25 @@ bool ShortcutModifierState::IsActive(
     const ShortcutModifierPhysicalState& physical) noexcept {
     // 每次都同步全部修饰键，不能依赖 || 短路；否则 Ctrl 按下时 Alt/Win
     // 的释放状态不会被消费，下一键可能继续沿用旧状态。
-    const bool control = Resolve(&control_, physical.control);
-    const bool alt = Resolve(&alt_, physical.alt);
+    const bool left_control = Resolve(
+        &left_control_, physical.left_control);
+    const bool right_control = Resolve(
+        &right_control_, physical.right_control);
+    const bool left_alt = Resolve(&left_alt_, physical.left_alt);
+    const bool right_alt = Resolve(&right_alt_, physical.right_alt);
     const bool left_windows = Resolve(&left_windows_, physical.left_windows);
     const bool right_windows = Resolve(&right_windows_, physical.right_windows);
-    return control || alt || left_windows || right_windows;
+    return left_control || right_control || left_alt || right_alt ||
+        left_windows || right_windows;
+}
+
+bool ShortcutModifierState::HasPressedModifier() const noexcept {
+    return left_control_ == Phase::Pressed ||
+        right_control_ == Phase::Pressed ||
+        left_alt_ == Phase::Pressed ||
+        right_alt_ == Phase::Pressed ||
+        left_windows_ == Phase::Pressed ||
+        right_windows_ == Phase::Pressed;
 }
 
 NumpadDecision DecideNumpadKey(WPARAM key, bool num_lock, const std::string& composition) {

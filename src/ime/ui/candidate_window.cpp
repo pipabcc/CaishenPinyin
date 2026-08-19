@@ -71,40 +71,68 @@ void DrawCandidatePinIcon(
 
     const float center_x = (rect.left + rect.right) / 2.0f;
     const float center_y = (rect.top + rect.bottom) / 2.0f;
+
+    const Gdiplus::SmoothingMode old_smoothing = graphics.GetSmoothingMode();
+    const Gdiplus::PixelOffsetMode old_offset = graphics.GetPixelOffsetMode();
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
     if (hovered) {
         const float diameter = (std::min)(width, height) - 2.0f;
-        Gdiplus::SolidBrush hover_brush(Gdiplus::Color(28, 15, 23, 42));
+        Gdiplus::SolidBrush hover_brush(Gdiplus::Color(28, GetRValue(color), GetGValue(color), GetBValue(color)));
         graphics.FillEllipse(
             &hover_brush, center_x - diameter / 2.0f,
             center_y - diameter / 2.0f, diameter, diameter);
     }
 
-    const float scale = (std::max)(0.75f, (std::min)(width / 18.0f, height / 30.0f));
-    const float top = center_y - 6.0f * scale;
-    Gdiplus::PointF head[] = {
-        {center_x - 4.0f * scale, top},
-        {center_x + 4.0f * scale, top},
-        {center_x + 2.5f * scale, top + 2.5f * scale},
-        {center_x + 2.5f * scale, top + 6.0f * scale},
-        {center_x - 2.5f * scale, top + 6.0f * scale},
-        {center_x - 2.5f * scale, top + 2.5f * scale},
+    // 基准缩放系数，保持小巧精致（整体高度约 11~13px）
+    const float scale = (std::max)(0.75f, (std::min)(width / 18.0f, height / 28.0f));
+    const float s = scale;
+
+    const float cap_top = center_y - 5.2f * s;
+    const float cap_bottom = center_y - 3.8f * s;
+    const float body_bottom = center_y + 0.6f * s;
+    const float base_bottom = center_y + 2.0f * s;
+    const float tip_bottom = center_y + 5.6f * s;
+
+    // 图钉主体多边形路径（Cap + Body + Base + Tip）
+    Gdiplus::PointF pin_outline[] = {
+        {center_x - 2.6f * s, cap_top},
+        {center_x + 2.6f * s, cap_top},
+        {center_x + 2.6f * s, cap_bottom},
+        {center_x + 1.4f * s, cap_bottom},
+        {center_x + 1.2f * s, center_y - 1.6f * s}, // 优雅微收腰
+        {center_x + 1.8f * s, body_bottom},
+        {center_x + 2.5f * s, body_bottom},
+        {center_x + 2.5f * s, base_bottom},
+        {center_x + 0.5f * s, base_bottom},
+        {center_x, tip_bottom},                      // 针尖
+        {center_x - 0.5f * s, base_bottom},
+        {center_x - 2.5f * s, base_bottom},
+        {center_x - 2.5f * s, body_bottom},
+        {center_x - 1.8f * s, body_bottom},
+        {center_x - 1.2f * s, center_y - 1.6f * s}, // 优雅微收腰
+        {center_x - 1.4f * s, cap_bottom},
+        {center_x - 2.6f * s, cap_bottom},
     };
-    Gdiplus::GraphicsPath head_path;
-    head_path.AddPolygon(head, ARRAYSIZE(head));
-    Gdiplus::Pen pen(ToGdiplusColor(color), (std::max)(1.0f, scale));
+
+    Gdiplus::GraphicsPath pin_path;
+    pin_path.AddPolygon(pin_outline, ARRAYSIZE(pin_outline));
+
+    const Gdiplus::Color gdi_color = ToGdiplusColor(color);
+    Gdiplus::Pen pen(gdi_color, (std::max)(1.0f, 1.0f * s));
     pen.SetLineJoin(Gdiplus::LineJoinRound);
+
     if (pinned) {
-        Gdiplus::SolidBrush brush(ToGdiplusColor(color));
-        graphics.FillPath(&brush, &head_path);
+        Gdiplus::SolidBrush brush(gdi_color);
+        graphics.FillPath(&brush, &pin_path);
+        graphics.DrawPath(&pen, &pin_path);
     } else {
-        graphics.DrawPath(&pen, &head_path);
+        graphics.DrawPath(&pen, &pin_path);
     }
-    graphics.DrawLine(
-        &pen, center_x, top + 6.0f * scale,
-        center_x, top + 11.5f * scale);
-    graphics.DrawLine(
-        &pen, center_x, top + 11.5f * scale,
-        center_x - 1.5f * scale, top + 9.5f * scale);
+
+    graphics.SetSmoothingMode(old_smoothing);
+    graphics.SetPixelOffsetMode(old_offset);
 }
 
 }  // namespace
@@ -389,12 +417,14 @@ void CandidateWindow::Destroy() {
     if (hwnd_ != nullptr) {
         StopReadyPolling();
         StopShiftReleasePolling();
+        StopShortcutReleasePolling();
         StopDeferredAction();
         StopSkinAnimation();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
     ready_poll_ = nullptr;
+    owner_thread_actions_.clear();
     if (font_ != nullptr) {
         DeleteObject(font_);
         font_ = nullptr;
@@ -920,6 +950,27 @@ void CandidateWindow::StopShiftReleasePolling() {
     shift_release_poll_ = nullptr;
 }
 
+void CandidateWindow::StartShortcutReleasePolling(
+    std::function<bool()> poll) {
+    if (hwnd_ == nullptr) return;
+    StopShortcutReleasePolling();
+    shortcut_release_poll_ = std::move(poll);
+    if (shortcut_release_poll_) {
+        shortcut_release_poll_active_ = SetTimer(
+            hwnd_, kShortcutReleasePollTimerId,
+            kShortcutReleasePollIntervalMs, nullptr) != 0;
+        if (!shortcut_release_poll_active_) shortcut_release_poll_ = nullptr;
+    }
+}
+
+void CandidateWindow::StopShortcutReleasePolling() {
+    if (shortcut_release_poll_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, kShortcutReleasePollTimerId);
+    }
+    shortcut_release_poll_active_ = false;
+    shortcut_release_poll_ = nullptr;
+}
+
 void CandidateWindow::StartDeferredAction(
     std::function<void()> action, UINT delay_ms) {
     if (hwnd_ == nullptr) return;
@@ -948,6 +999,14 @@ void CandidateWindow::StopDeferredAction() {
     }
     deferred_action_active_ = false;
     deferred_action_ = nullptr;
+}
+
+bool CandidateWindow::PostOwnerThreadAction(std::function<void()> action) {
+    if (hwnd_ == nullptr || !action) return false;
+    owner_thread_actions_.push_back(std::move(action));
+    if (PostMessageW(hwnd_, kOwnerThreadActionMessage, 0, 0)) return true;
+    owner_thread_actions_.pop_back();
+    return false;
 }
 
 void CandidateWindow::StartVModeTimer(std::function<void()> callback, UINT delay_ms) {
@@ -1061,6 +1120,8 @@ void CandidateWindow::RecalcSize() {
         : 1;
     item_rows_.clear();
     item_rows_.reserve(row_count);
+    std::vector<std::vector<int>> measured_rows;
+    measured_rows.reserve(row_count);
     for (size_t row = 0; row < row_count; ++row) {
         const size_t row_page = first_page + row;
         const size_t begin = row_page * page_size_;
@@ -1070,19 +1131,36 @@ void CandidateWindow::RecalcSize() {
         std::vector<int> item_widths;
         item_widths.reserve(end - begin);
         for (size_t i = begin; i < end; ++i) {
-            std::wstring item;
+            // 绘制时序号与候选文字是两段独立排版，测量必须使用同一种
+            // 切分：整串测量得到的宽度小于两段之和，末字会被绘制矩形
+            // 裁掉（DirectWrite 按字符裁剪，丢的是整个汉字而非像素）。
+            int item_width = 0;
             if (numbered) {
-                item = std::to_wstring(i - begin + 1) + L".";
+                item_width += measure_str(
+                    font, std::to_wstring(i - begin + 1) + L".",
+                    candidate_style);
             }
-            item += candidates_[i].text;
-            int item_width = measure_str(font, item, candidate_style);
-            if (pinning_enabled_) item_width += Scale(kPinReservedWidth);
+            item_width += measure_str(font, candidates_[i].text, candidate_style);
             item_widths.push_back(item_width);
         }
+        measured_rows.push_back(std::move(item_widths));
+    }
+    const std::vector<int> column_widths = BuildCandidateColumnWidths(
+        measured_rows);
+    const int highlight_padding = Scale(kHighlightPaddingX);
+    // 首项的胶囊向左扩展 highlight_padding，起点至少要留出这么多，
+    // 否则圆角背景会越出窗口左边被裁掉。
+    const int row_text_left = (std::max)(
+        use_native_layout ? padding : padding + Scale(4),
+        highlight_padding);
+    for (size_t row = 0; row < measured_rows.size(); ++row) {
+        const size_t row_page = first_page + row;
+        const size_t begin = row_page * page_size_;
         item_rows_.push_back(BuildCandidateRowLayout(
-            item_widths, begin,
-            use_native_layout ? padding : padding + Scale(4), Scale(4),
-            Scale(8), Scale(16)));
+            measured_rows[row], column_widths, begin,
+            row_text_left, highlight_padding,
+            pinning_enabled_ ? Scale(kPinReservedWidth) : 0,
+            Scale(kCandidateItemGap)));
         cand_w = (std::max)(cand_w,
             CandidateRowRequiredWidth(item_rows_.back(), candidate_right_padding));
     }
@@ -1196,7 +1274,7 @@ int CandidateWindow::HitTestPin(int x, int y) const {
     for (const auto& item : item_rows_[static_cast<size_t>(row)]) {
         const RECT rect = BuildCandidatePinRect(
             item, width_, content_right_padding,
-            Scale(kPinReservedWidth), candidate_top + row * row_height,
+            candidate_top + row * row_height,
             candidate_top + (row + 1) * row_height);
         if (x >= rect.left && x < rect.right &&
             y >= rect.top && y < rect.bottom) {
@@ -1300,6 +1378,14 @@ void CandidateWindow::DrawContent(
     format_center.SetAlignment(Gdiplus::StringAlignmentCenter);
     format_center.SetLineAlignment(Gdiplus::StringAlignmentCenter);
     format_center.SetFormatFlags(format_center.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
+
+    // 候选项宽度已按绘制时的切分逐段预留，任何裁剪都会整字吞掉末尾，
+    // 因此候选序号与正文一律不做省略号裁剪。
+    Gdiplus::StringFormat format_item(Gdiplus::StringFormat::GenericTypographic());
+    format_item.SetAlignment(Gdiplus::StringAlignmentNear);
+    format_item.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    format_item.SetFormatFlags(format_item.GetFormatFlags() | Gdiplus::StringFormatFlagsNoWrap | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
+    format_item.SetTrimming(Gdiplus::StringTrimmingNone);
 
     if (vertical_utility_mode_) {
         // ================= 竖向瀑布流绘制 =================
@@ -1620,16 +1706,16 @@ void CandidateWindow::DrawContent(
             if (i >= candidates_.size()) continue;
 
             const bool is_selected = (i == selected_);
-            const int hit_left = item_rows_[row][slot].hit_left;
-            const int hit_right = item_rows_[row][slot].hit_right;
             const int text_left = item_rows_[row][slot].text_left;
 
             // 绘制选中高亮胶囊背景
             if (is_selected && !use_native_layout) {
                 Gdiplus::RectF hl_rf(
-                    static_cast<float>(hit_left + Scale(2)),
+                    static_cast<float>(item_rows_[row][slot].highlight_left),
                     static_cast<float>(row_top + Scale(3)),
-                    static_cast<float>(hit_right - hit_left - Scale(4)),
+                    static_cast<float>(
+                        item_rows_[row][slot].highlight_right -
+                        item_rows_[row][slot].highlight_left),
                     static_cast<float>(row_bottom - row_top - Scale(6)));
                 Gdiplus::GraphicsPath hl_path;
                 AddRoundedRectangleToPath(hl_path, hl_rf, static_cast<float>(Scale(skin.corner_radius)));
@@ -1650,7 +1736,7 @@ void CandidateWindow::DrawContent(
             }
 
             const int visible_item_right = CandidateItemTextRight(
-                width_, hit_right, use_native_layout
+                width_, item_rows_[row][slot], use_native_layout
                     ? Scale(skin.candidate_margin.right)
                     : horizontal_padding);
             const RECT candidate_pin_rect = BuildCandidatePinRect(
@@ -1658,15 +1744,13 @@ void CandidateWindow::DrawContent(
                 use_native_layout
                     ? Scale(skin.candidate_margin.right)
                     : horizontal_padding,
-                Scale(kPinReservedWidth), row_top, row_bottom);
-            const int item_text_right = pinning_enabled_
-                ? (std::max)(
-                    text_left,
-                    static_cast<int>(candidate_pin_rect.left) - Scale(2))
-                : visible_item_right;
+                row_top, row_bottom);
+            const int item_text_right = (std::max)(
+                text_left, visible_item_right);
             const CandidateTextStyle candidate_style {
                 candidate_family, static_cast<float>(candidate_size),
-                CandidateTextWeight::Regular, CandidateTextAlignment::Near, true};
+                CandidateTextWeight::Regular, CandidateTextAlignment::Near,
+                false};
             if (numbered) {
                 std::wstring num_str = std::to_wstring(i - begin + 1) + L".";
                 float num_width_value = directwrite_text_.MeasureText(
@@ -1674,23 +1758,23 @@ void CandidateWindow::DrawContent(
                 if (num_width_value <= 0.0f) {
                     Gdiplus::RectF num_bbox;
                     g.MeasureString(num_str.c_str(), static_cast<INT>(num_str.size()),
-                                    font, Gdiplus::PointF(0, 0), &format, &num_bbox);
+                                    font, Gdiplus::PointF(0, 0), &format_item, &num_bbox);
                     num_width_value = num_bbox.Width;
                 }
                 const int num_width = static_cast<int>(std::ceil(num_width_value));
                 const RECT num_rc {text_left, row_top,
                                    text_left + num_width, row_bottom};
                 draw_text(num_str, num_rc, num_color, candidate_style,
-                          font, &format);
+                          font, &format_item);
                 const RECT text_rc {text_left + num_width, row_top,
                                     item_text_right, row_bottom};
                 draw_text(candidates_[i].text, text_rc, txt_color,
-                          candidate_style, font, &format);
+                          candidate_style, font, &format_item);
             } else {
                 const RECT text_rc {text_left, row_top,
                                     item_text_right, row_bottom};
                 draw_text(candidates_[i].text, text_rc, txt_color,
-                          candidate_style, font, &format);
+                          candidate_style, font, &format_item);
             }
 
             if (pinning_enabled_ &&
@@ -1700,8 +1784,7 @@ void CandidateWindow::DrawContent(
                     hovered_pin_;
                 COLORREF pin_color = candidates_[i].pinned
                     ? skin.highlight_bg_color : skin.candidate_color;
-                const COLORREF icon_background = is_selected && !use_native_layout
-                    ? skin.highlight_bg_color : skin.utility_background_color;
+                const COLORREF icon_background = skin.utility_background_color;
                 pin_color = EnsureCandidateTextContrast(
                     pin_color, icon_background, 3.0);
                 DrawCandidatePinIcon(
@@ -1844,6 +1927,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     }
 
     switch (msg) {
+    case kOwnerThreadActionMessage: {
+        if (self->owner_thread_actions_.empty()) return 0;
+        auto action = std::move(self->owner_thread_actions_.front());
+        self->owner_thread_actions_.pop_front();
+        if (action) action();
+        return 0;
+    }
     case WM_PAINT:
         return self->OnPaint();
     case WM_ERASEBKGND:
@@ -1908,6 +1998,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             const std::function<bool()> poll = self->shift_release_poll_;
             if (!poll || !poll()) {
                 self->StopShiftReleasePolling();
+            }
+            return 0;
+        }
+        if (wparam == kShortcutReleasePollTimerId) {
+            const std::function<bool()> poll = self->shortcut_release_poll_;
+            if (!poll || !poll()) {
+                self->StopShortcutReleasePolling();
             }
             return 0;
         }

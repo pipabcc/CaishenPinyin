@@ -61,6 +61,7 @@ add_library(ShuruIme SHARED
   src/ime/display_attribute.cpp
   src/ime/ui/status_window.cpp
   src/ime/ui/shared_status_ui.cpp
+  src/ime/langbar_item.cpp
   src/ime/text_service.cpp
   src/ime/ui/candidate_window.cpp
   src/ime/ui/directwrite_text_renderer.cpp
@@ -75,7 +76,6 @@ add_library(ShuruIme SHARED
 set_property(SOURCE src/ime/ShuruIme.rc APPEND PROPERTY OBJECT_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/common/version.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ime/app.ico")
-
 target_include_directories(ShuruIme PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -374,7 +374,7 @@ if(BUILD_TESTING)
     src/common/typing_stats.cpp
     src/common/private_acl.cpp
     src/engine/dictionary.cpp
-  src/engine/lexicon_cache.cpp
+    src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
     ${SHURU_PINNED_CANDIDATE_SOURCES}
@@ -391,6 +391,7 @@ if(BUILD_TESTING)
     src/ime/ui/skin_manager.cpp
     src/ime/ui/status_window.cpp
     src/ime/ui/shared_status_ui.cpp
+    src/ime/langbar_item.cpp
     src/ime/text_service.cpp
   )
   target_include_directories(shared_status_ui_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -402,6 +403,16 @@ if(BUILD_TESTING)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
+
+  add_executable(langbar_item_test
+    tests/engine_playground/langbar_item_test.cpp
+    src/ime/langbar_item.cpp
+  )
+  target_include_directories(langbar_item_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(langbar_item_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(langbar_item_test PRIVATE ole32 oleaut32 uuid user32 gdi32 shell32)
+  add_test(NAME langbar_item COMMAND langbar_item_test)
+  set_tests_properties(langbar_item PROPERTIES TIMEOUT 30)
 
   add_executable(clipboard_helper_test
     tests/engine_playground/clipboard_helper_test.cpp

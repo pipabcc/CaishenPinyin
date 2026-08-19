@@ -30,6 +30,68 @@ void SetCaretToRangeEnd(ITfContext* context, TfEditCookie ec, ITfRange* range) {
 
 }  // namespace
 
+HRESULT ReadContextInputScopePrivacy(
+    ITfContext* context,
+    TfEditCookie edit_cookie,
+    InputScopePrivacy* privacy) {
+    if (privacy != nullptr) {
+        *privacy = InputScopePrivacy::Unknown;
+    }
+    if (context == nullptr || privacy == nullptr) {
+        return E_INVALIDARG;
+    }
+
+    TF_SELECTION selection {};
+    ULONG fetched = 0;
+    HRESULT hr = context->GetSelection(
+        edit_cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched != 1 || selection.range == nullptr) {
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+
+    ITfProperty* property = nullptr;
+    hr = context->GetProperty(GUID_ShuruInputScopeProperty, &property);
+    if (FAILED(hr) || property == nullptr) {
+        selection.range->Release();
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+
+    VARIANT value;
+    VariantInit(&value);
+    hr = property->GetValue(edit_cookie, selection.range, &value);
+    property->Release();
+    selection.range->Release();
+    if (FAILED(hr)) {
+        VariantClear(&value);
+        return hr;
+    }
+    if (value.vt != VT_UNKNOWN || value.punkVal == nullptr) {
+        VariantClear(&value);
+        return S_FALSE;
+    }
+
+    ITfInputScope* input_scope = nullptr;
+    hr = value.punkVal->QueryInterface(
+        IID_ITfInputScope, reinterpret_cast<void**>(&input_scope));
+    VariantClear(&value);
+    if (FAILED(hr) || input_scope == nullptr) {
+        return FAILED(hr) ? hr : E_NOINTERFACE;
+    }
+
+    InputScope* scopes = nullptr;
+    UINT count = 0;
+    hr = input_scope->GetInputScopes(&scopes, &count);
+    input_scope->Release();
+    if (FAILED(hr)) {
+        CoTaskMemFree(scopes);
+        return hr;
+    }
+
+    *privacy = ClassifyInputScopes(scopes, count);
+    CoTaskMemFree(scopes);
+    return S_OK;
+}
+
 // -------- InsertTextEditSession --------
 
 InsertTextEditSession::InsertTextEditSession(ITfContext* context, TfClientId client_id, ITfComposition** composition, const std::wstring& text)
@@ -231,6 +293,155 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
 
     range->Release();
     return S_OK;
+}
+
+// -------- AdoptExistingTextEditSession --------
+
+AdoptExistingTextEditSession::AdoptExistingTextEditSession(
+    ITfContext* context,
+    ITfCompositionSink* sink,
+    ITfRange* range,
+    wchar_t expected_character,
+    ITfComposition** composition,
+    TfGuidAtom display_atom,
+    Preflight preflight,
+    Completion completion)
+    : context_(context), sink_(sink), range_(range),
+      expected_character_(expected_character), composition_(composition),
+      display_atom_(display_atom), preflight_(std::move(preflight)),
+      completion_(std::move(completion)) {
+    if (context_ != nullptr) context_->AddRef();
+    if (sink_ != nullptr) sink_->AddRef();
+    if (range_ != nullptr) range_->AddRef();
+}
+
+AdoptExistingTextEditSession::~AdoptExistingTextEditSession() {
+    SafeRelease(&range_);
+    SafeRelease(&sink_);
+    SafeRelease(&context_);
+}
+
+STDMETHODIMP AdoptExistingTextEditSession::QueryInterface(
+    REFIID riid, void** ppvObj) {
+    if (ppvObj == nullptr) return E_INVALIDARG;
+    *ppvObj = nullptr;
+    if (IsEqualIID(riid, IID_IUnknown) ||
+        IsEqualIID(riid, IID_ITfEditSession)) {
+        *ppvObj = static_cast<ITfEditSession*>(this);
+        AddRef();
+        return S_OK;
+    }
+    return E_NOINTERFACE;
+}
+
+STDMETHODIMP_(ULONG) AdoptExistingTextEditSession::AddRef() {
+    return InterlockedIncrement(&ref_);
+}
+
+STDMETHODIMP_(ULONG) AdoptExistingTextEditSession::Release() {
+    const LONG value = InterlockedDecrement(&ref_);
+    if (value == 0) delete this;
+    return static_cast<ULONG>(value);
+}
+
+HRESULT AdoptExistingTextEditSession::Finish(
+    ExistingTextCompositionResult result, HRESULT hr) {
+    if (!completed_) {
+        completed_ = true;
+        if (completion_) completion_(result);
+    }
+    return hr;
+}
+
+STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
+    if (context_ == nullptr || sink_ == nullptr || range_ == nullptr ||
+        composition_ == nullptr) {
+        return Finish(ExistingTextCompositionResult::Failed, E_INVALIDARG);
+    }
+    if (preflight_ && !preflight_()) {
+        return Finish(ExistingTextCompositionResult::StaleRequest, S_FALSE);
+    }
+    if (*composition_ != nullptr) {
+        return Finish(
+            ExistingTextCompositionResult::CompositionActive, S_FALSE);
+    }
+
+    InputScopePrivacy privacy = InputScopePrivacy::Unknown;
+    const HRESULT privacy_hr = ReadContextInputScopePrivacy(
+        context_, ec, &privacy);
+    if (SUCCEEDED(privacy_hr) && privacy == InputScopePrivacy::Sensitive) {
+        return Finish(
+            ExistingTextCompositionResult::SensitiveContext,
+            E_ACCESSDENIED);
+    }
+
+    ITfRange* read_range = nullptr;
+    HRESULT hr = range_->Clone(&read_range);
+    if (FAILED(hr) || read_range == nullptr) {
+        SafeRelease(&read_range);
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(hr) ? hr : E_FAIL);
+    }
+    wchar_t text[2] = {};
+    ULONG text_length = 0;
+    hr = read_range->GetText(
+        ec, TF_TF_MOVESTART, text, ARRAYSIZE(text), &text_length);
+    read_range->Release();
+    if (FAILED(hr)) {
+        return Finish(ExistingTextCompositionResult::Failed, hr);
+    }
+    if (text_length != 1 || text[0] != expected_character_) {
+        return Finish(ExistingTextCompositionResult::RangeChanged, S_FALSE);
+    }
+
+    TF_SELECTION selection {};
+    ULONG fetched = 0;
+    hr = context_->GetSelection(
+        ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched != 1 || selection.range == nullptr) {
+        SafeRelease(&selection.range);
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(hr) ? hr : E_FAIL);
+    }
+    BOOL selection_empty = FALSE;
+    LONG end_comparison = 1;
+    const HRESULT empty_hr = selection.range->IsEmpty(ec, &selection_empty);
+    const HRESULT compare_hr = range_->CompareEnd(
+        ec, selection.range, TF_ANCHOR_START, &end_comparison);
+    selection.range->Release();
+    if (FAILED(empty_hr) || FAILED(compare_hr)) {
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(empty_hr) ? empty_hr : compare_hr);
+    }
+    if (!selection_empty || end_comparison != 0) {
+        return Finish(
+            ExistingTextCompositionResult::SelectionChanged, S_FALSE);
+    }
+
+    ITfContextComposition* context_composition = nullptr;
+    hr = context_->QueryInterface(
+        IID_ITfContextComposition,
+        reinterpret_cast<void**>(&context_composition));
+    if (FAILED(hr) || context_composition == nullptr) {
+        SafeRelease(&context_composition);
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(hr) ? hr : E_NOINTERFACE);
+    }
+
+    ITfComposition* adopted_composition = nullptr;
+    hr = context_composition->StartComposition(
+        ec, range_, sink_, &adopted_composition);
+    context_composition->Release();
+    if (FAILED(hr) || adopted_composition == nullptr) {
+        SafeRelease(&adopted_composition);
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(hr) ? hr : E_FAIL);
+    }
+
+    *composition_ = adopted_composition;
+    ApplyCompositionDisplayAttribute(context_, ec, range_, display_atom_);
+    SetCaretToRangeEnd(context_, ec, range_);
+    return Finish(ExistingTextCompositionResult::Adopted, S_OK);
 }
 
 // -------- EndCompositionEditSession --------
@@ -489,62 +700,7 @@ STDMETHODIMP_(ULONG) GetInputScopeEditSession::Release() {
 }
 
 STDMETHODIMP GetInputScopeEditSession::DoEditSession(TfEditCookie ec) {
-    if (out_privacy_) {
-        *out_privacy_ = InputScopePrivacy::Unknown;
-    }
-    if (context_ == nullptr || out_privacy_ == nullptr) {
-        return E_INVALIDARG;
-    }
-
-    TF_SELECTION selection {};
-    ULONG fetched = 0;
-    HRESULT hr = context_->GetSelection(
-        ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-    if (FAILED(hr) || fetched != 1 || selection.range == nullptr) {
-        return FAILED(hr) ? hr : E_FAIL;
-    }
-
-    ITfProperty* property = nullptr;
-    hr = context_->GetProperty(GUID_ShuruInputScopeProperty, &property);
-    if (FAILED(hr) || property == nullptr) {
-        selection.range->Release();
-        return FAILED(hr) ? hr : E_FAIL;
-    }
-
-    VARIANT value;
-    VariantInit(&value);
-    hr = property->GetValue(ec, selection.range, &value);
-    property->Release();
-    selection.range->Release();
-    if (FAILED(hr)) {
-        VariantClear(&value);
-        return hr;
-    }
-    if (value.vt != VT_UNKNOWN || value.punkVal == nullptr) {
-        VariantClear(&value);
-        return S_FALSE;
-    }
-
-    ITfInputScope* input_scope = nullptr;
-    hr = value.punkVal->QueryInterface(
-        IID_ITfInputScope, reinterpret_cast<void**>(&input_scope));
-    VariantClear(&value);
-    if (FAILED(hr) || input_scope == nullptr) {
-        return FAILED(hr) ? hr : E_NOINTERFACE;
-    }
-
-    InputScope* scopes = nullptr;
-    UINT count = 0;
-    hr = input_scope->GetInputScopes(&scopes, &count);
-    input_scope->Release();
-    if (FAILED(hr)) {
-        CoTaskMemFree(scopes);
-        return hr;
-    }
-
-    *out_privacy_ = ClassifyInputScopes(scopes, count);
-    CoTaskMemFree(scopes);
-    return S_OK;
+    return ReadContextInputScopePrivacy(context_, ec, out_privacy_);
 }
 
 } // namespace shuru

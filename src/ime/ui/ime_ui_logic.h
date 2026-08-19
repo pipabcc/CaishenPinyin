@@ -253,6 +253,11 @@ inline std::wstring CandidateComposingDisplay(
 struct CandidateItemLayout {
     std::size_t index = 0;
     int text_left = 0;
+    int text_right = 0;
+    int highlight_left = 0;
+    int highlight_right = 0;
+    int pin_left = 0;
+    int pin_right = 0;
     int hit_left = 0;
     int hit_right = 0;
 };
@@ -328,21 +333,53 @@ inline CandidateWindowVerticalLayout BuildCandidateWindowVerticalLayout(
     return layout;
 }
 
+inline std::vector<int> BuildCandidateColumnWidths(
+    const std::vector<std::vector<int>>& row_text_widths) {
+    std::size_t column_count = 0;
+    for (const auto& row : row_text_widths) {
+        column_count = (std::max)(column_count, row.size());
+    }
+    std::vector<int> widths(column_count, 0);
+    for (const auto& row : row_text_widths) {
+        for (std::size_t column = 0; column < row.size(); ++column) {
+            widths[column] = (std::max)(
+                widths[column], (std::max)(0, row[column]));
+        }
+    }
+    return widths;
+}
+
 inline std::vector<CandidateItemLayout> BuildCandidateRowLayout(
     const std::vector<int>& text_widths,
+    const std::vector<int>& column_widths,
     std::size_t first_index,
     int text_left,
-    int left_padding,
-    int right_padding,
+    int highlight_padding,
+    int pin_width,
     int item_gap) {
     std::vector<CandidateItemLayout> layout;
     layout.reserve(text_widths.size());
     int current = text_left;
     for (std::size_t slot = 0; slot < text_widths.size(); ++slot) {
-        const int width = (std::max)(0, text_widths[slot]);
-        layout.push_back({first_index + slot, current, current - left_padding,
-                          current + width + right_padding});
-        current += width + item_gap;
+        const int text_width = (std::max)(0, text_widths[slot]);
+        const int column_width = slot < column_widths.size()
+            ? (std::max)(text_width, (std::max)(0, column_widths[slot]))
+            : text_width;
+        const int padding = (std::max)(0, highlight_padding);
+        const int reserved_pin_width = (std::max)(0, pin_width);
+        CandidateItemLayout item;
+        item.index = first_index + slot;
+        item.text_left = current;
+        item.text_right = current + text_width;
+        item.highlight_left = current - padding;
+        item.highlight_right = item.text_right + padding;
+        item.pin_left = current + column_width + padding;
+        item.pin_right = item.pin_left + reserved_pin_width;
+        item.hit_left = item.highlight_left;
+        item.hit_right = item.pin_right;
+        layout.push_back(item);
+        current += column_width + reserved_pin_width +
+            (std::max)(0, item_gap);
     }
     return layout;
 }
@@ -355,24 +392,23 @@ inline int CandidateRowRequiredWidth(
 
 inline int CandidateItemTextRight(
     int window_width,
-    int item_hit_right,
+    const CandidateItemLayout& item,
     int content_right_padding) noexcept {
     return (std::min)(
         (std::max)(0, window_width - (std::max)(0, content_right_padding)),
-        item_hit_right);
+        item.highlight_right);
 }
 
 inline RECT BuildCandidatePinRect(
     const CandidateItemLayout& item,
     int window_width,
     int content_right_padding,
-    int reserved_width,
     int row_top,
     int row_bottom) noexcept {
-    const int right = CandidateItemTextRight(
-        window_width, item.hit_right, content_right_padding);
-    const int left = (std::max)(
-        item.text_left, right - (std::max)(1, reserved_width));
+    const int content_right = (std::max)(
+        0, window_width - (std::max)(0, content_right_padding));
+    const int right = (std::min)(content_right, item.pin_right);
+    const int left = (std::min)(right, item.pin_left);
     return RECT {left, row_top, right, (std::max)(row_top, row_bottom)};
 }
 
