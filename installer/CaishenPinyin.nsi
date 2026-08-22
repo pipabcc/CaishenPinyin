@@ -271,7 +271,6 @@ Function ValidateInstallDirectory
     MessageBox MB_ICONSTOP|MB_OK "安装路径不能为空。" /SD IDOK
     Abort
   ${EndIf}
-  GetFullPathName $INSTDIR "$INSTDIR"
 
   normalize_install_directory:
   ${GetRoot} "$INSTDIR" $0
@@ -299,9 +298,21 @@ Function ValidateInstallDirectory
     Abort
   ${EndIf}
   ${If} $HasExistingInstall == 0
-    IfFileExists "$INSTDIR\*" 0 validate_install_directory_done
-    MessageBox MB_ICONSTOP|MB_OK "所选目录已经包含其他文件。请选择空目录或新的专用目录。" /SD IDOK
-    Abort
+    # Check if directory contains other files (is non-empty)
+    FindFirst $8 $9 "$INSTDIR\*.*"
+    loop:
+      StrCmp $9 "" done
+      StrCmp $9 "." next
+      StrCmp $9 ".." next
+      # Found a file or directory
+      MessageBox MB_ICONSTOP|MB_OK "所选目录已经包含其他文件。请选择空目录或新的专用目录。" /SD IDOK
+      FindClose $8
+      Abort
+      next:
+      FindNext $8 $9
+      Goto loop
+    done:
+    FindClose $8
   ${EndIf}
 
   validate_install_directory_done:
