@@ -181,6 +181,16 @@ if(BUILD_TESTING)
   add_test(NAME pinned_candidate_store COMMAND pinned_candidate_store_test)
   set_tests_properties(pinned_candidate_store PROPERTIES TIMEOUT 30)
 
+  add_executable(appcontainer_acl_test
+    tests/engine_playground/appcontainer_acl_test.cpp
+    src/common/private_acl.cpp
+  )
+  target_include_directories(appcontainer_acl_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(appcontainer_acl_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(appcontainer_acl_test PRIVATE advapi32)
+  add_test(NAME appcontainer_acl COMMAND appcontainer_acl_test)
+  set_tests_properties(appcontainer_acl PROPERTIES TIMEOUT 30)
+
   add_executable(typing_stats_test
     tests/engine_playground/typing_stats_test.cpp
     src/common/typing_stats.cpp
@@ -429,6 +439,7 @@ if(BUILD_TESTING)
 
   add_executable(candidate_window_test
     tests/engine_playground/candidate_window_test.cpp
+    src/common/logger.cpp
     src/common/runtime_config.cpp
     src/common/typing_stats.cpp
     src/ime/ui/candidate_window.cpp

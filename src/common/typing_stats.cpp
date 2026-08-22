@@ -1,5 +1,7 @@
 #include "typing_stats.h"
 
+#include "user_data_paths.h"
+
 #include <Windows.h>
 
 #include <algorithm>
@@ -192,13 +194,7 @@ std::size_t TypingStatsStore::CountCharacters(const std::wstring& text) noexcept
 }
 
 std::wstring TypingStatsStore::DefaultPath() {
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (length == 0) return {};
-    std::wstring root(static_cast<std::size_t>(length), L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", root.data(), length);
-    if (written == 0 || written >= length) return {};
-    root.resize(written);
-    return root + L"\\CaishenPinyin\\data\\typing_stats.txt";
+    return CaishenUserDataPath(L"data\\typing_stats.txt");
 }
 
 }  // namespace shuru

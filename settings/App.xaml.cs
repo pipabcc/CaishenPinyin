@@ -15,6 +15,7 @@ public partial class App : Application
 
     private Mutex? clipboardMonitorMutex_;
     private bool ownsClipboardMonitor_;
+    private UiRequestWatcher? uiRequestWatcher_;
 
     public App()
     {
@@ -36,6 +37,10 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 沙箱宿主（开始菜单搜索框）自己改不了用户数据目录的 DACL，由这里
+        // 与 IME 宿主共同兜底，确保皮肤、设置与统计在沙箱中同样可读。
+        AppContainerAccess.EnsureUserData();
 
         TextPasteRequestStore.CleanupExpired();
 
@@ -118,6 +123,8 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        uiRequestWatcher_?.Dispose();
+        uiRequestWatcher_ = null;
         if (ownsClipboardMonitor_)
         {
             try
@@ -153,6 +160,9 @@ public partial class App : Application
             ownsClipboardMonitor_ = true;
             if (!ClipboardMonitor.StartListening())
                 throw new InvalidOperationException("无法注册系统剪贴板监听器");
+            // 沙箱宿主打不开设置窗口，由这个常驻进程代为响应其请求文件。
+            uiRequestWatcher_ = new UiRequestWatcher();
+            uiRequestWatcher_.Start();
         }
         catch (Exception ex)
         {

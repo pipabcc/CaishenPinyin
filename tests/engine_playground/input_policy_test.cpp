@@ -14,28 +14,40 @@ int main() {
     CHECK(IsRecoverableAsciiLetter(L'Z'));
     CHECK(!IsRecoverableAsciiLetter(L'1'));
     CHECK(!IsRecoverableAsciiLetter(L'中'));
+    CHECK(IsRecoverableAsciiRun(L"ni", L'n'));
+    CHECK(!IsRecoverableAsciiRun(L"ni1", L'n'));
+    CHECK(!IsRecoverableAsciiRun(L"ni", L'h'));
+    const std::wstring maximum_recovery_text(
+        kFirstKeyRecoveryMaximumTextLength, L'a');
+    CHECK(IsRecoverableAsciiRun(maximum_recovery_text, L'a'));
+    CHECK(!IsRecoverableAsciiRun(
+        maximum_recovery_text + L'a', L'a'));
 
     FirstKeyRecoverySignals recovery {
-        1500, 1000, 1200,
+        1500, 1000, true,
         true, false, true, false, true, true, false, false};
     CHECK(EvaluateFirstKeyRecovery(recovery) ==
           FirstKeyRecoveryDecision::Eligible);
-    recovery.now = recovery.copy_tick + kFirstKeyRecoveryWindowMs;
+    recovery.now = recovery.trigger_tick + kFirstKeyRecoveryWindowMs;
     CHECK(EvaluateFirstKeyRecovery(recovery) ==
           FirstKeyRecoveryDecision::Eligible);
     recovery.now = 1500;
-    recovery.copy_tick = 0;
+    recovery.trigger_tick = 0;
     CHECK(EvaluateFirstKeyRecovery(recovery) ==
           FirstKeyRecoveryDecision::CopyNotObserved);
-    recovery.copy_tick = 1000;
+    recovery.trigger_tick = 1000;
     recovery.now = 1000 + kFirstKeyRecoveryWindowMs + 1;
     CHECK(EvaluateFirstKeyRecovery(recovery) ==
           FirstKeyRecoveryDecision::CopyExpired);
     recovery.now = 1500;
-    recovery.focus_tick = 999;
+    recovery.copy_scope_matches = false;
     CHECK(EvaluateFirstKeyRecovery(recovery) ==
-          FirstKeyRecoveryDecision::FocusNotRebuilt);
-    recovery.focus_tick = 1200;
+          FirstKeyRecoveryDecision::CopyScopeChanged);
+    // 复制上下文仍一致时不依赖额外的焦点重建通知。
+    recovery.copy_scope_matches = true;
+    recovery.trigger_tick = 1200;
+    CHECK(EvaluateFirstKeyRecovery(recovery) ==
+          FirstKeyRecoveryDecision::Eligible);
     recovery.chinese_mode = false;
     CHECK(EvaluateFirstKeyRecovery(recovery) ==
           FirstKeyRecoveryDecision::EnglishMode);
@@ -206,6 +218,19 @@ int main() {
     ShortcutModifierState modifiers;
     ShortcutModifierPhysicalState physical;
     CHECK(!modifiers.IsActive(physical));
+    const ShortcutModifierPhysicalState queued_control {
+        true, true, false, false, false, false};
+    const ShortcutModifierPhysicalState asynchronous_control {
+        true, false, false, false, false, false};
+    const auto confirmed_control = ConfirmShortcutModifierPhysicalState(
+        queued_control, asynchronous_control);
+    CHECK(confirmed_control.left_control &&
+          !confirmed_control.right_control);
+    const auto released_after_focus_switch =
+        ConfirmShortcutModifierPhysicalState(
+            ShortcutModifierPhysicalState {}, asynchronous_control);
+    CHECK(!released_after_focus_switch.left_control &&
+          !released_after_focus_switch.right_control);
     modifiers.KeyDown(VK_CONTROL);
     physical.left_control = true;
     CHECK(modifiers.IsActive(physical));
@@ -347,15 +372,19 @@ int main() {
     const RECT valid_rect {10, 20, 11, 40};
     const RECT flat_rect {10, 20, 11, 20};
     const RECT host_rect {100, 100, 900, 700};
+    const RECT point_host_rect {346, 266, 346, 266};
     CHECK(IsReliableCandidateRect(valid_rect));
     CHECK(!IsReliableCandidateRect(valid_rect, true));
     CHECK(!IsReliableCandidateRect(flat_rect));
+    CHECK(IsUsableCandidateHostRect(host_rect));
+    CHECK(!IsUsableCandidateHostRect(point_host_rect));
     CHECK(IsCandidateRectPlausibleForHost(
         RECT {120, 130, 121, 150}, host_rect));
     CHECK(IsCandidateRectPlausibleForHost(
         RECT {50, 80, 51, 100}, host_rect));
     CHECK(!IsCandidateRectPlausibleForHost(valid_rect, host_rect));
     CHECK(!IsCandidateRectPlausibleForHost(flat_rect, host_rect));
+    CHECK(!IsCandidateRectPlausibleForHost(valid_rect, point_host_rect));
     CHECK(GetCandidatePagingDirection(VK_PRIOR, true) == CandidatePagingDirection::Previous);
     CHECK(GetCandidatePagingDirection(VK_NEXT, false) == CandidatePagingDirection::Next);
     CHECK(GetCandidatePagingDirection(VK_OEM_COMMA, false) == CandidatePagingDirection::None);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "english_candidate_position.h"
+
 #include <string>
 
 namespace shuru {
@@ -18,6 +20,9 @@ struct RuntimeConfig {
     bool content_logging_enabled = false;
     bool full_width_punctuation = true;
     bool english_default = false;
+    bool english_mix_enabled = true;
+    EnglishCandidatePosition english_candidate_position =
+        EnglishCandidatePosition::Middle;
     bool fuzzy_enabled = true;
     bool fuzzy_initials = true;
     bool fuzzy_finals = true;

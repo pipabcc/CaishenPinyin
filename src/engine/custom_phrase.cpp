@@ -1,5 +1,7 @@
 #include "custom_phrase.h"
 
+#include "../common/user_data_paths.h"
+
 #include "../common/com_utils.h"
 
 #include <Windows.h>
@@ -122,16 +124,9 @@ std::vector<CustomPhraseEntry> CustomPhraseDictionary::LookupExact(const std::st
 }
 
 std::wstring GetCustomPhrasePath(const std::wstring& fallback_directory) {
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (length != 0) {
-        std::wstring local_app_data(static_cast<std::size_t>(length), L'\0');
-        const DWORD written = GetEnvironmentVariableW(
-            L"LOCALAPPDATA", local_app_data.data(), length);
-        if (written != 0 && written < length) {
-            local_app_data.resize(written);
-            return local_app_data + L"\\CaishenPinyin\\data\\lexicon\\custom_phrases.txt";
-        }
-    }
+    const std::wstring path = CaishenUserDataPath(
+        L"data\\lexicon\\custom_phrases.txt");
+    if (!path.empty()) return path;
     return fallback_directory.empty()
         ? std::wstring(L"custom_phrases.txt")
         : fallback_directory + L"\\custom_phrases.txt";

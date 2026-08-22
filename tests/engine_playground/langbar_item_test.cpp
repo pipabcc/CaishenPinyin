@@ -1,9 +1,21 @@
 #include "ime/langbar_item.h"
 #include "common/guid_def.h"
 
+#include <ctffunc.h>
 #include <ctfutb.h>
-#include <cassert>
+#include <cstdint>
+#include <cstdlib>
 #include <iostream>
+#include <vector>
+
+#define CHECK(condition)                                                       \
+    do {                                                                       \
+        if (!(condition)) {                                                    \
+            std::cerr << "[FAIL] " #condition " at line " << __LINE__        \
+                      << std::endl;                                            \
+            std::exit(1);                                                      \
+        }                                                                      \
+    } while (false)
 
 namespace {
 
@@ -39,33 +51,71 @@ public:
     int update_count_ = 0;
 };
 
+bool HasTransparentAndVisiblePixels(HICON icon) {
+    ICONINFO info {};
+    if (icon == nullptr || !GetIconInfo(icon, &info)) return false;
+
+    BITMAP bitmap {};
+    bool valid = info.hbmColor != nullptr &&
+        GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap) == sizeof(bitmap) &&
+        bitmap.bmWidth > 0 && bitmap.bmHeight > 0;
+    bool transparent = false;
+    bool visible = false;
+    if (valid) {
+        BITMAPINFO dib {};
+        dib.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        dib.bmiHeader.biWidth = bitmap.bmWidth;
+        dib.bmiHeader.biHeight = -bitmap.bmHeight;
+        dib.bmiHeader.biPlanes = 1;
+        dib.bmiHeader.biBitCount = 32;
+        dib.bmiHeader.biCompression = BI_RGB;
+        std::vector<std::uint32_t> pixels(
+            static_cast<size_t>(bitmap.bmWidth) * bitmap.bmHeight);
+        HDC dc = GetDC(nullptr);
+        valid = dc != nullptr && GetDIBits(
+            dc, info.hbmColor, 0, static_cast<UINT>(bitmap.bmHeight),
+            pixels.data(), &dib, DIB_RGB_COLORS) != 0;
+        if (dc != nullptr) ReleaseDC(nullptr, dc);
+        if (valid) {
+            for (const std::uint32_t pixel : pixels) {
+                const BYTE alpha = static_cast<BYTE>(pixel >> 24);
+                transparent = transparent || alpha == 0;
+                visible = visible || alpha != 0;
+            }
+        }
+    }
+    if (info.hbmColor != nullptr) DeleteObject(info.hbmColor);
+    if (info.hbmMask != nullptr) DeleteObject(info.hbmMask);
+    return valid && transparent && visible;
+}
+
 void TestQueryInterfaceAndRefCounting() {
     auto* item = new shuru::LangBarItemButton();
-    assert(item != nullptr);
+    CHECK(item != nullptr);
 
     IUnknown* punk = nullptr;
     HRESULT hr = item->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&punk));
-    assert(SUCCEEDED(hr) && punk != nullptr);
+    CHECK(SUCCEEDED(hr) && punk != nullptr);
     punk->Release();
 
     ITfLangBarItem* plbi = nullptr;
     hr = item->QueryInterface(IID_ITfLangBarItem, reinterpret_cast<void**>(&plbi));
-    assert(SUCCEEDED(hr) && plbi != nullptr);
+    CHECK(SUCCEEDED(hr) && plbi != nullptr);
     plbi->Release();
 
     ITfLangBarItemButton* pbtn = nullptr;
     hr = item->QueryInterface(IID_ITfLangBarItemButton, reinterpret_cast<void**>(&pbtn));
-    assert(SUCCEEDED(hr) && pbtn != nullptr);
+    CHECK(SUCCEEDED(hr) && pbtn != nullptr);
     pbtn->Release();
 
     ITfSource* psource = nullptr;
     hr = item->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&psource));
-    assert(SUCCEEDED(hr) && psource != nullptr);
+    CHECK(SUCCEEDED(hr) && psource != nullptr);
     psource->Release();
 
     IUnknown* pbad = nullptr;
     hr = item->QueryInterface(IID_ITfTextInputProcessor, reinterpret_cast<void**>(&pbad));
-    assert(FAILED(hr) && pbad == nullptr);
+    CHECK(FAILED(hr) && pbad == nullptr);
 
     item->Release();
     std::cout << "[PASS] TestQueryInterfaceAndRefCounting" << std::endl;
@@ -76,20 +126,21 @@ void TestGetInfoAndStatus() {
 
     TF_LANGBARITEMINFO info {};
     HRESULT hr = item->GetInfo(&info);
-    assert(SUCCEEDED(hr));
-    assert(IsEqualGUID(info.clsidService, CLSID_ShuruTextService));
-    assert(IsEqualGUID(info.guidItem, GUID_ShuruLangBarItem_Mode));
-    assert((info.dwStyle & TF_LBI_STYLE_BTN_BUTTON) != 0);
-    assert((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY) != 0);
-    assert(wcslen(info.szDescription) > 0);
+    CHECK(SUCCEEDED(hr));
+    CHECK(IsEqualGUID(info.clsidService, CLSID_ShuruTextService));
+    CHECK(IsEqualGUID(info.guidItem, GUID_LBI_INPUTMODE));
+    CHECK((info.dwStyle & TF_LBI_STYLE_BTN_BUTTON) != 0);
+    CHECK((info.dwStyle & TF_LBI_STYLE_SHOWNINTRAY) != 0);
+    CHECK((info.dwStyle & TF_LBI_STYLE_TEXTCOLORICON) != 0);
+    CHECK(wcslen(info.szDescription) > 0);
 
     DWORD status = 999;
     hr = item->GetStatus(&status);
-    assert(SUCCEEDED(hr));
-    assert(status == 0);
+    CHECK(SUCCEEDED(hr));
+    CHECK(status == 0);
 
     hr = item->Show(TRUE);
-    assert(SUCCEEDED(hr));
+    CHECK(SUCCEEDED(hr));
 
     item->Release();
     std::cout << "[PASS] TestGetInfoAndStatus" << std::endl;
@@ -100,28 +151,28 @@ void TestTextAndTooltip() {
 
     BSTR text = nullptr;
     HRESULT hr = item->GetText(&text);
-    assert(SUCCEEDED(hr) && text != nullptr);
-    assert(wcscmp(text, L"中") == 0);
+    CHECK(SUCCEEDED(hr) && text != nullptr);
+    CHECK(wcscmp(text, L"中") == 0);
     SysFreeString(text);
 
     BSTR tip = nullptr;
     hr = item->GetTooltipString(&tip);
-    assert(SUCCEEDED(hr) && tip != nullptr);
-    assert(wcsstr(tip, L"中文模式") != nullptr);
+    CHECK(SUCCEEDED(hr) && tip != nullptr);
+    CHECK(wcsstr(tip, L"中文模式") != nullptr);
     SysFreeString(tip);
 
     item->SetEnglishMode(true);
 
     text = nullptr;
     hr = item->GetText(&text);
-    assert(SUCCEEDED(hr) && text != nullptr);
-    assert(wcscmp(text, L"英") == 0);
+    CHECK(SUCCEEDED(hr) && text != nullptr);
+    CHECK(wcscmp(text, L"英") == 0);
     SysFreeString(text);
 
     tip = nullptr;
     hr = item->GetTooltipString(&tip);
-    assert(SUCCEEDED(hr) && tip != nullptr);
-    assert(wcsstr(tip, L"英文模式") != nullptr);
+    CHECK(SUCCEEDED(hr) && tip != nullptr);
+    CHECK(wcsstr(tip, L"英文模式") != nullptr);
     SysFreeString(tip);
 
     item->Release();
@@ -133,17 +184,18 @@ void TestIcons() {
 
     HICON icon_zh = nullptr;
     HRESULT hr = item->GetIcon(&icon_zh);
-    assert(SUCCEEDED(hr) && icon_zh != nullptr);
+    CHECK(SUCCEEDED(hr) && icon_zh != nullptr);
+    CHECK(HasTransparentAndVisiblePixels(icon_zh));
     DestroyIcon(icon_zh);
 
     item->SetEnglishMode(true);
     HICON icon_en = nullptr;
     hr = item->GetIcon(&icon_en);
-    assert(SUCCEEDED(hr) && icon_en != nullptr);
+    CHECK(SUCCEEDED(hr) && icon_en != nullptr);
     DestroyIcon(icon_en);
 
     HICON custom_sz = shuru::LangBarItemButton::CreateModeIcon(false, 32);
-    assert(custom_sz != nullptr);
+    CHECK(custom_sz != nullptr);
     DestroyIcon(custom_sz);
 
     item->Release();
@@ -156,27 +208,28 @@ void TestSinkNotifications() {
 
     DWORD cookie = 0;
     HRESULT hr = item->AdviseSink(IID_ITfLangBarItemSink, &sink, &cookie);
-    assert(SUCCEEDED(hr) && cookie != 0);
+    CHECK(SUCCEEDED(hr) && cookie != 0);
 
-    assert(sink.update_count_ == 0);
+    CHECK(sink.update_count_ == 0);
 
     item->SetEnglishMode(true);
-    assert(sink.update_count_ == 1);
-    assert((sink.last_update_flags_ & TF_LBI_ICON) != 0);
-    assert((sink.last_update_flags_ & TF_LBI_TOOLTIP) != 0);
+    CHECK(sink.update_count_ == 1);
+    CHECK((sink.last_update_flags_ & TF_LBI_ICON) != 0);
+    CHECK((sink.last_update_flags_ & TF_LBI_TOOLTIP) != 0);
+    CHECK((sink.last_update_flags_ & TF_LBI_TEXT) != 0);
 
     // 相同模式不重复触发
     item->SetEnglishMode(true);
-    assert(sink.update_count_ == 1);
+    CHECK(sink.update_count_ == 1);
 
     item->SetEnglishMode(false);
-    assert(sink.update_count_ == 2);
+    CHECK(sink.update_count_ == 2);
 
     hr = item->UnadviseSink(cookie);
-    assert(SUCCEEDED(hr));
+    CHECK(SUCCEEDED(hr));
 
     item->SetEnglishMode(true);
-    assert(sink.update_count_ == 2); // 已经 Unadvise，不应再递增
+    CHECK(sink.update_count_ == 2); // 已经 Unadvise，不应再递增
 
     item->Release();
     std::cout << "[PASS] TestSinkNotifications" << std::endl;
@@ -192,14 +245,14 @@ void TestClickToggle() {
     POINT pt {0, 0};
     RECT rc {0, 0, 16, 16};
     HRESULT hr = item->OnClick(TF_LBI_CLK_LEFT, pt, &rc);
-    assert(SUCCEEDED(hr));
-    assert(toggled);
+    CHECK(SUCCEEDED(hr));
+    CHECK(toggled);
 
     item->Detach();
     toggled = false;
     hr = item->OnClick(TF_LBI_CLK_LEFT, pt, &rc);
-    assert(SUCCEEDED(hr));
-    assert(!toggled);
+    CHECK(SUCCEEDED(hr));
+    CHECK(!toggled);
 
     item->Release();
     std::cout << "[PASS] TestClickToggle" << std::endl;

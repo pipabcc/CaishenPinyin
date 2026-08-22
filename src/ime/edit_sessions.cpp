@@ -1,12 +1,15 @@
 #include "edit_sessions.h"
 #include "display_attribute.h"
+#include "first_key_recovery.h"
 
 #include "../common/com_utils.h"
 #include "../common/guid_def.h"
 #include "../common/logger.h"
 
+#include <array>
 #include <new>
 #include <InputScope.h>
+#include <utility>
 
 namespace shuru {
 namespace {
@@ -94,14 +97,26 @@ HRESULT ReadContextInputScopePrivacy(
 
 // -------- InsertTextEditSession --------
 
-InsertTextEditSession::InsertTextEditSession(ITfContext* context, TfClientId client_id, ITfComposition** composition, const std::wstring& text)
-    : context_(context), client_id_(client_id), composition_(composition), text_(text) {
+InsertTextEditSession::InsertTextEditSession(
+    ITfContext* context,
+    TfClientId client_id,
+    ITfComposition** composition,
+    const std::wstring& text,
+    ITfRange* recovered_composition_start,
+    const std::wstring& expected_composition_text)
+    : context_(context), client_id_(client_id), composition_(composition),
+      text_(text), recovered_composition_start_(recovered_composition_start),
+      expected_composition_text_(expected_composition_text) {
     if (context_) {
         context_->AddRef();
+    }
+    if (recovered_composition_start_) {
+        recovered_composition_start_->AddRef();
     }
 }
 
 InsertTextEditSession::~InsertTextEditSession() {
+    SafeRelease(&recovered_composition_start_);
     SafeRelease(&context_);
 }
 
@@ -141,6 +156,91 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
         ITfRange* range = nullptr;
         HRESULT hr = (*composition_)->GetRange(&range);
         if (SUCCEEDED(hr) && range != nullptr) {
+            if (recovered_composition_start_ != nullptr) {
+                if (expected_composition_text_.empty()) {
+                    range->Release();
+                    return E_UNEXPECTED;
+                }
+
+                // TSF 禁止活动组合修改其范围之外的文本。WinUI 若在输入期间
+                // 把组合起点漂到第二个字母，必须在当前提交写会话内先恢复
+                // composition 边界，再立即完成校验和替换，避免新的消息轮次
+                // 让宿主再次移动起点。
+                ITfRange* composition_start = nullptr;
+                hr = recovered_composition_start_->Clone(&composition_start);
+                if (SUCCEEDED(hr) && composition_start != nullptr) {
+                    hr = composition_start->Collapse(ec, TF_ANCHOR_START);
+                }
+                if (SUCCEEDED(hr)) {
+                    hr = (*composition_)->ShiftStart(ec, composition_start);
+                }
+                SafeRelease(&composition_start);
+                if (FAILED(hr)) {
+                    range->Release();
+                    return hr;
+                }
+                range->Release();
+                range = nullptr;
+                hr = (*composition_)->GetRange(&range);
+                if (FAILED(hr) || range == nullptr) {
+                    SafeRelease(&range);
+                    return FAILED(hr) ? hr : E_FAIL;
+                }
+
+                ITfRange* recovered_range = nullptr;
+                hr = recovered_composition_start_->Clone(&recovered_range);
+                if (SUCCEEDED(hr) && recovered_range != nullptr) {
+                    hr = recovered_range->Collapse(ec, TF_ANCHOR_START);
+                }
+                LONG start_before_end = 1;
+                if (SUCCEEDED(hr)) {
+                    hr = recovered_range->CompareStart(
+                        ec, range, TF_ANCHOR_END, &start_before_end);
+                    if (SUCCEEDED(hr) && start_before_end > 0) {
+                        hr = TF_E_INVALIDPOS;
+                    }
+                }
+                if (SUCCEEDED(hr)) {
+                    hr = recovered_range->ShiftEndToRange(
+                        ec, range, TF_ANCHOR_END);
+                }
+
+                bool exact_text = false;
+                if (SUCCEEDED(hr)) {
+                    ITfRange* read_range = nullptr;
+                    hr = recovered_range->Clone(&read_range);
+                    if (SUCCEEDED(hr) && read_range != nullptr) {
+                        std::wstring actual(
+                            expected_composition_text_.size() + 1, L'\0');
+                        ULONG actual_length = 0;
+                        hr = read_range->GetText(
+                            ec, TF_TF_MOVESTART, actual.data(),
+                            static_cast<ULONG>(actual.size()), &actual_length);
+                        BOOL exhausted = FALSE;
+                        if (SUCCEEDED(hr)) {
+                            hr = read_range->IsEmpty(ec, &exhausted);
+                        }
+                        if (SUCCEEDED(hr)) {
+                            actual.resize(actual_length);
+                            exact_text = exhausted &&
+                                actual == expected_composition_text_;
+                        }
+                        read_range->Release();
+                    }
+                }
+                if (FAILED(hr) || !exact_text) {
+                    SHURU_LOG_WARN(
+                        "recovered composition range rejected: hr=0x%08X exact=%d",
+                        hr, exact_text ? 1 : 0);
+                    SafeRelease(&recovered_range);
+                    range->Release();
+                    return FAILED(hr) ? hr : E_FAIL;
+                }
+
+                range->Release();
+                range = recovered_range;
+            }
+
             hr = range->SetText(ec, 0, text_.c_str(), static_cast<LONG>(text_.size()));
             if (SUCCEEDED(hr)) {
                 SetCaretToRangeEnd(context_, ec, range);
@@ -285,11 +385,9 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
 
     ApplyCompositionDisplayAttribute(context_, ec, range, display_atom_);
 
-    // 只在组合创建时设置一次选择端点。每个字母都调用 SetSelection 会让
-    // 部分宿主先按旧布局通知一次，再按新布局通知一次，直接造成闪跳。
-    if (move_caret_to_end_) {
-        SetCaretToRangeEnd(context_, ec, range);
-    }
+    // 每次写入或更新组合文本后，均将光标选区折叠到组合末端，确保宿主（记事本、RichEdit等）
+    // 光标紧随拼音末尾，避免光标停留在最左端。
+    SetCaretToRangeEnd(context_, ec, range);
 
     range->Release();
     return S_OK;
@@ -303,11 +401,13 @@ AdoptExistingTextEditSession::AdoptExistingTextEditSession(
     ITfRange* range,
     wchar_t expected_character,
     ITfComposition** composition,
+    ITfRange** recovered_composition_start,
     TfGuidAtom display_atom,
     Preflight preflight,
     Completion completion)
     : context_(context), sink_(sink), range_(range),
       expected_character_(expected_character), composition_(composition),
+      recovered_composition_start_(recovered_composition_start),
       display_atom_(display_atom), preflight_(std::move(preflight)),
       completion_(std::move(completion)) {
     if (context_ != nullptr) context_->AddRef();
@@ -345,18 +445,24 @@ STDMETHODIMP_(ULONG) AdoptExistingTextEditSession::Release() {
 }
 
 HRESULT AdoptExistingTextEditSession::Finish(
-    ExistingTextCompositionResult result, HRESULT hr) {
+    ExistingTextCompositionResult result,
+    HRESULT hr,
+    std::wstring adopted_text) {
     if (!completed_) {
         completed_ = true;
-        if (completion_) completion_(result);
+        if (completion_) completion_(result, std::move(adopted_text));
     }
     return hr;
 }
 
 STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
     if (context_ == nullptr || sink_ == nullptr || range_ == nullptr ||
-        composition_ == nullptr) {
+        composition_ == nullptr || recovered_composition_start_ == nullptr) {
         return Finish(ExistingTextCompositionResult::Failed, E_INVALIDARG);
+    }
+    if (*recovered_composition_start_ != nullptr) {
+        return Finish(
+            ExistingTextCompositionResult::CompositionActive, E_UNEXPECTED);
     }
     if (preflight_ && !preflight_()) {
         return Finish(ExistingTextCompositionResult::StaleRequest, S_FALSE);
@@ -375,47 +481,107 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
             E_ACCESSDENIED);
     }
 
-    ITfRange* read_range = nullptr;
-    HRESULT hr = range_->Clone(&read_range);
-    if (FAILED(hr) || read_range == nullptr) {
-        SafeRelease(&read_range);
+    // OnEndEdit 只能申请异步写会话。会话真正执行前，宿主可能又把后续
+    // 字母写到了首字母之后，因此以原始范围作为安全基线，再尝试扩展到
+    // 当前折叠光标。即使宿主的选择端暂时落在首字母之前，也不能把原始
+    // 范围缩成零长度，否则会出现“输入法有组合状态但首字母仍留在正文”。
+    ITfRange* adoption_range = nullptr;
+    HRESULT hr = range_->Clone(&adoption_range);
+    if (FAILED(hr) || adoption_range == nullptr) {
+        SafeRelease(&adoption_range);
         return Finish(ExistingTextCompositionResult::Failed,
                       FAILED(hr) ? hr : E_FAIL);
     }
-    wchar_t text[2] = {};
-    ULONG text_length = 0;
-    hr = read_range->GetText(
-        ec, TF_TF_MOVESTART, text, ARRAYSIZE(text), &text_length);
-    read_range->Release();
-    if (FAILED(hr)) {
-        return Finish(ExistingTextCompositionResult::Failed, hr);
-    }
-    if (text_length != 1 || text[0] != expected_character_) {
+
+    const auto read_recoverable_text =
+        [this, ec](ITfRange* source, std::wstring* output) {
+            if (source == nullptr || output == nullptr) return false;
+            ITfRange* read_range = nullptr;
+            if (FAILED(source->Clone(&read_range)) || read_range == nullptr) {
+                SafeRelease(&read_range);
+                return false;
+            }
+            std::array<wchar_t, kFirstKeyRecoveryMaximumTextLength + 1> text {};
+            ULONG text_length = 0;
+            const HRESULT text_hr = read_range->GetText(
+                ec, TF_TF_MOVESTART, text.data(),
+                static_cast<ULONG>(text.size()), &text_length);
+            BOOL exhausted = FALSE;
+            const HRESULT exhausted_hr = SUCCEEDED(text_hr)
+                ? read_range->IsEmpty(ec, &exhausted) : text_hr;
+            read_range->Release();
+            if (FAILED(text_hr) || FAILED(exhausted_hr) || !exhausted) {
+                return false;
+            }
+            std::wstring candidate(text.data(), text_length);
+            if (!IsRecoverableAsciiRun(candidate, expected_character_)) {
+                return false;
+            }
+            *output = std::move(candidate);
+            return true;
+        };
+
+    std::wstring adopted_text;
+    if (!read_recoverable_text(adoption_range, &adopted_text)) {
+        adoption_range->Release();
         return Finish(ExistingTextCompositionResult::RangeChanged, S_FALSE);
     }
 
     TF_SELECTION selection {};
     ULONG fetched = 0;
-    hr = context_->GetSelection(
+    const HRESULT selection_hr = context_->GetSelection(
         ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-    if (FAILED(hr) || fetched != 1 || selection.range == nullptr) {
-        SafeRelease(&selection.range);
+    if (SUCCEEDED(selection_hr) && fetched == 1 && selection.range != nullptr) {
+        BOOL selection_empty = FALSE;
+        const HRESULT empty_hr = selection.range->IsEmpty(ec, &selection_empty);
+        if (SUCCEEDED(empty_hr) && selection_empty) {
+            LONG start_comparison = 1;
+            if (SUCCEEDED(adoption_range->CompareStart(
+                    ec, selection.range, TF_ANCHOR_START, &start_comparison)) &&
+                start_comparison <= 0) {
+                ITfRange* extended_range = nullptr;
+                if (SUCCEEDED(adoption_range->Clone(&extended_range)) &&
+                    extended_range != nullptr &&
+                    SUCCEEDED(extended_range->ShiftEndToRange(
+                        ec, selection.range, TF_ANCHOR_START))) {
+                    std::wstring extended_text;
+                    if (read_recoverable_text(
+                            extended_range, &extended_text)) {
+                        adoption_range->Release();
+                        adoption_range = extended_range;
+                        adopted_text = std::move(extended_text);
+                    } else {
+                        extended_range->Release();
+                    }
+                } else {
+                    SafeRelease(&extended_range);
+                }
+            }
+        } else if (SUCCEEDED(empty_hr) && !selection_empty) {
+            selection.range->Release();
+            adoption_range->Release();
+            return Finish(
+                ExistingTextCompositionResult::SelectionChanged, S_FALSE);
+        }
+        selection.range->Release();
+    }
+
+    // 该锚点必须在后续组合文本替换时留在首字母之前。TSF 的后向重力
+    // 保证在锚点位置插入或替换文本后，新文本仍位于锚点之后。
+    ITfRange* recovered_composition_start = nullptr;
+    hr = adoption_range->Clone(&recovered_composition_start);
+    if (SUCCEEDED(hr) && recovered_composition_start != nullptr) {
+        hr = recovered_composition_start->Collapse(ec, TF_ANCHOR_START);
+    }
+    if (SUCCEEDED(hr)) {
+        hr = recovered_composition_start->SetGravity(
+            ec, TF_GRAVITY_BACKWARD, TF_GRAVITY_BACKWARD);
+    }
+    if (FAILED(hr) || recovered_composition_start == nullptr) {
+        SafeRelease(&recovered_composition_start);
+        adoption_range->Release();
         return Finish(ExistingTextCompositionResult::Failed,
                       FAILED(hr) ? hr : E_FAIL);
-    }
-    BOOL selection_empty = FALSE;
-    LONG end_comparison = 1;
-    const HRESULT empty_hr = selection.range->IsEmpty(ec, &selection_empty);
-    const HRESULT compare_hr = range_->CompareEnd(
-        ec, selection.range, TF_ANCHOR_START, &end_comparison);
-    selection.range->Release();
-    if (FAILED(empty_hr) || FAILED(compare_hr)) {
-        return Finish(ExistingTextCompositionResult::Failed,
-                      FAILED(empty_hr) ? empty_hr : compare_hr);
-    }
-    if (!selection_empty || end_comparison != 0) {
-        return Finish(
-            ExistingTextCompositionResult::SelectionChanged, S_FALSE);
     }
 
     ITfContextComposition* context_composition = nullptr;
@@ -423,25 +589,103 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
         IID_ITfContextComposition,
         reinterpret_cast<void**>(&context_composition));
     if (FAILED(hr) || context_composition == nullptr) {
+        recovered_composition_start->Release();
+        adoption_range->Release();
         SafeRelease(&context_composition);
         return Finish(ExistingTextCompositionResult::Failed,
                       FAILED(hr) ? hr : E_NOINTERFACE);
     }
 
     ITfComposition* adopted_composition = nullptr;
-    hr = context_composition->StartComposition(
-        ec, range_, sink_, &adopted_composition);
+    bool took_existing_composition = false;
+    IEnumITfCompositionView* composition_views = nullptr;
+    HRESULT find_hr = context_composition->FindComposition(
+        ec, adoption_range, &composition_views);
+    if (SUCCEEDED(find_hr) && composition_views != nullptr) {
+        ITfCompositionView* existing_view = nullptr;
+        ULONG view_count = 0;
+        const HRESULT next_hr = composition_views->Next(
+            1, &existing_view, &view_count);
+        if (SUCCEEDED(next_hr) && view_count == 1 && existing_view != nullptr) {
+            const HRESULT take_hr = context_composition->TakeOwnership(
+                ec, existing_view, sink_, &adopted_composition);
+            took_existing_composition = SUCCEEDED(take_hr) &&
+                adopted_composition != nullptr;
+            if (!took_existing_composition && FAILED(take_hr)) {
+                hr = take_hr;
+            }
+        }
+        SafeRelease(&existing_view);
+        composition_views->Release();
+    }
+    if (!took_existing_composition) {
+        hr = context_composition->StartComposition(
+            ec, adoption_range, sink_, &adopted_composition);
+    }
     context_composition->Release();
     if (FAILED(hr) || adopted_composition == nullptr) {
+        recovered_composition_start->Release();
+        adoption_range->Release();
         SafeRelease(&adopted_composition);
         return Finish(ExistingTextCompositionResult::Failed,
                       FAILED(hr) ? hr : E_FAIL);
     }
 
     *composition_ = adopted_composition;
-    ApplyCompositionDisplayAttribute(context_, ec, range_, display_atom_);
-    SetCaretToRangeEnd(context_, ec, range_);
-    return Finish(ExistingTextCompositionResult::Adopted, S_OK);
+    ITfRange* composition_range = nullptr;
+    hr = adopted_composition->GetRange(&composition_range);
+    if (FAILED(hr) || composition_range == nullptr) {
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        adopted_composition->EndComposition(ec);
+        adopted_composition->Release();
+        *composition_ = nullptr;
+        SafeRelease(&composition_range);
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(hr) ? hr : E_FAIL);
+    }
+    // 某些 WinUI 宿主会在 StartComposition 返回时把组合范围折叠到
+    // 当前插入点。必须通过 ITfComposition 自身移动边界；只移动
+    // GetRange 返回的快照不会更新组合对象，空格提交时首字母仍会残留。
+    ITfRange* composition_start = nullptr;
+    ITfRange* composition_end = nullptr;
+    HRESULT boundary_hr = adoption_range->Clone(&composition_start);
+    if (SUCCEEDED(boundary_hr) && composition_start != nullptr) {
+        boundary_hr = composition_start->Collapse(ec, TF_ANCHOR_START);
+    }
+    if (SUCCEEDED(boundary_hr)) {
+        boundary_hr = adoption_range->Clone(&composition_end);
+        if (SUCCEEDED(boundary_hr) && composition_end != nullptr) {
+            boundary_hr = composition_end->Collapse(ec, TF_ANCHOR_END);
+        }
+    }
+    const HRESULT start_shift_hr = SUCCEEDED(boundary_hr)
+        ? adopted_composition->ShiftStart(ec, composition_start)
+        : boundary_hr;
+    const HRESULT end_shift_hr = SUCCEEDED(start_shift_hr)
+        ? adopted_composition->ShiftEnd(ec, composition_end)
+        : start_shift_hr;
+    SafeRelease(&composition_start);
+    SafeRelease(&composition_end);
+    if (FAILED(end_shift_hr)) {
+        recovered_composition_start->Release();
+        composition_range->Release();
+        adoption_range->Release();
+        adopted_composition->EndComposition(ec);
+        adopted_composition->Release();
+        *composition_ = nullptr;
+        return Finish(ExistingTextCompositionResult::Failed, end_shift_hr);
+    }
+    ApplyCompositionDisplayAttribute(
+        context_, ec, composition_range, display_atom_);
+    SetCaretToRangeEnd(context_, ec, composition_range);
+    *recovered_composition_start_ = recovered_composition_start;
+    composition_range->Release();
+    adoption_range->Release();
+    return Finish(
+        ExistingTextCompositionResult::Adopted,
+        S_OK,
+        std::move(adopted_text));
 }
 
 // -------- EndCompositionEditSession --------

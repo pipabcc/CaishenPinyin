@@ -285,8 +285,7 @@ LRESULT StatusWindow::OnLButtonUp(int x, int /*y*/) {
     } else if (x < x3) {
         if (on_toggle_keyboard_) on_toggle_keyboard_();
     } else if (!LaunchSettings()) {
-        MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
-                    L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        ReportSettingsLaunchFailure(hwnd_);
     }
     return 0;
 }
@@ -308,8 +307,7 @@ LRESULT StatusWindow::OnRButtonUp(int x, int y) {
     PostMessageW(hwnd_, WM_NULL, 0, 0);
     DestroyMenu(menu);
     if (command == 1 && !LaunchSettings()) {
-        MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请检查安装目录或开发构建目录。",
-                    L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        ReportSettingsLaunchFailure(hwnd_);
     }
     return 0;
 }
@@ -521,8 +519,7 @@ LRESULT StatusWindow::OnTrayIconMsg(LPARAM lparam) {
     const UINT event = LOWORD(lparam);
     if (event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK) {
         if (!LaunchSettings()) {
-            MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
-                        L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+            ReportSettingsLaunchFailure(hwnd_);
         }
     } else if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
         HMENU menu = CreatePopupMenu();
@@ -537,8 +534,7 @@ LRESULT StatusWindow::OnTrayIconMsg(LPARAM lparam) {
         PostMessageW(hwnd_, WM_NULL, 0, 0);
         DestroyMenu(menu);
         if (cmd == 1 && !LaunchSettings()) {
-            MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。",
-                        L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+            ReportSettingsLaunchFailure(hwnd_);
         }
     }
     return 0;

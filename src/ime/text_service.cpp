@@ -15,14 +15,17 @@
 #include "globals.h"
 #include "../common/com_utils.h"
 #include "../common/logger.h"
+#include "../common/private_acl.h"
 #include "../common/runtime_config.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <ctffunc.h>
 #include <cwchar>
 #include <imm.h>
+#include <limits>
 
 namespace shuru {
 
@@ -41,7 +44,7 @@ constexpr unsigned kCandidatePositionMaximumAttempts = 6;
 // 物理键态只提供状态机首次观察时的兜底；显式的 TSF KeyDown/KeyUp
 // 决定修饰键世代，避免线程队列残留的 Ctrl/Alt/Win 状态污染下一键。
 ShortcutModifierPhysicalState ReadShortcutModifierPhysicalState() {
-    return ShortcutModifierPhysicalState {
+    const ShortcutModifierPhysicalState asynchronous {
         (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0,
         (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0,
         (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0,
@@ -49,6 +52,21 @@ ShortcutModifierPhysicalState ReadShortcutModifierPhysicalState() {
         (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0,
         (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0,
     };
+    // GetAsyncKeyState 是全局物理键态；跨应用切换时，它可能仍反映复制源
+    // 进程刚释放的快捷键。调用线程的消息键态用于确认当前宿主是否真的把
+    // 该修饰键交给了本线程，二者必须同时成立才算快捷键仍处于活动状态。
+    const bool queued_control =
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool queued_alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const ShortcutModifierPhysicalState queued {
+        queued_control,
+        queued_control,
+        queued_alt,
+        queued_alt,
+        (GetKeyState(VK_LWIN) & 0x8000) != 0,
+        (GetKeyState(VK_RWIN) & 0x8000) != 0,
+    };
+    return ConfirmShortcutModifierPhysicalState(queued, asynchronous);
 }
 
 bool IsCtrlOnlyDown() {
@@ -77,6 +95,13 @@ HWND ActiveContextWindow(ITfContext* context) {
     view->GetWnd(&window);
     view->Release();
     return window;
+}
+
+HWND ActiveContextRootWindow(ITfContext* context) {
+    HWND window = ActiveContextWindow(context);
+    if (window == nullptr) return nullptr;
+    HWND root = GetAncestor(window, GA_ROOT);
+    return root != nullptr ? root : window;
 }
 
 bool HasWindowClass(HWND window, const wchar_t* expected) {
@@ -428,6 +453,9 @@ HRESULT TextService::InitEngine() {
     options.fuzzy_config.initials = config.fuzzy_initials;
     options.fuzzy_config.finals = config.fuzzy_finals;
     options.fuzzy_config.missing_vowel = config.fuzzy_missing_vowel;
+    options.english_mix_enabled = config.english_mix_enabled;
+    options.english_candidate_position = config.english_candidate_position;
+    options.candidate_page_size = static_cast<size_t>(config.candidate_count);
     engine_->SetQueryOptions(options);
     schema_sync_.Initialize(config.shuangpin_xiaohe);
     shuangpin_mode_ = schema_sync_.runtime_shuangpin;
@@ -485,8 +513,9 @@ void TextService::EnsureUiWindows() {
             }
             if (changed) {
                 if (edit_context_ != nullptr) {
-                    (void)SetCompositionString(
+                    const HRESULT hr = SetCompositionString(
                         edit_context_, PinyinToWide(composing_pinyin_));
+                    if (FAILED(hr)) return;
                 }
                 RefreshCandidates();
                 UpdateCandidateWindow(edit_context_);
@@ -517,6 +546,7 @@ void TextService::EnsureUiWindows() {
     }
 }
 
+
 STDMETHODIMP TextService::Activate(ITfThreadMgr* ptim, TfClientId tid) {
     return ActivateEx(ptim, tid, 0);
 }
@@ -526,6 +556,10 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD /
     if (!activation_state_.Empty()) return TF_E_ALREADY_EXISTS;
 
     owner_thread_id_ = GetCurrentThreadId();
+    // 开始菜单搜索框等 AppContainer 宿主读不到默认 ACL 下的用户数据目录，
+    // 会退回内置皮肤并丢失统计与学习结果。沙箱内改不了 DACL，只能由普通
+    // 宿主在这里代为授权；进程内只实际执行一次。
+    EnsureUserDataAppContainerAccess();
     // Settings are process-cached; re-read on every TSF activation so switching away/back
     // applies an atomically replaced settings file without restarting the host process.
     ReloadRuntimeConfig();
@@ -551,6 +585,13 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD /
     key_sink_advised_ = true;
     activation_state_.Add(ActivationResource::KeySink);
 
+    hr = SyncInputModeCompartments();
+    if (FAILED(hr)) {
+        // compartment 是宿主识别当前 TIP 输入状态的标准通道。失败不阻止
+        // 传统宿主继续输入，但必须与可选语言栏初始化彻底解耦。
+        SHURU_LOG_WARN("initial input mode compartments sync failed: 0x%08X", hr);
+    }
+
     ITfDocumentMgr* doc = nullptr;
     hr = thread_mgr_->GetFocus(&doc);
     if (SUCCEEDED(hr) && doc != nullptr) {
@@ -558,6 +599,10 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD /
         doc->Release();
         if (FAILED(hr)) goto failed;
         activation_state_.Add(ActivationResource::TextSink);
+        // 输入法可能在宿主已经获得焦点后才首次激活。此时没有复制事件
+        // 可以作为首键恢复触发器，必须以当前已绑定上下文的激活时刻作为
+        // 短时观察窗口起点，才能接管宿主绕过按键 sink 写入的首字母。
+        ArmFirstKeyRecoveryFocus();
     } else if (FAILED(hr)) {
         goto failed;
     }
@@ -565,6 +610,10 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD /
     hr = InitLangBarItem();
     if (SUCCEEDED(hr)) {
         activation_state_.Add(ActivationResource::LangBarItem);
+    } else {
+        // 语言栏项是桌面状态 UI；某些无 UI TSF 上下文不提供它，
+        // 不应因此阻止核心输入，但必须保留真实失败码。
+        SHURU_LOG_WARN("language bar item unavailable: 0x%08X", hr);
     }
 
     SHURU_LOG_INFO("TextService activated, client_id=%u", static_cast<unsigned>(client_id_));
@@ -674,22 +723,17 @@ HRESULT TextService::UnadviseKeyEventSink() {
     return S_OK;
 }
 
-HRESULT TextService::AdviseTextEditSink(ITfDocumentMgr* doc_mgr) {
-    UnadviseTextEditSink();
-    if (doc_mgr == nullptr) {
+HRESULT TextService::BindEditContext(ITfContext* context) {
+    if (context == edit_context_ && text_edit_cookie_ != TF_INVALID_COOKIE) {
         return S_OK;
     }
-
-    ITfContext* context = nullptr;
-    HRESULT hr = doc_mgr->GetTop(&context);
-    if (FAILED(hr) || context == nullptr) {
-        return hr;
-    }
+    UnadviseTextEditSink();
+    if (context == nullptr) return S_OK;
 
     ITfSource* source = nullptr;
-    hr = context->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source));
+    HRESULT hr = context->QueryInterface(
+        IID_ITfSource, reinterpret_cast<void**>(&source));
     if (FAILED(hr)) {
-        context->Release();
         return hr;
     }
 
@@ -708,10 +752,23 @@ HRESULT TextService::AdviseTextEditSink(ITfDocumentMgr* doc_mgr) {
     source->Release();
     if (SUCCEEDED(hr)) {
         edit_context_ = context;
-    } else {
-        context->Release();
+        edit_context_->AddRef();
     }
     return hr;
+}
+
+HRESULT TextService::AdviseTextEditSink(ITfDocumentMgr* doc_mgr) {
+    if (doc_mgr == nullptr) return BindEditContext(nullptr);
+
+    ITfContext* context = nullptr;
+    const HRESULT hr = doc_mgr->GetTop(&context);
+    if (FAILED(hr) || context == nullptr) {
+        if (context != nullptr) context->Release();
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+    const HRESULT bind_hr = BindEditContext(context);
+    context->Release();
+    return bind_hr;
 }
 
 HRESULT TextService::UnadviseTextEditSink() {
@@ -738,11 +795,8 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* /*pdim*/) { return
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* pdimFocus, ITfDocumentMgr* /*pdimPrevFocus*/) {
     CancelFirstKeyRecovery(false);
-    const std::uint64_t now = GetTickCount64();
-    if (first_key_copy_tick_ != 0 &&
-        now >= first_key_copy_tick_ &&
-        now - first_key_copy_tick_ <= kFirstKeyRecoveryWindowMs) {
-        if (pdimFocus != nullptr) first_key_focus_tick_ = now;
+    if (pdimFocus != nullptr) {
+        ArmFirstKeyRecoveryFocus();
     } else {
         DisarmFirstKeyRecoveryTrigger();
     }
@@ -752,13 +806,11 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* pdimFocus, ITfDocumentMgr* 
     shortcut_modifier_state_.ResetFromPhysical(
         ReadShortcutModifierPhysicalState());
     shortcut_modifier_cache_.Clear();
-    // 文档切换时先结束旧上下文中的组合，避免旧拼音残留到新文档。
-    EndComposition();
-    ClearCompositionState();
-    // 上下文不跨文档：切换后不再基于旧文档的上屏词联想/加权。
-    last_committed_word_.clear();
-    candidate_window_.Hide();
-    AdviseTextEditSink(pdimFocus);
+    ResetForContextTransition();
+    const HRESULT bind_hr = AdviseTextEditSink(pdimFocus);
+    if (FAILED(bind_hr)) {
+        SHURU_LOG_WARN("focus context bind failed: 0x%08X", bind_hr);
+    }
     if (pdimFocus == nullptr) {
         candidate_window_.Hide();
     } else {
@@ -767,17 +819,36 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* pdimFocus, ITfDocumentMgr* 
     return S_OK;
 }
 
-STDMETHODIMP TextService::OnPushContext(ITfContext* /*pic*/) { return S_OK; }
+STDMETHODIMP TextService::OnPushContext(ITfContext* pic) {
+    if (pic == nullptr) return S_OK;
+    CancelFirstKeyRecovery(false);
+    ArmFirstKeyRecoveryFocus();
+    ResetForContextTransition();
+    const HRESULT hr = BindEditContext(pic);
+    if (SUCCEEDED(hr)) {
+        SyncMinttyImmPosition(edit_context_);
+    } else {
+        SHURU_LOG_WARN("pushed context bind failed: 0x%08X", hr);
+    }
+    return S_OK;
+}
 
 STDMETHODIMP TextService::OnPopContext(ITfContext* pic) {
     if (pic == pending_first_key_context_) {
         CancelFirstKeyRecovery(true);
+    }
+    if (pic == edit_context_ || edit_context_ == nullptr) {
+        ResetForContextTransition();
+        if (!RebindFocusedContext()) {
+            SHURU_LOG_WARN("failed to restore top context after pop");
+        }
     }
     return S_OK;
 }
 
 STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     if (fForeground) {
+        if (edit_context_ != nullptr) ArmFirstKeyRecoveryFocus();
         StopShortcutReleasePolling();
         shortcut_modifier_state_.ResetFromPhysical(
             ReadShortcutModifierPhysicalState());
@@ -1069,8 +1140,9 @@ void TextService::StopShortcutReleasePolling() {
 }
 
 void TextService::RecordCopyShortcutForFirstKeyRecovery(
-    WPARAM wparam, bool shortcut_modifier) noexcept {
-    if (wparam != 'C' || !shortcut_modifier) return;
+    ITfContext* context, WPARAM wparam,
+    bool shortcut_modifier) noexcept {
+    if (context == nullptr || wparam != 'C' || !shortcut_modifier) return;
     const ShortcutModifierPhysicalState physical =
         ReadShortcutModifierPhysicalState();
     if (!physical.left_control && !physical.right_control) return;
@@ -1079,14 +1151,29 @@ void TextService::RecordCopyShortcutForFirstKeyRecovery(
     if (first_key_copy_tick_ == 0 || now < first_key_copy_tick_ ||
         now - first_key_copy_tick_ > 100) {
         CancelFirstKeyRecovery(false);
+        DisarmFirstKeyRecoveryTrigger();
         first_key_copy_tick_ = now;
         first_key_focus_tick_ = 0;
+        first_key_copy_context_ = context;
+        first_key_copy_context_->AddRef();
+        first_key_copy_window_ = ActiveContextRootWindow(context);
     }
 }
 
 void TextService::DisarmFirstKeyRecoveryTrigger() noexcept {
     first_key_copy_tick_ = 0;
     first_key_focus_tick_ = 0;
+    SafeRelease(&first_key_copy_context_);
+    first_key_copy_window_ = nullptr;
+}
+
+void TextService::ArmFirstKeyRecoveryFocus() noexcept {
+    const std::uint64_t now = GetTickCount64();
+    const bool copy_recent = first_key_copy_tick_ != 0 &&
+        now >= first_key_copy_tick_ &&
+        now - first_key_copy_tick_ <= kFirstKeyRecoveryWindowMs;
+    if (!copy_recent) DisarmFirstKeyRecoveryTrigger();
+    first_key_focus_tick_ = now;
 }
 
 void TextService::CancelFirstKeyRecovery(bool disarm_trigger) noexcept {
@@ -1184,16 +1271,22 @@ bool TextService::BeginFirstKeyRecovery(
         range,
         character,
         &composition_,
+        &recovered_composition_start_,
         display_atom_,
         [this, generation, context]() {
             return CanAdoptFirstKeyRecovery(generation, context);
         },
-        [this, generation](ExistingTextCompositionResult result) {
+        [this, generation](
+            ExistingTextCompositionResult result,
+            std::wstring adopted_text) {
             if (result == ExistingTextCompositionResult::Adopted &&
                 first_key_recovery_pending_ &&
                 pending_first_key_generation_ == generation) {
-                composing_pinyin_.assign(
-                    1, static_cast<char>(pending_first_key_character_));
+                composing_pinyin_.clear();
+                composing_pinyin_.reserve(adopted_text.size());
+                for (const wchar_t character : adopted_text) {
+                    composing_pinyin_.push_back(static_cast<char>(character));
+                }
                 candidate_state_ = {};
                 current_result_ = {};
                 candidate_display_.clear();
@@ -1271,7 +1364,6 @@ void TextService::CompleteFirstKeyRecovery(
 
     ITfContext* context = pending_first_key_context_;
     pending_first_key_context_ = nullptr;
-    const wchar_t character = pending_first_key_character_;
     std::vector<BufferedFirstKeyInput> buffered_inputs =
         std::move(pending_first_key_inputs_);
     first_key_recovery_pending_ = false;
@@ -1282,10 +1374,10 @@ void TextService::CompleteFirstKeyRecovery(
     first_key_recovery_adopted_ = false;
     DisarmFirstKeyRecoveryTrigger();
 
-    if (buffered_inputs.empty() && composing_pinyin_.size() == 1 &&
-        composing_pinyin_[0] == static_cast<char>(character)) {
+    if (buffered_inputs.empty() && !composing_pinyin_.empty()) {
         const RuntimeConfig config = GetRuntimeConfig();
-        if ((character == L'v' || character == L'V') &&
+        if (composing_pinyin_.size() == 1 &&
+            (composing_pinyin_[0] == 'v' || composing_pinyin_[0] == 'V') &&
             config.v_mode_open_window) {
             StartVModeWindowTimer();
         } else {
@@ -1311,11 +1403,26 @@ void TextService::TryRecoverExternalFirstKey(
     ReadContextInputScopePrivacy(context, read_cookie, &privacy);
     const bool sensitive = privacy == InputScopePrivacy::Sensitive ||
         IsPasswordWindow(ActiveContextWindow(context));
+    const bool copy_triggered = first_key_copy_tick_ != 0;
+    const bool recent_focus = first_key_focus_tick_ != 0 &&
+        now >= first_key_focus_tick_ &&
+        now - first_key_focus_tick_ <= kFirstKeyRecoveryWindowMs;
+    const bool focus_rebuilt_after_copy = copy_triggered &&
+        recent_focus && first_key_focus_tick_ >= first_key_copy_tick_;
+    const HWND current_root_window = ActiveContextRootWindow(context);
+    const bool copy_scope_matches = copy_triggered
+        ? (context == first_key_copy_context_ ||
+           (focus_rebuilt_after_copy &&
+            first_key_copy_window_ != nullptr &&
+            current_root_window == first_key_copy_window_))
+        : recent_focus && context == edit_context_;
+    const std::uint64_t trigger_tick = copy_triggered
+        ? first_key_copy_tick_ : first_key_focus_tick_;
 
     FirstKeyRecoverySignals signals {
         now,
-        first_key_copy_tick_,
-        first_key_focus_tick_,
+        trigger_tick,
+        copy_scope_matches,
         !english_mode_,
         composition_ != nullptr || !composing_pinyin_.empty(),
         context == edit_context_,
@@ -1481,7 +1588,8 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
     }
     const bool shortcut_modifier = ShortcutModifierForKey(
         wParam, lParam, true);
-    RecordCopyShortcutForFirstKeyRecovery(wParam, shortcut_modifier);
+    RecordCopyShortcutForFirstKeyRecovery(
+        pic, wParam, shortcut_modifier);
     bool pending_eaten = false;
     if (HandlePendingFirstKeyInput(
             pic, wParam, lParam, shortcut_modifier, true,
@@ -1642,7 +1750,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     const bool shortcut_modifier = ShortcutModifierForKey(
         wparam, lparam, false);
-    RecordCopyShortcutForFirstKeyRecovery(wparam, shortcut_modifier);
+    RecordCopyShortcutForFirstKeyRecovery(
+        context, wparam, shortcut_modifier);
     if (HandlePendingFirstKeyInput(
             context, wparam, lparam, shortcut_modifier, false, eaten)) {
         return true;
@@ -1766,9 +1875,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             const HRESULT hr = SetCompositionString(
                 context, PinyinToWide(composing_pinyin_));
             if (FAILED(hr)) {
-                composing_pinyin_.pop_back();
-                RefreshCandidates();
-                UpdateCandidateWindow(context);
+                *eaten = false;
                 return true;
             }
             RefreshCandidates();
@@ -1781,14 +1888,14 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         composing_pinyin_.push_back('\'');
         candidate_state_.selected = 0;
         candidate_state_.page = 0;
-        if (SUCCEEDED(SetCompositionString(context, PinyinToWide(composing_pinyin_)))) {
+        const HRESULT hr = SetCompositionString(
+            context, PinyinToWide(composing_pinyin_));
+        if (SUCCEEDED(hr)) {
             RefreshCandidates();
             UpdateCandidateWindow(context);
             *eaten = true;
         } else {
-            composing_pinyin_.pop_back();
-            RefreshCandidates();
-            UpdateCandidateWindow(context);
+            *eaten = false;
         }
         return true;
     }
@@ -1900,9 +2007,6 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         } else {
             const HRESULT hr = SetCompositionString(context, PinyinToWide(composing_pinyin_));
             if (FAILED(hr)) {
-                composing_pinyin_ = previous;
-                RefreshCandidates();
-                UpdateCandidateWindow(context);
                 *eaten = false;
                 return true;
             }
@@ -1926,10 +2030,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         const HRESULT hr = SetCompositionString(
             context, PinyinToWide(composing_pinyin_));
         if (FAILED(hr)) {
-            RefreshCandidates();
-            UpdateCandidateWindow(context);
             SHURU_LOG_WARN("SetCompositionString rejected v-mode digit: 0x%08X", hr);
-            *eaten = true;
+            *eaten = false;
             return true;
         }
         RefreshCandidates();
@@ -2085,10 +2187,15 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
         // 1. 如果当前为空且输入第一个 'v' 且开启了 v_mode_open_window
         if (composing_pinyin_.empty() && (ch == 'v' || ch == 'V') && config.v_mode_open_window) {
-            *eaten = true;
             composing_pinyin_.push_back(ch);
-            (void)SetCompositionString(context, PinyinToWide(composing_pinyin_));
+            const HRESULT hr = SetCompositionString(
+                context, PinyinToWide(composing_pinyin_));
+            if (FAILED(hr)) {
+                *eaten = false;
+                return true;
+            }
             StartVModeWindowTimer();
+            *eaten = true;
             return true;
         }
 
@@ -2106,11 +2213,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         composing_pinyin_.push_back(ch);
         const HRESULT hr = SetCompositionString(context, PinyinToWide(composing_pinyin_));
         if (FAILED(hr)) {
-            // 缓冲已经由输入法接管。保留完整内容供后续按键重试，避免宿主
-            // 暂时拒绝首次编辑会话时首字母被直接上屏或丢失。
-            RefreshCandidates();
-            UpdateCandidateWindow(context);
             SHURU_LOG_WARN("SetCompositionString rejected key: 0x%08X", hr);
+            *eaten = false;
             return true;
         }
         RefreshCandidates();
@@ -2132,8 +2236,8 @@ void TextService::RefreshCandidates() {
 
     std::wstring comp = PinyinToWide(composing_pinyin_);
     candidate_display_fallback_ = comp;
-    const size_t candidate_count = static_cast<size_t>(
-        GetRuntimeConfig().candidate_count);
+    const RuntimeConfig runtime = GetRuntimeConfig();
+    const size_t candidate_count = static_cast<size_t>(runtime.candidate_count);
 
     // 剪贴板和自定义短语不依赖主词库。即使引擎仍在后台初始化，也要立即
     // 展示候选，避免 v/vv 被首次加载过程阻塞。
@@ -2204,7 +2308,6 @@ void TextService::RefreshCandidates() {
     }
     candidate_window_.StopReadyPolling();
 
-    const RuntimeConfig runtime = GetRuntimeConfig();
     QueryOptions options = engine_->GetQueryOptions();
     schema_sync_.ApplyConfigured(runtime.shuangpin_xiaohe);
     if (engine_->GetInputSchema() != (schema_sync_.runtime_shuangpin
@@ -2217,6 +2320,9 @@ void TextService::RefreshCandidates() {
     options.fuzzy_config.initials = runtime.fuzzy_initials;
     options.fuzzy_config.finals = runtime.fuzzy_finals;
     options.fuzzy_config.missing_vowel = runtime.fuzzy_missing_vowel;
+    options.english_mix_enabled = runtime.english_mix_enabled;
+    options.english_candidate_position = runtime.english_candidate_position;
+    options.candidate_page_size = candidate_count;
     options.context = last_committed_word_;
     engine_->SetQueryOptions(options);
     shuangpin_mode_ = (options.schema == InputSchema::ShuangpinXiaohe);
@@ -2268,7 +2374,7 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
     const bool has_host_rect = GetClientScreenRect(
         mintty_host ? mintty_root
                     : (console_root != nullptr ? console_root : target),
-        &host_rect);
+        &host_rect) && IsUsableCandidateHostRect(host_rect);
     const auto plausible_for_host = [&](const RECT& candidate) {
         return IsReliableCandidateRect(candidate) &&
             (!has_host_rect || IsCandidateRectPlausibleForHost(
@@ -2340,7 +2446,6 @@ bool TextService::GetCaretScreenRect(ITfContext* context, RECT* rect) {
 }
 
 void TextService::UpdateCandidateWindow(ITfContext* context) {
-    (void)context;
     const RuntimeConfig config = GetRuntimeConfig();
     const bool is_v1 = (composing_pinyin_ == "v" || composing_pinyin_ == "V");
     const bool is_vv = (composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0);
@@ -2377,7 +2482,8 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
     }
     // CandidateWindow::Show 使用实际布局尺寸和所在显示器工作区定位，无需在此
     // 用固定预留像素重复估算。
-    candidate_window_.Show(pt);
+    const HWND candidate_owner = ActiveContextWindow(context);
+    candidate_window_.Show(pt, candidate_owner);
     if (SharedStatusUi::IsSoftKeyboardVisible()) {
         const SIZE candidate_size = candidate_window_.WindowSize();
         const POINT candidate_pos = candidate_window_.ScreenPosition();
@@ -2387,13 +2493,11 @@ void TextService::UpdateCandidateWindow(ITfContext* context) {
 }
 
 void TextService::ScheduleCandidateWindowUpdate() {
-    if (!candidate_position_pending_ || !candidate_layout_notified_ ||
-        edit_context_ == nullptr || composing_pinyin_.empty()) {
+    if (!candidate_position_pending_ || edit_context_ == nullptr || composing_pinyin_.empty()) {
         return;
     }
 
-    // 每条布局通知都重新开始防抖计时。不能复用已经活动的定时器，
-    // 否则第一条旧布局通知会抢在最终布局通知前读取并提交错误坐标。
+    // 每条布局通知或文本改写都重新开始防抖计时。
     const std::uint64_t generation = candidate_layout_generation_;
     const std::uint64_t layout_serial = candidate_layout_serial_;
     candidate_window_.StartDeferredAction(
@@ -2407,8 +2511,7 @@ void TextService::TryResolveCandidateAnchor(
     std::uint64_t generation, std::uint64_t layout_serial) {
     if (edit_context_ == nullptr || composing_pinyin_.empty() ||
         generation != candidate_layout_generation_ ||
-        layout_serial != candidate_layout_serial_ ||
-        !candidate_position_pending_ || !candidate_layout_notified_) {
+        !candidate_position_pending_) {
         return;
     }
 
@@ -2437,7 +2540,9 @@ void TextService::TryResolveCandidateAnchor(
     // 不可见（组合与上屏照常工作，用户却看不到候选）。退而求其次，用
     // 宿主窗口自身的位置兜底显示一次。
     RECT fallback {};
-    if (!TryGetHostFallbackRect(edit_context_, &fallback)) return;
+    if (!TryGetHostFallbackRect(edit_context_, &fallback)) {
+        return;
+    }
     candidate_anchor_rect_ = fallback;
     has_candidate_anchor_ = true;
     candidate_position_pending_ = false;
@@ -2456,7 +2561,6 @@ bool TextService::TryGetHostFallbackRect(ITfContext* context, RECT* rect) {
     HWND host = FindMinttyRootForTarget(target);
     if (host == nullptr) host = FindConsoleHostForTarget(target);
     if (host == nullptr) host = target;
-
     RECT caret {};
     if (TryGetGuiThreadCaretScreenRect(host, &caret)) {
         *rect = caret;
@@ -2477,10 +2581,77 @@ bool TextService::TryGetHostFallbackRect(ITfContext* context, RECT* rect) {
     return true;
 }
 
+void TextService::ResetForContextTransition() {
+    const HRESULT hr = EndComposition();
+    if (FAILED(hr)) {
+        SHURU_LOG_WARN("context transition end composition failed: 0x%08X", hr);
+        SafeRelease(&composition_);
+    }
+    ClearCompositionState();
+    last_committed_word_.clear();
+    candidate_window_.Hide();
+    UnadviseTextEditSink();
+}
+
+bool TextService::RebindFocusedContext() {
+    if (thread_mgr_ == nullptr) return false;
+    ITfDocumentMgr* document_manager = nullptr;
+    const HRESULT focus_hr = thread_mgr_->GetFocus(&document_manager);
+    if (FAILED(focus_hr)) return false;
+    if (document_manager == nullptr) {
+        return SUCCEEDED(BindEditContext(nullptr));
+    }
+    const HRESULT bind_hr = AdviseTextEditSink(document_manager);
+    document_manager->Release();
+    return SUCCEEDED(bind_hr) && edit_context_ != nullptr;
+}
+
+bool TextService::IsCurrentTopContext(ITfContext* context) const {
+    if (context == nullptr || context != edit_context_ || thread_mgr_ == nullptr) {
+        return false;
+    }
+
+    ITfDocumentMgr* context_document = nullptr;
+    HRESULT hr = context->GetDocumentMgr(&context_document);
+    if (FAILED(hr) || context_document == nullptr) return false;
+
+    ITfContext* top = nullptr;
+    hr = context_document->GetTop(&top);
+    const bool is_top = SUCCEEDED(hr) && top == context;
+    if (top != nullptr) top->Release();
+
+    ITfDocumentMgr* focused_document = nullptr;
+    hr = thread_mgr_->GetFocus(&focused_document);
+    const bool is_focused = SUCCEEDED(hr) &&
+        focused_document == context_document;
+    if (focused_document != nullptr) focused_document->Release();
+    context_document->Release();
+    return is_top && is_focused;
+}
+
+void TextService::AbortRejectedComposition(
+    HRESULT reason, ITfContext* attempted_context) {
+    SHURU_LOG_WARN(
+        "composition write rejected: 0x%08X current=%d",
+        reason, IsCurrentTopContext(attempted_context) ? 1 : 0);
+    const HRESULT end_hr = EndComposition();
+    if (FAILED(end_hr)) SafeRelease(&composition_);
+    ClearCompositionState();
+    candidate_window_.Hide();
+
+    if (!IsCurrentTopContext(attempted_context)) {
+        UnadviseTextEditSink();
+        if (!RebindFocusedContext()) {
+            SHURU_LOG_WARN("composition rejection context recovery failed");
+        }
+    }
+}
+
 void TextService::ClearCompositionState() {
     candidate_window_.StopVModeTimer();
     candidate_window_.StopDeferredAction();
     composing_pinyin_.clear();
+    SafeRelease(&recovered_composition_start_);
     candidate_state_ = {};
     current_result_ = {};
     candidate_display_.clear();
@@ -2526,7 +2697,17 @@ HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text, b
         SHURU_LOG_ERROR("CommitText context is null");
         return E_FAIL;
     }
-    auto* session = new (std::nothrow) InsertTextEditSession(context, client_id_, &composition_, text);
+    if (!IsCurrentTopContext(context)) {
+        AbortRejectedComposition(TF_E_DISCONNECTED, context);
+        return TF_E_DISCONNECTED;
+    }
+    const std::wstring expected_composition_text =
+        recovered_composition_start_ != nullptr
+        ? PinyinToWide(composing_pinyin_)
+        : std::wstring {};
+    auto* session = new (std::nothrow) InsertTextEditSession(
+        context, client_id_, &composition_, text,
+        recovered_composition_start_, expected_composition_text);
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }
@@ -2534,6 +2715,9 @@ HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text, b
     const HRESULT hr = context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
     session->Release();
     const HRESULT final_hr = SUCCEEDED(hr) ? hr_session : hr;
+    if (FAILED(final_hr)) {
+        AbortRejectedComposition(final_hr, context);
+    }
     if (SUCCEEDED(final_hr) && !IsPasswordContext(context)) {
         recent_committed_text_ += text;
         if (recent_committed_text_.size() > 128) {
@@ -2543,7 +2727,6 @@ HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text, b
             candidate_window_.SetTypingStats(typing_stats_.Record(text));
         }
     }
-    SHURU_LOG_INFO("CommitText req=0x%08X session=0x%08X len=%u stats=%d", hr, hr_session, static_cast<unsigned>(text.size()), count_typing_stats ? 1 : 0);
     return final_hr;
 }
 
@@ -2575,6 +2758,13 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     if (context == nullptr) {
         return E_FAIL;
     }
+    if (!IsCurrentTopContext(context)) {
+        if (!RebindFocusedContext() || context != edit_context_ ||
+            !IsCurrentTopContext(context)) {
+            AbortRejectedComposition(TF_E_DISCONNECTED, context);
+            return TF_E_DISCONNECTED;
+        }
+    }
     const bool starts_composition = composition_ == nullptr;
     if (starts_composition) {
         // mintty 会在同步编辑会话内立即绘制预编辑文本，必须在写入首字符前
@@ -2596,6 +2786,7 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
         &composition_, text, display_atom_,
         starts_composition);
     if (session == nullptr) {
+        AbortRejectedComposition(E_OUTOFMEMORY, context);
         return E_OUTOFMEMORY;
     }
     HRESULT hr_session = S_OK;
@@ -2603,7 +2794,8 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     const HRESULT hr = context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
     composition_edit_in_progress_ = false;
     session->Release();
-    if (FAILED(hr) || FAILED(hr_session) || text.empty()) {
+    const HRESULT final_hr = SUCCEEDED(hr) ? hr_session : hr;
+    if (FAILED(final_hr) || text.empty()) {
         candidate_position_pending_ = false;
         candidate_layout_notified_ = false;
         candidate_window_.StopDeferredAction();
@@ -2621,7 +2813,10 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
         }
         ScheduleCandidateWindowUpdate();
     }
-    return SUCCEEDED(hr) ? hr_session : hr;
+    if (FAILED(final_hr)) {
+        AbortRejectedComposition(final_hr, context);
+    }
+    return final_hr;
 }
 
 STDMETHODIMP TextService::OnEndEdit(
@@ -2688,12 +2883,100 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
 void TextService::SyncStatusUi() {
     SharedStatusUi::SyncFrom(english_mode_, shuangpin_mode_);
     SyncLangBarItemEnglishMode();
+    // 初始化阶段已经记录 compartment 不可用；状态切换路径不重复刷日志。
+    (void)SyncInputModeCompartments();
 }
 
 void TextService::SyncLangBarItemEnglishMode() {
     if (langbar_item_ != nullptr) {
         langbar_item_->SetEnglishMode(english_mode_);
     }
+}
+
+HRESULT TextService::SyncInputModeCompartments() noexcept {
+    if (thread_mgr_ == nullptr || client_id_ == TF_CLIENTID_NULL) {
+        return TF_E_DISCONNECTED;
+    }
+
+    ITfCompartmentMgr* compartment_mgr = nullptr;
+    HRESULT hr = thread_mgr_->QueryInterface(
+        IID_ITfCompartmentMgr, reinterpret_cast<void**>(&compartment_mgr));
+    if (FAILED(hr) || compartment_mgr == nullptr) {
+        return FAILED(hr) ? hr : E_NOINTERFACE;
+    }
+
+    const auto set_value = [&](REFGUID guid, DWORD desired) noexcept {
+        ITfCompartment* compartment = nullptr;
+        HRESULT value_hr = compartment_mgr->GetCompartment(guid, &compartment);
+        if (FAILED(value_hr) || compartment == nullptr) {
+            return FAILED(value_hr) ? value_hr : E_NOINTERFACE;
+        }
+
+        VARIANT current;
+        VariantInit(&current);
+        const HRESULT read_hr = compartment->GetValue(&current);
+        const bool unchanged = SUCCEEDED(read_hr) && current.vt == VT_I4 &&
+            static_cast<DWORD>(current.lVal) == desired;
+        VariantClear(&current);
+        if (unchanged) {
+            compartment->Release();
+            return S_OK;
+        }
+
+        VARIANT value;
+        VariantInit(&value);
+        value.vt = VT_I4;
+        value.lVal = static_cast<LONG>(desired);
+        value_hr = compartment->SetValue(client_id_, &value);
+        VariantClear(&value);
+        compartment->Release();
+        return value_hr;
+    };
+
+    DWORD conversion = 0;
+    ITfCompartment* conversion_compartment = nullptr;
+    hr = compartment_mgr->GetCompartment(
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+        &conversion_compartment);
+    if (SUCCEEDED(hr) && conversion_compartment != nullptr) {
+        VARIANT current;
+        VariantInit(&current);
+        if (SUCCEEDED(conversion_compartment->GetValue(&current)) &&
+            current.vt == VT_I4) {
+            conversion = static_cast<DWORD>(current.lVal);
+        }
+        VariantClear(&current);
+        conversion_compartment->Release();
+    }
+    if (FAILED(hr)) {
+        compartment_mgr->Release();
+        return hr;
+    }
+
+    const DWORD desired_conversion = english_mode_
+        ? conversion & ~static_cast<DWORD>(TF_CONVERSIONMODE_NATIVE)
+        : conversion | static_cast<DWORD>(TF_CONVERSIONMODE_NATIVE);
+    const DWORD desired_open = english_mode_ ? 0U : 1U;
+
+    // 切入中文时先声明 native 再打开；切入英文时先关闭再清 native，避免
+    // 宿主在两次写入之间观察到“已打开但仍是字母模式”的瞬态。
+    HRESULT first_hr = S_OK;
+    if (english_mode_) {
+        first_hr = set_value(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, desired_open);
+        const HRESULT conversion_hr = set_value(
+            GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+            desired_conversion);
+        if (SUCCEEDED(first_hr)) first_hr = conversion_hr;
+    } else {
+        first_hr = set_value(
+            GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+            desired_conversion);
+        const HRESULT open_hr = set_value(
+            GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, desired_open);
+        if (SUCCEEDED(first_hr)) first_hr = open_hr;
+    }
+    compartment_mgr->Release();
+    return first_hr;
 }
 
 HRESULT TextService::InitLangBarItem() {
@@ -2716,21 +2999,54 @@ HRESULT TextService::InitLangBarItem() {
         LaunchSettingsExecutable(nullptr, g_module);
     });
 
+    const auto discard_item = [this]() noexcept {
+        if (langbar_item_mgr_ != nullptr) {
+            langbar_item_mgr_->Release();
+            langbar_item_mgr_ = nullptr;
+        }
+        if (langbar_item_ != nullptr) {
+            langbar_item_->Detach();
+            langbar_item_->Release();
+            langbar_item_ = nullptr;
+        }
+    };
+
     HRESULT hr = thread_mgr_->QueryInterface(
         IID_ITfLangBarItemMgr, reinterpret_cast<void**>(&langbar_item_mgr_));
     if (FAILED(hr) || langbar_item_mgr_ == nullptr) {
-        hr = CoCreateInstance(
-            CLSID_TF_LangBarItemMgr, nullptr, CLSCTX_INPROC_SERVER,
-            IID_ITfLangBarItemMgr, reinterpret_cast<void**>(&langbar_item_mgr_));
+        const HRESULT result = FAILED(hr) ? hr : E_NOINTERFACE;
+        discard_item();
+        return result;
     }
-    if (SUCCEEDED(hr) && langbar_item_mgr_ != nullptr) {
-        hr = langbar_item_mgr_->AddItem(langbar_item_);
-        if (FAILED(hr)) {
-            SHURU_LOG_WARN("ITfLangBarItemMgr::AddItem failed: 0x%08X", hr);
-        }
-    } else {
-        SHURU_LOG_WARN("Query/Create ITfLangBarItemMgr failed: 0x%08X", hr);
+
+    hr = langbar_item_mgr_->AddItem(langbar_item_);
+    if (FAILED(hr)) {
+        SHURU_LOG_WARN("ITfLangBarItemMgr::AddItem failed: 0x%08X", hr);
+        discard_item();
+        return hr;
     }
+
+    // AddItem 被系统静默忽略时也可能返回 S_OK。用系统模式 GUID
+    // 回读并核对所属 TIP，确保项目已经真正进入当前语言栏。
+    ITfLangBarItem* registered = nullptr;
+    hr = langbar_item_mgr_->GetItem(GUID_LBI_INPUTMODE, &registered);
+    TF_LANGBARITEMINFO info {};
+    const bool item_returned = SUCCEEDED(hr) && registered != nullptr;
+    if (item_returned) {
+        hr = registered->GetInfo(&info);
+        registered->Release();
+    }
+    if (FAILED(hr) || !item_returned ||
+        !IsEqualGUID(info.clsidService, CLSID_ShuruTextService) ||
+        !IsEqualGUID(info.guidItem, GUID_LBI_INPUTMODE)) {
+        const HRESULT verify_hr = FAILED(hr) ? hr : E_FAIL;
+        SHURU_LOG_WARN("language bar AddItem verification failed: 0x%08X", verify_hr);
+        langbar_item_mgr_->RemoveItem(langbar_item_);
+        discard_item();
+        return verify_hr;
+    }
+
+    SHURU_LOG_INFO("language bar input mode item registered");
     return S_OK;
 }
 

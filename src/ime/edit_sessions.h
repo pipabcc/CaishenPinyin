@@ -16,7 +16,13 @@ HRESULT ReadContextInputScopePrivacy(
 
 class InsertTextEditSession : public ITfEditSession {
 public:
-    InsertTextEditSession(ITfContext* context, TfClientId client_id, ITfComposition** composition, const std::wstring& text);
+    InsertTextEditSession(
+        ITfContext* context,
+        TfClientId client_id,
+        ITfComposition** composition,
+        const std::wstring& text,
+        ITfRange* recovered_composition_start = nullptr,
+        const std::wstring& expected_composition_text = {});
     virtual ~InsertTextEditSession();
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
@@ -30,6 +36,8 @@ private:
     TfClientId client_id_ = TF_CLIENTID_NULL;
     ITfComposition** composition_ = nullptr;
     std::wstring text_;
+    ITfRange* recovered_composition_start_ = nullptr;
+    std::wstring expected_composition_text_;
 };
 
 class SetCompositionEditSession : public ITfEditSession {
@@ -67,11 +75,12 @@ enum class ExistingTextCompositionResult {
     Failed,
 };
 
-// 将宿主已经写入的单字符范围直接纳入 TSF 组合，不删除或重插该字符。
+// 将宿主已经写入、且仍与光标连续的字母范围纳入 TSF 组合，不删除或重插文本。
 class AdoptExistingTextEditSession : public ITfEditSession {
 public:
     using Preflight = std::function<bool()>;
-    using Completion = std::function<void(ExistingTextCompositionResult)>;
+    using Completion = std::function<void(
+        ExistingTextCompositionResult, std::wstring)>;
 
     AdoptExistingTextEditSession(
         ITfContext* context,
@@ -79,6 +88,7 @@ public:
         ITfRange* range,
         wchar_t expected_character,
         ITfComposition** composition,
+        ITfRange** recovered_composition_start,
         TfGuidAtom display_atom,
         Preflight preflight,
         Completion completion);
@@ -90,7 +100,10 @@ public:
     STDMETHODIMP DoEditSession(TfEditCookie ec) override;
 
 private:
-    HRESULT Finish(ExistingTextCompositionResult result, HRESULT hr);
+    HRESULT Finish(
+        ExistingTextCompositionResult result,
+        HRESULT hr,
+        std::wstring adopted_text = {});
 
     LONG ref_ = 1;
     ITfContext* context_ = nullptr;
@@ -98,6 +111,7 @@ private:
     ITfRange* range_ = nullptr;
     wchar_t expected_character_ = 0;
     ITfComposition** composition_ = nullptr;
+    ITfRange** recovered_composition_start_ = nullptr;
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
     Preflight preflight_;
     Completion completion_;

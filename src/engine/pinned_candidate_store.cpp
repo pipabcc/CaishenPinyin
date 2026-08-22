@@ -1,5 +1,7 @@
 #include "pinned_candidate_store.h"
 
+#include "../common/user_data_paths.h"
+
 #include "../common/com_utils.h"
 #include "../common/private_acl.h"
 
@@ -284,14 +286,7 @@ void PinnedCandidateStore::Promote(
 }
 
 std::wstring PinnedCandidateStore::DefaultPath() {
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (length == 0) return {};
-    std::wstring root(static_cast<std::size_t>(length), L'\0');
-    const DWORD written = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", root.data(), length);
-    if (written == 0 || written >= length) return {};
-    root.resize(written);
-    return root + L"\\CaishenPinyin\\data\\pinned_candidates.tsv";
+    return CaishenUserDataPath(L"data\\pinned_candidates.tsv");
 }
 
 }  // namespace shuru

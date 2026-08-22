@@ -5,6 +5,8 @@ namespace ShuruSettings;
 
 public sealed record AppSettings(
     bool EnglishDefault = false,
+    bool EnglishMixEnabled = true,
+    string EnglishCandidatePosition = SettingsStore.MiddleEnglishCandidatePosition,
     bool LearningEnabled = true,
     bool ContentLogging = false,
     bool FuzzyEnabled = true,
@@ -23,6 +25,8 @@ public sealed record AppSettings(
 {
     public AppSettings Validated() => this with
     {
+        EnglishCandidatePosition = SettingsStore.NormalizeEnglishCandidatePosition(
+            EnglishCandidatePosition),
         CandidateCount = CandidateCount is >= 3 and <= 11 ? CandidateCount : 9,
         CandidateFontFamily = SettingsStore.NormalizeCandidateFontFamily(CandidateFontFamily) ?? "",
         CandidateFontSizeMode = SettingsStore.NormalizeCandidateFontSizeMode(CandidateFontSizeMode),
@@ -35,6 +39,9 @@ public static class SettingsStore
 {
     public const string DefaultDisplayName = "财神输入法";
     public const string FollowSkinFontSizeMode = "follow_skin";
+    public const string FirstEnglishCandidatePosition = "first";
+    public const string MiddleEnglishCandidatePosition = "middle";
+    public const string LastEnglishCandidatePosition = "last";
 
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -61,6 +68,9 @@ public static class SettingsStore
                 : CandidateFontSizeModeFromLegacy(I("CandidateFontSize", -1));
             return new AppSettings(
                 EnglishDefault: B("EnglishDefault", defaults.EnglishDefault),
+                EnglishMixEnabled: B("EnglishMixEnabled", defaults.EnglishMixEnabled),
+                EnglishCandidatePosition: S(
+                    "EnglishCandidatePosition", defaults.EnglishCandidatePosition),
                 LearningEnabled: B("LearningEnabled", defaults.LearningEnabled),
                 ContentLogging: B("ContentLogging", defaults.ContentLogging),
                 FuzzyEnabled: B("FuzzyEnabled", defaults.FuzzyEnabled),
@@ -93,6 +103,8 @@ public static class SettingsStore
         {
             "# Caishen Pinyin settings v2",
             $"EnglishDefault={Bit(settings.EnglishDefault)}",
+            $"EnglishMixEnabled={Bit(settings.EnglishMixEnabled)}",
+            $"EnglishCandidatePosition={settings.EnglishCandidatePosition}",
             $"LearningEnabled={Bit(settings.LearningEnabled)}",
             $"ContentLogging={Bit(settings.ContentLogging)}",
             $"FuzzyEnabled={Bit(settings.FuzzyEnabled)}",
@@ -158,6 +170,14 @@ public static class SettingsStore
             "large" => "large",
             "extra_large" => "extra_large",
             _ => FollowSkinFontSizeMode
+        };
+
+    public static string NormalizeEnglishCandidatePosition(string? value) =>
+        value?.Trim().ToLowerInvariant() switch
+        {
+            FirstEnglishCandidatePosition => FirstEnglishCandidatePosition,
+            LastEnglishCandidatePosition => LastEnglishCandidatePosition,
+            _ => MiddleEnglishCandidatePosition
         };
 
     public static string CandidateFontSizeModeFromLegacy(int value) => value switch

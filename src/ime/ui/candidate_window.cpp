@@ -1,6 +1,7 @@
 #include "candidate_window.h"
 #include "skin_manager.h"
 #include "common/runtime_config.h"
+#include "common/user_data_paths.h"
 
 #include <Windows.h>
 #include <objbase.h>
@@ -394,6 +395,10 @@ bool CandidateWindow::Create(HINSTANCE instance) {
         return false;
     }
 
+    return CreateNativeWindow(nullptr);
+}
+
+bool CandidateWindow::CreateNativeWindow(HWND owner) {
     hwnd_ = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         kWindowClass,
@@ -403,12 +408,15 @@ bool CandidateWindow::Create(HINSTANCE instance) {
         0,
         width_ + kShadowMargin * 2,
         height_ + kShadowMargin * 2,
+        owner,
         nullptr,
-        nullptr,
-        instance,
+        instance_,
         this);
 
-    if (hwnd_ != nullptr) RefreshTypingStats();
+    if (hwnd_ != nullptr) {
+        host_owner_ = GetWindow(hwnd_, GW_OWNER);
+        RefreshTypingStats();
+    }
 
     return hwnd_ != nullptr;
 }
@@ -478,7 +486,7 @@ void CandidateWindow::ReloadRuntimeSettings() {
     layout_dirty_ = true;
     paint_dirty_ = true;
     if (visible_) {
-        Show(anchor);
+        Show(anchor, host_owner_);
     }
 }
 
@@ -642,10 +650,11 @@ int CandidateWindow::MeasureText(HDC hdc, HFONT font, const std::wstring& text) 
     return sz.cx;
 }
 
-void CandidateWindow::Show(const POINT& screen_pos) {
-    if (hwnd_ == nullptr) {
-        return;
-    }
+void CandidateWindow::Show(const POINT& screen_pos, HWND owner) {
+    if (instance_ == nullptr || !EnsureOwner(owner) || hwnd_ == nullptr) return;
+    // 周期性检查共享统计。提交路径会直接推送本进程的新值，跨进程修改
+    // 则通过节流后的文件检查收敛，避免每个按键都打开统计文件。
+    RefreshTypingStats();
     const std::wstring configured_skin_id = GetRuntimeConfig().skin_id;
     if (layout_skin_id_ != configured_skin_id) {
         layout_skin_id_ = configured_skin_id;
@@ -656,7 +665,6 @@ void CandidateWindow::Show(const POINT& screen_pos) {
     }
     POINT pos = screen_pos;
     HMONITOR monitor = MonitorFromPoint(pos, MONITOR_DEFAULTTONEAREST);
-    if (!visible_) RefreshTypingStats();
     if (layout_dirty_) RecalcSize();
     const int shadow_margin = ShadowMargin();
     MONITORINFO mi {};
@@ -695,10 +703,15 @@ void CandidateWindow::Show(const POINT& screen_pos) {
         previous_rect.bottom - previous_rect.top != window_height;
     const bool needs_show = !visible_;
     if (needs_show || position_changed || size_changed || paint_dirty_) {
-        if (!UpdateLayeredWindowContent(window_origin)) return;
+        if (!UpdateLayeredWindowContent(window_origin)) {
+            return;
+        }
     }
-    SetWindowPos(hwnd_, HWND_TOPMOST, window_origin.x, window_origin.y, window_width, window_height,
-                 SWP_NOACTIVATE | (needs_show ? SWP_SHOWWINDOW : 0));
+    SetWindowPos(
+        hwnd_, HWND_TOPMOST, window_origin.x, window_origin.y,
+        window_width, window_height,
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+            (needs_show ? SWP_SHOWWINDOW : 0));
     visible_ = true;
     SyncSkinAnimation();
     if (needs_show) {
@@ -717,6 +730,78 @@ void CandidateWindow::Hide() {
     StopSkinAnimation();
     SkinManager::Instance().ResetAnimation();
     SetWindowPos(hwnd_, nullptr, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+HWND CandidateWindow::NormalizeOwner(HWND requested_owner) const noexcept {
+    if (requested_owner == nullptr || requested_owner == hwnd_ ||
+        !IsWindow(requested_owner)) {
+        return nullptr;
+    }
+
+    DWORD requested_process_id = 0;
+    GetWindowThreadProcessId(requested_owner, &requested_process_id);
+    if (requested_process_id != GetCurrentProcessId()) return nullptr;
+
+    HWND root = GetAncestor(requested_owner, GA_ROOT);
+    if (root == nullptr) return nullptr;
+    DWORD root_process_id = 0;
+    GetWindowThreadProcessId(root, &root_process_id);
+    return root_process_id == GetCurrentProcessId() ? root : nullptr;
+}
+
+bool CandidateWindow::EnsureOwner(HWND requested_owner) {
+    const HWND normalized_owner = NormalizeOwner(requested_owner);
+
+    if (hwnd_ != nullptr && GetWindow(hwnd_, GW_OWNER) == normalized_owner) {
+        rejected_owner_ = nullptr;
+        host_owner_ = normalized_owner;
+        return true;
+    }
+    if (hwnd_ != nullptr && rejected_owner_ == normalized_owner) {
+        host_owner_ = GetWindow(hwnd_, GW_OWNER);
+        return true;
+    }
+
+    if (hwnd_ != nullptr) {
+        if (!DestroyWindow(hwnd_)) {
+            host_owner_ = GetWindow(hwnd_, GW_OWNER);
+            return false;
+        }
+    }
+
+    if (!CreateNativeWindow(normalized_owner)) {
+        if (normalized_owner != nullptr && CreateNativeWindow(nullptr)) {
+            rejected_owner_ = normalized_owner;
+            return true;
+        }
+        return false;
+    }
+
+    host_owner_ = GetWindow(hwnd_, GW_OWNER);
+    if (host_owner_ != normalized_owner) {
+        rejected_owner_ = normalized_owner;
+        return true;
+    }
+    rejected_owner_ = nullptr;
+    return true;
+}
+
+void CandidateWindow::ResetWindowBoundState() noexcept {
+    visible_ = false;
+    ready_poll_active_ = false;
+    shift_release_poll_active_ = false;
+    shortcut_release_poll_active_ = false;
+    vmode_timer_active_ = false;
+    deferred_action_active_ = false;
+    skin_animation_timer_active_ = false;
+    host_owner_ = nullptr;
+    rejected_owner_ = nullptr;
+    ready_poll_ = nullptr;
+    shift_release_poll_ = nullptr;
+    shortcut_release_poll_ = nullptr;
+    vmode_timer_cb_ = nullptr;
+    deferred_action_ = nullptr;
+    owner_thread_actions_.clear();
 }
 
 void CandidateWindow::StopSkinAnimation() {
@@ -862,7 +947,7 @@ bool CandidateWindow::SetExpanded(bool expanded) {
     paint_dirty_ = true;
     RecalcSize();
     if (visible_ && hwnd_ != nullptr) {
-        Show(ScreenPosition());
+        Show(ScreenPosition(), host_owner_);
     }
     return true;
 }
@@ -885,6 +970,7 @@ void CandidateWindow::SetTypingStats(const TypingStatsSnapshot& snapshot) {
         return;
     }
     typing_stats_ = snapshot;
+    typing_stats_last_refresh_tick_ = GetTickCount64();
     layout_dirty_ = true;
     paint_dirty_ = true;
     RecalcSize();
@@ -904,12 +990,19 @@ void CandidateWindow::SetPinningEnabled(bool enabled) {
     if (visible_ && hwnd_ != nullptr) {
         const POINT anchor = ScreenPosition();
         RecalcSize();
-        Show(anchor);
+        Show(anchor, host_owner_);
     }
 }
 
 void CandidateWindow::RefreshTypingStats() {
-    SetTypingStats(TypingStatsStore().Load());
+    const std::uint64_t now = GetTickCount64();
+    if (typing_stats_last_refresh_tick_ != 0 &&
+        now - typing_stats_last_refresh_tick_ < kTypingStatsRefreshIntervalMs) {
+        return;
+    }
+    const TypingStatsSnapshot snapshot = TypingStatsStore().Load();
+    typing_stats_last_refresh_tick_ = now;
+    SetTypingStats(snapshot);
 }
 
 void CandidateWindow::StartReadyPolling(std::function<bool()> poll) {
@@ -1028,8 +1121,7 @@ void CandidateWindow::StopVModeTimer() {
 
 void CandidateWindow::OpenSettings() {
     if (!LaunchSettingsExecutable(hwnd_, instance_)) {
-        MessageBoxW(hwnd_, L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。",
-                    L"财神输入法", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        ReportSettingsLaunchFailure(hwnd_);
     }
 }
 
@@ -1927,6 +2019,11 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     }
 
     switch (msg) {
+    case WM_NCDESTROY:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        self->hwnd_ = nullptr;
+        self->ResetWindowBoundState();
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
     case kOwnerThreadActionMessage: {
         if (self->owner_thread_actions_.empty()) return 0;
         auto action = std::move(self->owner_thread_actions_.front());

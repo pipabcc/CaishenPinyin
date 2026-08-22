@@ -1,6 +1,7 @@
 #include "runtime_config.h"
 
 #include "com_utils.h"
+#include "user_data_paths.h"
 
 #include <Windows.h>
 
@@ -17,14 +18,43 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 RuntimeConfig g_config;
 bool g_loaded = false;
 
+std::wstring SettingsPath();
+
+struct ConfigFileStamp {
+    bool present = false;
+    FILETIME write_time {};
+    DWORD size_high = 0;
+    DWORD size_low = 0;
+};
+
+ConfigFileStamp ReadConfigFileStamp() {
+    ConfigFileStamp stamp;
+    const std::wstring path = SettingsPath();
+    if (path.empty()) return stamp;
+    WIN32_FILE_ATTRIBUTE_DATA attributes {};
+    if (!GetFileAttributesExW(
+            path.c_str(), GetFileExInfoStandard, &attributes)) {
+        return stamp;
+    }
+    stamp.present = (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    stamp.write_time = attributes.ftLastWriteTime;
+    stamp.size_high = attributes.nFileSizeHigh;
+    stamp.size_low = attributes.nFileSizeLow;
+    return stamp;
+}
+
+bool SameConfigFileStamp(
+    const ConfigFileStamp& left, const ConfigFileStamp& right) noexcept {
+    return left.present == right.present &&
+        left.write_time.dwHighDateTime == right.write_time.dwHighDateTime &&
+        left.write_time.dwLowDateTime == right.write_time.dwLowDateTime &&
+        left.size_high == right.size_high && left.size_low == right.size_low;
+}
+
+ConfigFileStamp g_config_stamp;
+
 std::wstring SettingsPath() {
-    DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (length == 0) return {};
-    std::wstring root(length, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", root.data(), length);
-    if (written == 0 || written >= length) return {};
-    root.resize(written);
-    return root + L"\\CaishenPinyin\\settings.ini";
+    return CaishenUserDataPath(L"settings.ini");
 }
 
 std::map<std::string, std::string> ReadValues() {
@@ -93,6 +123,15 @@ CandidateFontSizeMode ReadCandidateFontSizeMode(
         : CandidateFontSizeModeFromLegacyValue(legacy);
 }
 
+EnglishCandidatePosition ReadEnglishCandidatePosition(
+    const std::map<std::string, std::string>& values) {
+    const auto found = values.find("EnglishCandidatePosition");
+    if (found == values.end()) return EnglishCandidatePosition::Middle;
+    if (found->second == "first") return EnglishCandidatePosition::First;
+    if (found->second == "last") return EnglishCandidatePosition::Last;
+    return EnglishCandidatePosition::Middle;
+}
+
 std::wstring ReadCandidateFontFamily(
     const std::map<std::string, std::string>& values) {
     const auto found = values.find("CandidateFontFamily");
@@ -107,6 +146,8 @@ RuntimeConfig ReadConfig() {
     value.content_logging_enabled = ReadBool(values, "ContentLogging", false);
     value.full_width_punctuation = ReadBool(values, "FullWidthPunctuation", true);
     value.english_default = ReadBool(values, "EnglishDefault", false);
+    value.english_mix_enabled = ReadBool(values, "EnglishMixEnabled", true);
+    value.english_candidate_position = ReadEnglishCandidatePosition(values);
     value.fuzzy_enabled = ReadBool(values, "FuzzyEnabled", true);
     value.fuzzy_initials = ReadBool(values, "FuzzyInitials", true);
     value.fuzzy_finals = ReadBool(values, "FuzzyFinals", true);
@@ -138,8 +179,9 @@ RuntimeConfig ReadConfig() {
 }  // namespace
 
 RuntimeConfig GetRuntimeConfig() {
+    const ConfigFileStamp observed_stamp = ReadConfigFileStamp();
     AcquireSRWLockShared(&g_lock);
-    if (g_loaded) {
+    if (g_loaded && SameConfigFileStamp(g_config_stamp, observed_stamp)) {
         const RuntimeConfig value = g_config;
         ReleaseSRWLockShared(&g_lock);
         return value;
@@ -147,8 +189,9 @@ RuntimeConfig GetRuntimeConfig() {
     ReleaseSRWLockShared(&g_lock);
 
     AcquireSRWLockExclusive(&g_lock);
-    if (!g_loaded) {
+    if (!g_loaded || !SameConfigFileStamp(g_config_stamp, observed_stamp)) {
         g_config = ReadConfig();
+        g_config_stamp = ReadConfigFileStamp();
         g_loaded = true;
     }
     const RuntimeConfig value = g_config;
@@ -158,8 +201,10 @@ RuntimeConfig GetRuntimeConfig() {
 
 void ReloadRuntimeConfig() {
     const RuntimeConfig value = ReadConfig();
+    const ConfigFileStamp stamp = ReadConfigFileStamp();
     AcquireSRWLockExclusive(&g_lock);
     g_config = value;
+    g_config_stamp = stamp;
     g_loaded = true;
     ReleaseSRWLockExclusive(&g_lock);
 }

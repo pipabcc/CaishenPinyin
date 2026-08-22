@@ -1,5 +1,6 @@
 #include "ime/ui/candidate_window.h"
 #include "ime/ui/directwrite_text_renderer.h"
+#include "ime/ui/ime_ui_logic.h"
 #include "ime/ui/skin_manager.h"
 #include "common/runtime_config.h"
 
@@ -23,9 +24,165 @@ BOOL CALLBACK FindCandidateWindow(HWND window, LPARAM value) {
     return TRUE;
 }
 
+struct ForeignOwnerWindowSearch {
+    DWORD process_id = 0;
+    HWND window = nullptr;
+};
+
+BOOL CALLBACK FindForeignOwnerWindow(HWND window, LPARAM value) {
+    auto* search = reinterpret_cast<ForeignOwnerWindowSearch*>(value);
+    DWORD process_id = 0;
+    GetWindowThreadProcessId(window, &process_id);
+    if (process_id == search->process_id && IsWindowVisible(window) &&
+        GetWindow(window, GW_OWNER) == nullptr) {
+        search->window = window;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+int RunForeignOwnerHost(const wchar_t* ready_name, const wchar_t* stop_name) {
+    HANDLE ready_event = OpenEventW(EVENT_MODIFY_STATE, FALSE, ready_name);
+    HANDLE stop_event = OpenEventW(SYNCHRONIZE, FALSE, stop_name);
+    if (ready_event == nullptr || stop_event == nullptr) {
+        if (ready_event != nullptr) CloseHandle(ready_event);
+        if (stop_event != nullptr) CloseHandle(stop_event);
+        return 70;
+    }
+
+    HWND host = CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        L"STATIC",
+        L"Caishen candidate foreign owner host",
+        WS_OVERLAPPEDWINDOW,
+        40, 40, 320, 180,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (host == nullptr) {
+        CloseHandle(stop_event);
+        CloseHandle(ready_event);
+        return 71;
+    }
+
+    ShowWindow(host, SW_SHOWNOACTIVATE);
+    UpdateWindow(host);
+    SetEvent(ready_event);
+
+    MSG message {};
+    bool stopping = false;
+    while (!stopping) {
+        const DWORD wait = MsgWaitForMultipleObjects(
+            1, &stop_event, FALSE, 50, QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0) stopping = true;
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if (message.message == WM_QUIT) {
+                stopping = true;
+                break;
+            }
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
+    DestroyWindow(host);
+    CloseHandle(stop_event);
+    CloseHandle(ready_event);
+    return 0;
+}
+
+bool StartForeignOwnerHost(
+    PROCESS_INFORMATION* process,
+    HANDLE* ready_event,
+    HANDLE* stop_event) {
+    if (process == nullptr || ready_event == nullptr || stop_event == nullptr) {
+        return false;
+    }
+    *process = {};
+    *ready_event = nullptr;
+    *stop_event = nullptr;
+
+    const std::wstring name_suffix =
+        std::to_wstring(GetCurrentProcessId()) + L"-" +
+        std::to_wstring(GetTickCount64());
+    const std::wstring ready_name =
+        L"Local\\CaishenCandidateOwnerReady-" + name_suffix;
+    const std::wstring stop_name =
+        L"Local\\CaishenCandidateOwnerStop-" + name_suffix;
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, ready_name.c_str());
+    HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, stop_name.c_str());
+    if (ready == nullptr || stop == nullptr) {
+        if (ready != nullptr) CloseHandle(ready);
+        if (stop != nullptr) CloseHandle(stop);
+        return false;
+    }
+
+    wchar_t module_path[MAX_PATH] {};
+    const DWORD module_length = GetModuleFileNameW(
+        nullptr, module_path, ARRAYSIZE(module_path));
+    if (module_length == 0 || module_length >= ARRAYSIZE(module_path)) {
+        CloseHandle(stop);
+        CloseHandle(ready);
+        return false;
+    }
+
+    std::wstring command = L"\"";
+    command.append(module_path, module_length);
+    command += L"\" --candidate-owner-host \"";
+    command += ready_name;
+    command += L"\" \"";
+    command += stop_name;
+    command += L"\"";
+    std::vector<wchar_t> command_line(command.begin(), command.end());
+    command_line.push_back(L'\0');
+
+    STARTUPINFOW startup {};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child {};
+    if (!CreateProcessW(
+            module_path,
+            command_line.data(),
+            nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+            nullptr, nullptr, &startup, &child)) {
+        CloseHandle(stop);
+        CloseHandle(ready);
+        return false;
+    }
+
+    *process = child;
+    *ready_event = ready;
+    *stop_event = stop;
+    return true;
+}
+
+void StopForeignOwnerHost(
+    PROCESS_INFORMATION* process,
+    HANDLE* ready_event,
+    HANDLE* stop_event) {
+    if (stop_event != nullptr && *stop_event != nullptr) {
+        SetEvent(*stop_event);
+    }
+    if (process != nullptr && process->hProcess != nullptr) {
+        WaitForSingleObject(process->hProcess, 5000);
+        CloseHandle(process->hThread);
+        CloseHandle(process->hProcess);
+        *process = {};
+    }
+    if (ready_event != nullptr && *ready_event != nullptr) {
+        CloseHandle(*ready_event);
+        *ready_event = nullptr;
+    }
+    if (stop_event != nullptr && *stop_event != nullptr) {
+        CloseHandle(*stop_event);
+        *stop_event = nullptr;
+    }
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 4 && wcscmp(argv[1], L"--candidate-owner-host") == 0) {
+        return RunForeignOwnerHost(argv[2], argv[3]);
+    }
+
     wchar_t temporary_path[MAX_PATH] {};
     const DWORD temporary_length = GetTempPathW(
         ARRAYSIZE(temporary_path), temporary_path);
@@ -41,6 +198,26 @@ int wmain(int argc, wchar_t** argv) {
             L"caishen-candidate-window-" + std::to_wstring(GetCurrentProcessId());
     CreateDirectoryW(isolated_local_app_data.c_str(), nullptr);
     SetEnvironmentVariableW(L"LOCALAPPDATA", isolated_local_app_data.c_str());
+
+    const std::wstring installed_root =
+        L"C:\\Program Files\\CaishenPinyin";
+    const std::wstring old_module =
+        installed_root + L"\\versions\\old-version\\ShuruIme.dll";
+    const auto settings_candidates =
+        shuru::SettingsExecutableCandidatesForRoot(
+            old_module, {}, installed_root,
+            L"new-version");
+    if (settings_candidates.empty() ||
+        settings_candidates.front() != installed_root +
+            L"\\versions\\new-version\\ShuruSettings.exe" ||
+        std::find(settings_candidates.begin(), settings_candidates.end(),
+                  installed_root +
+                      L"\\versions\\old-version\\ShuruSettings.exe") ==
+            settings_candidates.end() ||
+        shuru::SettingsInstallRootFromPath(old_module) != installed_root) {
+        std::fwprintf(stderr, L"versioned settings path resolution failed\n");
+        return 46;
+    }
 
     if (shuru::CandidateLayeredFontQuality() != ANTIALIASED_QUALITY ||
         shuru::CandidateLayeredFontQuality() == CLEARTYPE_QUALITY) {
@@ -420,6 +597,141 @@ int wmain(int argc, wchar_t** argv) {
     EnumThreadWindows(
         GetCurrentThreadId(), FindCandidateWindow, reinterpret_cast<LPARAM>(&handle));
     if (handle == nullptr) return 5;
+
+    // owned popup 只能绑定同进程顶层窗口。即使一个子窗口本身属于当前
+    // 进程，只要它的根窗口属于外部进程，也必须拒绝这个 owner。
+    PROCESS_INFORMATION foreign_process {};
+    HANDLE foreign_ready = nullptr;
+    HANDLE foreign_stop = nullptr;
+    if (!StartForeignOwnerHost(
+            &foreign_process, &foreign_ready, &foreign_stop) ||
+        WaitForSingleObject(foreign_ready, 5000) != WAIT_OBJECT_0) {
+        StopForeignOwnerHost(
+            &foreign_process, &foreign_ready, &foreign_stop);
+        std::fwprintf(stderr, L"foreign owner host did not start\n");
+        return 63;
+    }
+    ForeignOwnerWindowSearch foreign_search {foreign_process.dwProcessId, nullptr};
+    const ULONGLONG foreign_window_deadline = GetTickCount64() + 5000;
+    while (foreign_search.window == nullptr &&
+           GetTickCount64() < foreign_window_deadline) {
+        EnumWindows(
+            FindForeignOwnerWindow,
+            reinterpret_cast<LPARAM>(&foreign_search));
+        if (foreign_search.window == nullptr) Sleep(10);
+    }
+    if (foreign_search.window == nullptr) {
+        StopForeignOwnerHost(
+            &foreign_process, &foreign_ready, &foreign_stop);
+        std::fwprintf(stderr, L"foreign owner host window was not found\n");
+        return 64;
+    }
+
+    HWND cross_process_owner = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"candidate-cross-process-owner",
+        WS_OVERLAPPED | WS_VISIBLE,
+        0, 0, 120, 80,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (cross_process_owner != nullptr) {
+        const LONG_PTR style = GetWindowLongPtrW(cross_process_owner, GWL_STYLE);
+        SetWindowLongPtrW(
+            cross_process_owner,
+            GWL_STYLE,
+            (style | WS_CHILD) & ~static_cast<LONG_PTR>(WS_POPUP));
+    }
+    SetLastError(ERROR_SUCCESS);
+    const HWND previous_parent = cross_process_owner == nullptr
+        ? nullptr
+        : SetParent(cross_process_owner, foreign_search.window);
+    DWORD owner_process_id = 0;
+    DWORD root_process_id = 0;
+    if (cross_process_owner != nullptr) {
+        GetWindowThreadProcessId(cross_process_owner, &owner_process_id);
+    }
+    const HWND cross_process_root = cross_process_owner == nullptr
+        ? nullptr : GetAncestor(cross_process_owner, GA_ROOT);
+    if (cross_process_root != nullptr) {
+        GetWindowThreadProcessId(cross_process_root, &root_process_id);
+    }
+    if (cross_process_owner == nullptr ||
+        (previous_parent == nullptr && GetLastError() != ERROR_SUCCESS) ||
+        owner_process_id != GetCurrentProcessId() ||
+        root_process_id != foreign_process.dwProcessId) {
+        if (cross_process_owner != nullptr) DestroyWindow(cross_process_owner);
+        StopForeignOwnerHost(
+            &foreign_process, &foreign_ready, &foreign_stop);
+        std::fwprintf(
+            stderr,
+            L"cross-process owner setup failed owner-pid=%lu root-pid=%lu\n",
+            owner_process_id, root_process_id);
+        return 65;
+    }
+
+    window.Show(POINT {40, 40}, cross_process_owner);
+    if (GetWindow(handle, GW_OWNER) != nullptr) {
+        DestroyWindow(cross_process_owner);
+        StopForeignOwnerHost(
+            &foreign_process, &foreign_ready, &foreign_stop);
+        std::fwprintf(
+            stderr,
+            L"candidate window accepted an owner under a foreign root\n");
+        return 66;
+    }
+    window.Hide();
+    DestroyWindow(cross_process_owner);
+    StopForeignOwnerHost(
+        &foreign_process, &foreign_ready, &foreign_stop);
+
+    HWND owner = CreateWindowExW(
+        0, L"STATIC", L"candidate-owner", WS_OVERLAPPED,
+        0, 0, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (owner == nullptr) return 58;
+    window.Show(POINT {40, 40}, owner);
+    handle = window.GetHwnd();
+    if (GetWindow(handle, GW_OWNER) != owner) {
+        std::fwprintf(stderr, L"candidate window did not bind its host owner\n");
+        DestroyWindow(owner);
+        return 59;
+    }
+    window.Hide();
+    if (GetWindow(handle, GW_OWNER) != owner || IsWindowVisible(handle)) {
+        std::fwprintf(stderr, L"hidden candidate lost its host owner\n");
+        DestroyWindow(owner);
+        return 60;
+    }
+
+    window.Show(POINT {40, 40}, owner);
+    DestroyWindow(owner);
+    if (window.GetHwnd() != nullptr || IsWindow(handle)) {
+        std::fwprintf(stderr, L"destroyed owner retained its candidate window\n");
+        return 61;
+    }
+
+    HWND recovery_owner = CreateWindowExW(
+        0, L"STATIC", L"candidate-recovery-owner", WS_OVERLAPPED,
+        0, 0, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (recovery_owner == nullptr) return 67;
+    window.Show(POINT {40, 40}, recovery_owner);
+    handle = window.GetHwnd();
+    if (handle == nullptr || GetWindow(handle, GW_OWNER) != recovery_owner) {
+        DestroyWindow(recovery_owner);
+        std::fwprintf(stderr, L"candidate window did not create with its recovery owner\n");
+        return 68;
+    }
+    DestroyWindow(recovery_owner);
+    if (window.GetHwnd() != nullptr || IsWindow(handle)) {
+        std::fwprintf(stderr, L"recovery owner did not destroy its candidate window\n");
+        return 69;
+    }
+
+    window.Show(POINT {40, 40});
+    handle = window.GetHwnd();
+    if (handle == nullptr || !IsWindow(handle) || !IsWindowVisible(handle)) {
+        std::fwprintf(stderr, L"candidate window did not recover after owner destruction\n");
+        return 62;
+    }
 
     if (argc > 1 && wcscmp(argv[1], L"--preview") == 0) {
         const ULONGLONG deadline = GetTickCount64() + 8000;

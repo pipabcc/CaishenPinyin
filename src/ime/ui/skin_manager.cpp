@@ -1,5 +1,6 @@
 #include "skin_manager.h"
 #include "common/com_utils.h"
+#include "common/user_data_paths.h"
 
 #include <Windows.h>
 #include <gdiplus.h>
@@ -192,13 +193,8 @@ std::wstring GetModuleDirectory() {
 }
 
 std::wstring GetUserDataSkinsDirectory() {
-    DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (length == 0) return {};
-    std::wstring root(length, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", root.data(), length);
-    if (written == 0 || written >= length) return {};
-    root.resize(written);
-    return root + L"\\CaishenPinyin\\skins";
+    const std::wstring root = CaishenLocalAppData();
+    return root.empty() ? std::wstring{} : root + L"\\CaishenPinyin\\skins";
 }
 
 }  // namespace

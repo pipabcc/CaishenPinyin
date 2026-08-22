@@ -2,6 +2,7 @@
 
 #include "../common/guid_def.h"
 
+#include <ctffunc.h>
 #include <olectl.h>
 #include <algorithm>
 #include <cwchar>
@@ -58,9 +59,13 @@ STDMETHODIMP LangBarItemButton::GetInfo(TF_LANGBARITEMINFO* pInfo) {
     if (pInfo == nullptr) {
         return E_INVALIDARG;
     }
+    *pInfo = TF_LANGBARITEMINFO {};
     pInfo->clsidService = CLSID_ShuruTextService;
-    pInfo->guidItem = GUID_ShuruLangBarItem_Mode;
-    pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON | TF_LBI_STYLE_SHOWNINTRAY;
+    // Windows 8 起仅会在任务栏接纳这个系统输入模式 GUID。
+    pInfo->guidItem = GUID_LBI_INPUTMODE;
+    pInfo->dwStyle = TF_LBI_STYLE_BTN_BUTTON |
+        TF_LBI_STYLE_SHOWNINTRAY |
+        TF_LBI_STYLE_TEXTCOLORICON;
     pInfo->ulSort = 0;
     wcscpy_s(pInfo->szDescription, ARRAYSIZE(pInfo->szDescription), L"输入模式");
     return S_OK;
@@ -75,6 +80,12 @@ STDMETHODIMP LangBarItemButton::GetStatus(DWORD* pdwStatus) {
 }
 
 STDMETHODIMP LangBarItemButton::Show(BOOL /*fShow*/) {
+    // 该项始终可见，不声明 HIDDENSTATUSCONTROL。保持 S_OK 与
+    // Windows SampleIME/小狼毫实现一致，避免语言栏把 E_NOTIMPL
+    // 当作状态刷新失败。
+    if (sink_ != nullptr) {
+        sink_->OnUpdate(TF_LBI_STATUS);
+    }
     return S_OK;
 }
 
@@ -202,17 +213,32 @@ HICON LangBarItemButton::CreateModeIcon(bool english_mode, int icon_size) {
     HBITMAP color_bmp = CreateDIBSection(
         screen, reinterpret_cast<BITMAPINFO*>(&bih),
         DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC(nullptr, screen);
+    if (screen != nullptr) ReleaseDC(nullptr, screen);
     if (!color_bmp || !bits) {
         return nullptr;
     }
 
     HDC mem = CreateCompatibleDC(nullptr);
+    if (mem == nullptr) {
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
     HGDIOBJ old_bmp = SelectObject(mem, color_bmp);
+    if (old_bmp == nullptr) {
+        DeleteDC(mem);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
 
-    // 背景：深灰/黑底色
-    const COLORREF bg = RGB(32, 36, 44);
-    HBRUSH br = CreateSolidBrush(bg);
+    // 先在黑底上用白色灰度字形渲染覆盖率，再转为
+    // 透明背景的黑色 ARGB。TEXTCOLORICON 会把字形映射为系统文字色。
+    HBRUSH br = CreateSolidBrush(RGB(0, 0, 0));
+    if (br == nullptr) {
+        SelectObject(mem, old_bmp);
+        DeleteDC(mem);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
     RECT rc {0, 0, sz, sz};
     FillRect(mem, &rc, br);
     DeleteObject(br);
@@ -224,27 +250,96 @@ HICON LangBarItemButton::CreateModeIcon(bool english_mode, int icon_size) {
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
         CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei UI");
+    if (font == nullptr) {
+        SelectObject(mem, old_bmp);
+        DeleteDC(mem);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
     HGDIOBJ old_font = SelectObject(mem, font);
+    if (old_font == nullptr) {
+        DeleteObject(font);
+        SelectObject(mem, old_bmp);
+        DeleteDC(mem);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
 
     SetBkMode(mem, TRANSPARENT);
     SetTextColor(mem, RGB(255, 255, 255));
     const wchar_t* text = english_mode ? L"英" : L"中";
-    DrawTextW(mem, text, 1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    const int drawn = DrawTextW(
+        mem, text, 1, &rc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
     SelectObject(mem, old_font);
-    DeleteObject(font);
+    if (drawn == 0) {
+        DeleteObject(font);
+        SelectObject(mem, old_bmp);
+        DeleteDC(mem);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
 
-    // 将所有像素 Alpha 置为 0xFF
+    // GDI 不会写入 DIB Alpha，以灰度值还原字形覆盖率。
     DWORD* px = static_cast<DWORD*>(bits);
     const int total_pixels = sz * sz;
     for (int i = 0; i < total_pixels; ++i) {
-        px[i] |= 0xFF000000;
+        const BYTE blue = static_cast<BYTE>(px[i] & 0xFF);
+        const BYTE green = static_cast<BYTE>((px[i] >> 8) & 0xFF);
+        const BYTE red = static_cast<BYTE>((px[i] >> 16) & 0xFF);
+        const BYTE alpha = (std::max)(red, (std::max)(green, blue));
+        px[i] = static_cast<DWORD>(alpha) << 24;
     }
 
     SelectObject(mem, old_bmp);
     DeleteDC(mem);
 
     HBITMAP mask_bmp = CreateBitmap(sz, sz, 1, 1, nullptr);
+    if (mask_bmp == nullptr) {
+        DeleteObject(font);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
+    HDC mask_dc = CreateCompatibleDC(nullptr);
+    if (mask_dc == nullptr) {
+        DeleteObject(font);
+        DeleteObject(mask_bmp);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
+    HGDIOBJ old_mask = SelectObject(mask_dc, mask_bmp);
+    if (old_mask == nullptr) {
+        DeleteDC(mask_dc);
+        DeleteObject(font);
+        DeleteObject(mask_bmp);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
+    PatBlt(mask_dc, 0, 0, sz, sz, WHITENESS);
+    HGDIOBJ mask_font = SelectObject(mask_dc, font);
+    if (mask_font == nullptr) {
+        SelectObject(mask_dc, old_mask);
+        DeleteDC(mask_dc);
+        DeleteObject(font);
+        DeleteObject(mask_bmp);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
+    SetBkMode(mask_dc, TRANSPARENT);
+    SetTextColor(mask_dc, RGB(0, 0, 0));
+    const int mask_drawn = DrawTextW(
+        mask_dc, text, 1, &rc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(mask_dc, mask_font);
+    SelectObject(mask_dc, old_mask);
+    DeleteDC(mask_dc);
+    DeleteObject(font);
+    if (mask_drawn == 0) {
+        DeleteObject(mask_bmp);
+        DeleteObject(color_bmp);
+        return nullptr;
+    }
     ICONINFO ii {};
     ii.fIcon    = TRUE;
     ii.hbmColor = color_bmp;

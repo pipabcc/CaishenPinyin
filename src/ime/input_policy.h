@@ -46,6 +46,19 @@ struct ShortcutModifierPhysicalState {
     bool right_windows = false;
 };
 
+constexpr ShortcutModifierPhysicalState ConfirmShortcutModifierPhysicalState(
+    const ShortcutModifierPhysicalState& queued,
+    const ShortcutModifierPhysicalState& asynchronous) noexcept {
+    return {
+        queued.left_control && asynchronous.left_control,
+        queued.right_control && asynchronous.right_control,
+        queued.left_alt && asynchronous.left_alt,
+        queued.right_alt && asynchronous.right_alt,
+        queued.left_windows && asynchronous.left_windows,
+        queued.right_windows && asynchronous.right_windows,
+    };
+}
+
 constexpr WPARAM ResolveShortcutModifierSide(
     WPARAM key, LPARAM key_message) noexcept {
     const bool extended =

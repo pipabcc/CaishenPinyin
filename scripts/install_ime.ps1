@@ -741,6 +741,125 @@ function Sync-SettingsShortcut([string]$VersionDirectory) {
     }
 }
 
+# The Start menu search host (SearchHost.exe) runs inside an AppContainer, where
+# file access must additionally match an S-1-15-2-* ACE or it is denied outright.
+# This table mirrors kUserDataGrants in src/common/private_acl.cpp: the clipboard
+# directory is deliberately absent because its history may hold passwords and the
+# sandboxed host has no use for the v-mode panel.
+# NOTE: this script is parsed as ANSI when it has no BOM, so keep it ASCII-only.
+$AppContainerSids = @('S-1-15-2-1', 'S-1-15-2-2')
+$AppContainerReadRights =
+    [System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize'
+$AppContainerWriteRights =
+    [System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize, Write, Delete'
+$AppContainerFullInherit =
+    [System.Security.AccessControl.InheritanceFlags]'ObjectInherit, ContainerInherit'
+$AppContainerFileInherit =
+    [System.Security.AccessControl.InheritanceFlags]'ObjectInherit'
+$AppContainerNoPropagate =
+    [System.Security.AccessControl.PropagationFlags]'NoPropagateInherit'
+$AppContainerPropagate = [System.Security.AccessControl.PropagationFlags]'None'
+
+function Grant-PathToAppContainers {
+    param(
+        [string]$Path,
+        [System.Security.AccessControl.InheritanceFlags]$Inheritance,
+        [System.Security.AccessControl.PropagationFlags]$Propagation,
+        [System.Security.AccessControl.FileSystemRights]$Rights
+    )
+    # Paths that do not exist yet are left to the IME and the settings app, which
+    # run in the right user context; an elevated installer must not create folders
+    # under somebody else's LOCALAPPDATA.
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    try {
+        $security = Get-Acl -LiteralPath $Path
+        $changed = $false
+        foreach ($sid in $AppContainerSids) {
+            # Explicit entries only: inherited ACEs vanish when the parent DACL changes.
+            $rules = $security.GetAccessRules(
+                $true, $false, [System.Security.Principal.SecurityIdentifier])
+            $matched = $rules | Where-Object {
+                $_.AccessControlType -eq 'Allow' -and
+                $_.IdentityReference.Value -eq $sid -and
+                $_.InheritanceFlags -eq $Inheritance -and
+                $_.PropagationFlags -eq $Propagation -and
+                ($_.FileSystemRights -band $Rights) -eq $Rights
+            }
+            if ($matched) { continue }
+            $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $identity, $Rights, $Inheritance, $Propagation, 'Allow')
+            $security.AddAccessRule($rule)
+            $changed = $true
+        }
+        if ($changed) {
+            Set-Acl -LiteralPath $Path -AclObject $security
+            Write-DeployLog "appcontainer access granted: $Path"
+        }
+    } catch {
+        Write-DeployLog "appcontainer grant failed: $Path : $($_.Exception.Message)"
+    }
+}
+
+function Deny-PathToAppContainers {
+    param([string]$Path)
+    # Being absent from the grant table only means "we do not open it". When a
+    # parent carries an inheritable AppContainer ACE, access leaks down anyway, so
+    # sensitive paths need an explicit deny on top.
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
+    try {
+        $security = Get-Acl -LiteralPath $Path
+        $changed = $false
+        $full = [System.Security.AccessControl.FileSystemRights]'FullControl'
+        foreach ($sid in $AppContainerSids) {
+            $rules = $security.GetAccessRules(
+                $true, $false, [System.Security.Principal.SecurityIdentifier])
+            $matched = $rules | Where-Object {
+                $_.AccessControlType -eq 'Deny' -and
+                $_.IdentityReference.Value -eq $sid -and
+                $_.InheritanceFlags -eq $AppContainerFullInherit -and
+                ($_.FileSystemRights -band $full) -eq $full
+            }
+            if ($matched) { continue }
+            $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $identity, $full, $AppContainerFullInherit,
+                $AppContainerPropagate, 'Deny')
+            $security.AddAccessRule($rule)
+            $changed = $true
+        }
+        if ($changed) {
+            Set-Acl -LiteralPath $Path -AclObject $security
+            Write-DeployLog "appcontainer access denied: $Path"
+        }
+    } catch {
+        Write-DeployLog "appcontainer deny failed: $Path : $($_.Exception.Message)"
+    }
+}
+
+function Grant-AppContainerAccess {
+    # The root only inherits down to direct child files, so settings.ini keeps read
+    # access across atomic replacement while the clipboard subdirectory stays closed.
+    Grant-PathToAppContainers $UserDataRoot `
+        $AppContainerFileInherit $AppContainerNoPropagate $AppContainerReadRights
+    Grant-PathToAppContainers (Join-Path $UserDataRoot 'skins') `
+        $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
+    # data\lexicon carries a protected DACL from EnsureCurrentUserOnlyPath, which
+    # breaks inheritance, so it has to be listed explicitly.
+    foreach ($name in @('data', 'data\lexicon', 'logs', 'paste_requests', 'ui_requests')) {
+        Grant-PathToAppContainers (Join-Path $UserDataRoot $name) `
+            $AppContainerFullInherit $AppContainerPropagate $AppContainerWriteRights
+    }
+    Deny-PathToAppContainers (Join-Path $UserDataRoot 'clipboard')
+    # Lexicon and program directories only need read access. Both carried this ACE
+    # from a manual icacls run that was never committed, so reinstalling dropped it;
+    # pin it down here.
+    Grant-PathToAppContainers $DataRoot `
+        $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
+    Grant-PathToAppContainers $InstallRoot `
+        $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
+}
+
 function Test-SettingsShortcut([string]$VersionDirectory) {
     $shortcutPath = Get-ShortcutPath
     if (-not $shortcutPath) { return }
@@ -920,6 +1039,7 @@ try {
             Set-Pointer (Join-Path $InstallRoot 'current') $Version
             Set-Pointer (Join-Path $DataRoot 'current') $dataVersion
             Sync-SettingsShortcut $target
+            Grant-AppContainerAccess
             Invoke-FailureInjection 'AfterPointer'
             Write-DeployProgress 'health' 'running' 82 'Running installation health check'
             Test-CurrentInstallation

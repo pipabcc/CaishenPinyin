@@ -330,27 +330,40 @@ static void TestSettingsAndCustomPhrases(string root)
     var settingsPath = Path.Combine(root, "settings.ini");
     var defaults = SettingsStore.Load(settingsPath);
     Require(defaults.LearningEnabled && !defaults.ContentLogging &&
-            defaults.FuzzyEnabled && defaults.CandidateCount == 9,
+            defaults.FuzzyEnabled && defaults.CandidateCount == 9 &&
+            defaults.EnglishMixEnabled &&
+            defaults.EnglishCandidatePosition ==
+                SettingsStore.MiddleEnglishCandidatePosition,
         "设置默认值错误");
 
     File.WriteAllText(settingsPath,
-        "CandidateCount=99\nCandidateFontSize=no\nContentLogging=maybe\nFuzzyEnabled=0\n");
+        "CandidateCount=99\nCandidateFontSize=no\nContentLogging=maybe\n" +
+        "FuzzyEnabled=0\nEnglishMixEnabled=maybe\nEnglishCandidatePosition=unknown\n");
     var fallback = SettingsStore.Load(settingsPath);
     Require(fallback.CandidateCount == 9 &&
             fallback.CandidateFontSizeMode == SettingsStore.FollowSkinFontSizeMode &&
-            !fallback.ContentLogging && !fallback.FuzzyEnabled,
+            !fallback.ContentLogging && !fallback.FuzzyEnabled &&
+            fallback.EnglishMixEnabled &&
+            fallback.EnglishCandidatePosition ==
+                SettingsStore.MiddleEnglishCandidatePosition,
         "非法设置回退错误");
 
     File.WriteAllText(settingsPath,
-        "CandidateCount=11\nCandidateFontFamily=DengXian\nCandidateFontSize=24\n");
+        "CandidateCount=11\nCandidateFontFamily=DengXian\nCandidateFontSize=24\n" +
+        "EnglishMixEnabled=0\nEnglishCandidatePosition=first\n");
     var migrated = SettingsStore.Load(settingsPath);
     Require(migrated.CandidateCount == 11 &&
             migrated.CandidateFontFamily == "DengXian" &&
-            migrated.CandidateFontSizeMode == "large",
+            migrated.CandidateFontSizeMode == "large" &&
+            !migrated.EnglishMixEnabled &&
+            migrated.EnglishCandidatePosition ==
+                SettingsStore.FirstEnglishCandidatePosition,
         "旧版候选字号迁移错误");
 
     var expected = new AppSettings(
         EnglishDefault: true,
+        EnglishMixEnabled: true,
+        EnglishCandidatePosition: SettingsStore.LastEnglishCandidatePosition,
         LearningEnabled: false,
         ContentLogging: true,
         FuzzyEnabled: true,
@@ -377,6 +390,9 @@ static void TestSettingsAndCustomPhrases(string root)
             SettingsStore.CandidateFontSizeModeFromLegacy(24) == "large" &&
             SettingsStore.CandidateFontSizeModeFromLegacy(30) == "extra_large" &&
             SettingsStore.LegacyCandidateFontSize("extra_large") == 26 &&
+            SettingsStore.NormalizeEnglishCandidatePosition("FIRST") == "first" &&
+            SettingsStore.NormalizeEnglishCandidatePosition("last") == "last" &&
+            SettingsStore.NormalizeEnglishCandidatePosition("bad") == "middle" &&
             new AppSettings(CandidateCount: 10).Validated().CandidateCount == 10,
         "候选设置映射错误");
 

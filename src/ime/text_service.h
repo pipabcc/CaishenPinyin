@@ -127,11 +127,14 @@ private:
     bool clipboard_monitor_checked_ = false;
     std::uint64_t first_key_copy_tick_ = 0;
     std::uint64_t first_key_focus_tick_ = 0;
+    ITfContext* first_key_copy_context_ = nullptr;
+    HWND first_key_copy_window_ = nullptr;
     std::uint64_t first_key_recovery_generation_ = 0;
     std::uint64_t pending_first_key_generation_ = 0;
     std::uint64_t pending_first_key_started_tick_ = 0;
     ITfContext* pending_first_key_context_ = nullptr;
     wchar_t pending_first_key_character_ = 0;
+    ITfRange* recovered_composition_start_ = nullptr;
     struct BufferedFirstKeyInput {
         WPARAM wparam = 0;
         LPARAM lparam = 0;
@@ -146,6 +149,7 @@ private:
     bool IsOwnerThread() const noexcept;
     HRESULT AdviseThreadMgrEventSink();
     HRESULT UnadviseThreadMgrEventSink();
+    HRESULT BindEditContext(ITfContext* context);
     HRESULT AdviseTextEditSink(ITfDocumentMgr* doc_mgr);
     HRESULT UnadviseTextEditSink();
     HRESULT AdviseKeyEventSink();
@@ -169,7 +173,8 @@ private:
     void StartShortcutReleasePolling();
     void StopShortcutReleasePolling();
     void RecordCopyShortcutForFirstKeyRecovery(
-        WPARAM wparam, bool shortcut_modifier) noexcept;
+        ITfContext* context, WPARAM wparam,
+        bool shortcut_modifier) noexcept;
     void TryRecoverExternalFirstKey(
         ITfContext* context, TfEditCookie read_cookie,
         ITfEditRecord* edit_record);
@@ -181,6 +186,7 @@ private:
         std::uint64_t generation, ExistingTextCompositionResult result);
     void CancelFirstKeyRecovery(bool disarm_trigger) noexcept;
     void DisarmFirstKeyRecoveryTrigger() noexcept;
+    void ArmFirstKeyRecoveryFocus() noexcept;
     void ExpireFirstKeyRecovery() noexcept;
     bool HandlePendingFirstKeyInput(
         ITfContext* context, WPARAM wparam, LPARAM lparam, bool shortcut_modifier,
@@ -189,9 +195,14 @@ private:
     void CompleteShiftTap(ITfContext* context);
     void ResetCandidateAnchor() noexcept;
     void ClearCompositionState();
+    void ResetForContextTransition();
+    bool RebindFocusedContext();
+    bool IsCurrentTopContext(ITfContext* context) const;
+    void AbortRejectedComposition(HRESULT reason, ITfContext* attempted_context);
     void ToggleEnglishMode();
     void SyncStatusUi();
     void SyncLangBarItemEnglishMode();
+    HRESULT SyncInputModeCompartments() noexcept;
     HRESULT InitLangBarItem();
     void UninitLangBarItem() noexcept;
     void ToggleSoftKeyboard();

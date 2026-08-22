@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? clipboardQueryCancellation_;
     private int clipboardQueryGeneration_;
     private string? registeredDllPath_;
+    private string currentDisplayName_ = SettingsStore.DefaultDisplayName;
     private IReadOnlyList<SkinDescriptor> skinCatalog_ = Array.Empty<SkinDescriptor>();
 
     public MainWindow()
@@ -100,6 +101,13 @@ public partial class MainWindow : Window
     private void ApplySettings(AppSettings settings)
     {
         EnglishDefaultBox.IsChecked = settings.EnglishDefault;
+        EnglishMixEnabledBox.IsChecked = settings.EnglishMixEnabled;
+        EnglishCandidateFirstBox.IsChecked = settings.EnglishCandidatePosition ==
+            SettingsStore.FirstEnglishCandidatePosition;
+        EnglishCandidateMiddleBox.IsChecked = settings.EnglishCandidatePosition ==
+            SettingsStore.MiddleEnglishCandidatePosition;
+        EnglishCandidateLastBox.IsChecked = settings.EnglishCandidatePosition ==
+            SettingsStore.LastEnglishCandidatePosition;
         LearningBox.IsChecked = settings.LearningEnabled;
         ContentLoggingBox.IsChecked = settings.ContentLogging;
         FuzzyEnabledBox.IsChecked = settings.FuzzyEnabled;
@@ -113,7 +121,7 @@ public partial class MainWindow : Window
         SelectComboValue(CandidateCountBox, settings.CandidateCount);
         SelectComboTag(CandidateFontFamilyBox, settings.CandidateFontFamily);
         SelectComboTag(CandidateFontSizeBox, settings.CandidateFontSizeMode);
-        DisplayNameBox.Text = settings.DisplayName;
+        currentDisplayName_ = settings.DisplayName;
         if (PhraseDirectWindowBox != null) PhraseDirectWindowBox.IsChecked = settings.VvModeOpenWindow;
         if (ClipboardDirectWindowBox != null) ClipboardDirectWindowBox.IsChecked = settings.VModeOpenWindow;
         currentSkinId_ = settings.SkinId;
@@ -350,10 +358,16 @@ public partial class MainWindow : Window
 
     private AppSettings ReadSettings()
     {
-        var displayName = SettingsStore.NormalizeDisplayName(DisplayNameBox.Text) ??
-            throw new InvalidDataException("输入法列表名称须为 1 至 24 个可见字符。");
+        var displayName = SettingsStore.NormalizeDisplayName(currentDisplayName_) ??
+            SettingsStore.DefaultDisplayName;
         return new AppSettings(
             EnglishDefault: EnglishDefaultBox.IsChecked == true,
+            EnglishMixEnabled: EnglishMixEnabledBox.IsChecked == true,
+            EnglishCandidatePosition: EnglishCandidateFirstBox.IsChecked == true
+                ? SettingsStore.FirstEnglishCandidatePosition
+                : EnglishCandidateLastBox.IsChecked == true
+                    ? SettingsStore.LastEnglishCandidatePosition
+                    : SettingsStore.MiddleEnglishCandidatePosition,
             LearningEnabled: LearningBox.IsChecked == true,
             ContentLogging: ContentLoggingBox.IsChecked == true,
             FuzzyEnabled: FuzzyEnabledBox.IsChecked == true,

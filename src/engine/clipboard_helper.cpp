@@ -2,6 +2,7 @@
 #include "custom_phrase.h"
 #include "../common/com_utils.h"
 #include "../common/logger.h"
+#include "../common/user_data_paths.h"
 
 #include <Windows.h>
 #include <winsqlite/winsqlite3.h>
@@ -47,7 +48,7 @@ std::wstring GetClipboardJsonPath() {
         return AppendPath(override_directory, L"history.json");
     }
     return AppendPath(
-        ReadEnvironmentVariable(L"LOCALAPPDATA"),
+        CaishenLocalAppData(),
         L"CaishenPinyin\\clipboard\\history.json");
 }
 
@@ -58,7 +59,7 @@ std::wstring GetClipboardDatabasePath() {
         return AppendPath(override_directory, L"history.db");
     }
     return AppendPath(
-        ReadEnvironmentVariable(L"LOCALAPPDATA"),
+        CaishenLocalAppData(),
         L"CaishenPinyin\\clipboard\\history.db");
 }
 
@@ -67,7 +68,7 @@ std::wstring GetTextPasteRequestDirectory() {
         L"CAISHEN_PASTE_REQUEST_DIR");
     if (!override_directory.empty()) return override_directory;
     return AppendPath(
-        ReadEnvironmentVariable(L"LOCALAPPDATA"),
+        CaishenLocalAppData(),
         L"CaishenPinyin\\paste_requests");
 }
 

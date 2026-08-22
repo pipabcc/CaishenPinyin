@@ -13,6 +13,7 @@
 #include "../common/logger.h"
 #include "../common/private_acl.h"
 #include "../common/runtime_config.h"
+#include "../common/user_data_paths.h"
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,7 @@
 #include <limits>
 #include <map>
 #include <cmath>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -32,18 +34,9 @@ bool FileExists(const std::wstring& path) {
 }
 
 std::wstring GetWritableUserDictPath(const std::wstring& lexicon_dir) {
-    DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
-    if (length == 0) {
-        return lexicon_dir + L"\\user_dict.txt";
-    }
-    std::wstring local_app_data(static_cast<size_t>(length), L'\0');
-    const DWORD written = GetEnvironmentVariableW(
-        L"LOCALAPPDATA", &local_app_data[0], length);
-    if (written == 0 || written >= length) {
-        return lexicon_dir + L"\\user_dict.txt";
-    }
-    local_app_data.resize(written);
-    return local_app_data + L"\\CaishenPinyin\\data\\lexicon\\user_dict.txt";
+    const std::wstring path = CaishenUserDataPath(
+        L"data\\lexicon\\user_dict.txt");
+    return path.empty() ? lexicon_dir + L"\\user_dict.txt" : path;
 }
 
 struct CsGuard {
@@ -166,6 +159,72 @@ bool PreferEnglishCompletion(
     return left.text < right.text;
 }
 
+void PositionEnglishCandidate(
+    std::vector<Candidate>* candidates,
+    const std::wstring& english_text,
+    EnglishCandidatePosition position,
+    size_t candidate_page_size) {
+    if (candidates == nullptr || candidates->empty() || english_text.empty()) {
+        return;
+    }
+
+    const auto english = std::find_if(
+        candidates->begin(), candidates->end(), [&](const Candidate& candidate) {
+            return candidate.is_english && candidate.text == english_text;
+        });
+    if (english == candidates->end() || english->pinned) return;
+
+    const size_t english_index = static_cast<size_t>(
+        std::distance(candidates->begin(), english));
+    const size_t page_size = candidate_page_size == 0 ? size_t {9}
+                                                       : candidate_page_size;
+    const size_t page_count = (std::min)(page_size, candidates->size());
+    if (page_count == 0) return;
+
+    const auto is_available = [&](size_t index) {
+        if (index == english_index) return true;
+        const Candidate& candidate = (*candidates)[index];
+        return !candidate.pinned &&
+            candidate.source != CandidateSource::CustomPhrase;
+    };
+
+    std::optional<size_t> destination;
+    if (position == EnglishCandidatePosition::First) {
+        for (size_t index = 0; index < page_count; ++index) {
+            if (is_available(index)) {
+                destination = index;
+                break;
+            }
+        }
+    } else if (position == EnglishCandidatePosition::Last) {
+        for (size_t index = page_count; index > 0; --index) {
+            if (is_available(index - 1)) {
+                destination = index - 1;
+                break;
+            }
+        }
+    } else {
+        // 偶数页采用靠后的中位；目标被自定义短语占用时先向后、再向前。
+        const size_t middle = page_count / 2;
+        for (size_t offset = 0; offset < page_count; ++offset) {
+            if (middle + offset < page_count &&
+                is_available(middle + offset)) {
+                destination = middle + offset;
+                break;
+            }
+            if (offset != 0 && middle >= offset &&
+                is_available(middle - offset)) {
+                destination = middle - offset;
+                break;
+            }
+        }
+    }
+
+    if (destination && *destination != english_index) {
+        std::swap((*candidates)[english_index], (*candidates)[*destination]);
+    }
+}
+
 double CorrectionQuality(const Candidate& candidate) {
     constexpr double kEditPenalty = 60.0;
     constexpr double kKeyboardPenalty = 10.0;
@@ -248,6 +307,9 @@ void PinyinEngine::SetQueryOptions(const QueryOptions& options) {
     schema_ = options.schema;
     fuzzy_enabled_ = options.fuzzy_enabled;
     fuzzy_config_ = options.fuzzy_config;
+    english_mix_enabled_ = options.english_mix_enabled;
+    english_candidate_position_ = options.english_candidate_position;
+    candidate_page_size_ = options.candidate_page_size;
 }
 
 QueryOptions PinyinEngine::GetQueryOptions() const {
@@ -256,6 +318,9 @@ QueryOptions PinyinEngine::GetQueryOptions() const {
     options.schema = schema_;
     options.fuzzy_enabled = fuzzy_enabled_;
     options.fuzzy_config = fuzzy_config_;
+    options.english_mix_enabled = english_mix_enabled_;
+    options.english_candidate_position = english_candidate_position_;
+    options.candidate_page_size = candidate_page_size_;
     return options;
 }
 
@@ -586,6 +651,9 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         options.schema = schema_;
         options.fuzzy_enabled = fuzzy_enabled_;
         options.fuzzy_config = fuzzy_config_;
+        options.english_mix_enabled = english_mix_enabled_;
+        options.english_candidate_position = english_candidate_position_;
+        options.candidate_page_size = candidate_page_size_;
     }
     return Query(raw_input, limit, options);
 }
@@ -600,6 +668,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     const bool fuzzy_enabled = options.fuzzy_enabled;
     FuzzyConfig fuzzy_config = options.fuzzy_config;
     const InputSchema schema = options.schema;
+    const bool english_mix_enabled = options.english_mix_enabled;
     const PinnedCandidateSchema pinned_schema =
         schema == InputSchema::ShuangpinXiaohe
         ? PinnedCandidateSchema::ShuangpinXiaohe
@@ -1601,7 +1670,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
         if(!u.empty()||!b.empty()){add(std::move(u),n,40,1,true,CandidateSource::Prefix);add(std::move(b),n,40,1,true,CandidateSource::Prefix);break;}
     }
-    if(schema==InputSchema::Quanpin && query.find('\'')==std::string::npos &&
+    if(english_mix_enabled && schema==InputSchema::Quanpin &&
+       query.find('\'')==std::string::npos &&
        !lexicon->english_dictionary.empty() && compact.size()>=2) {
         auto english_exact = lexicon->english_dictionary.LookupExact(compact);
         auto english_prefix = lexicon->english_dictionary.LookupPrefix(compact,limit);
@@ -1676,9 +1746,11 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     }
     // Promote only high-confidence English input.  A real Chinese exact/user
     // candidate remains authoritative (women -> 我们), while inputs that are
-    // merely valid pinyin fragments (easy / engli) surface the closest English
-    // word first.
-    if (schema == InputSchema::Quanpin && query.find('\'') == std::string::npos &&
+    // merely valid pinyin fragments (easy / engli) retain the closest English
+    // word for placement on the configured first page position.
+    std::optional<std::wstring> promoted_english_text;
+    if (english_mix_enabled && schema == InputSchema::Quanpin &&
+        query.find('\'') == std::string::npos &&
         compact.size() >= kEnglishPromotionMinLength &&
         !HasStrongChineseEvidence(pool, compact)) {
         auto promoted = lexicon->english_dictionary.LookupPrefix(compact, (std::max)(limit * 8, size_t{128}));
@@ -1690,6 +1762,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 return IsPromotableEnglishCandidate(candidate, compact);
             });
         if (best != promoted.end()) {
+            promoted_english_text = best->text;
             const auto existing = std::find_if(
                 pool.begin(), pool.end(), [&](const Candidate& candidate) {
                     return candidate.text == best->text;
@@ -1743,6 +1816,12 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             raw_input.size(), limit, &pool);
     }
     pinned_candidates_.Promote(pinned_schema, raw_input, &pool);
+    if (promoted_english_text) {
+        PositionEnglishCandidate(
+            &pool, *promoted_english_text,
+            options.english_candidate_position,
+            options.candidate_page_size);
+    }
     if (schema == InputSchema::Quanpin) {
         std::unordered_map<size_t, std::vector<pinyin_data::SyllablePath>>
             segmentation_lattices;

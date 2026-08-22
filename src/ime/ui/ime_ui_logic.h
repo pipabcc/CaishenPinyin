@@ -7,9 +7,15 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "common/logger.h"
+#include "common/com_utils.h"
+#include "common/user_data_paths.h"
 #include "engine/candidate.h"
 
 namespace shuru {
@@ -449,12 +455,16 @@ inline bool IsReliableCandidateRect(const RECT& rect, bool clipped = false) noex
     return !clipped && rect.bottom > rect.top && rect.right >= rect.left;
 }
 
+inline bool IsUsableCandidateHostRect(const RECT& rect) noexcept {
+    return rect.right > rect.left && rect.bottom > rect.top;
+}
+
 inline bool IsCandidateRectPlausibleForHost(
     const RECT& rect,
     const RECT& host_rect,
     int tolerance = 64) noexcept {
     if (!IsReliableCandidateRect(rect) ||
-        host_rect.right <= host_rect.left || host_rect.bottom <= host_rect.top) {
+        !IsUsableCandidateHostRect(host_rect)) {
         return false;
     }
     const int margin = (std::max)(0, tolerance);
@@ -464,28 +474,217 @@ inline bool IsCandidateRectPlausibleForHost(
            rect.top <= host_rect.bottom + margin;
 }
 
-inline std::vector<std::wstring> SettingsExecutableCandidates(
+inline std::wstring SettingsDirectory(const std::wstring& path) {
+    const auto split = path.find_last_of(L"\\/");
+    return split == std::wstring::npos ? std::wstring{} : path.substr(0, split);
+}
+
+inline std::wstring SettingsLowercase(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](wchar_t character) {
+            return static_cast<wchar_t>(std::towlower(character));
+        });
+    return value;
+}
+
+inline bool IsSafeSettingsVersion(const std::wstring& value) noexcept {
+    return !value.empty() && value.size() <= 128 &&
+        std::all_of(value.begin(), value.end(), [](wchar_t character) {
+            return (character >= L'0' && character <= L'9') ||
+                   (character >= L'a' && character <= L'z') ||
+                   (character >= L'A' && character <= L'Z') ||
+                   character == L'.' || character == L'_' || character == L'-';
+        });
+}
+
+inline std::wstring SettingsInstallRootFromPath(
+    const std::wstring& path) {
+    const std::wstring normalized = SettingsLowercase(path);
+    const std::wstring marker = L"\\versions\\";
+    const std::size_t marker_position = normalized.find(marker);
+    if (marker_position == std::wstring::npos) return {};
+    const std::size_t version_start = marker_position + marker.size();
+    const std::size_t version_end = path.find_first_of(L"\\/", version_start);
+    if (version_end == std::wstring::npos || version_end == version_start) {
+        return {};
+    }
+    const std::wstring version = path.substr(version_start,
+        version_end - version_start);
+    return IsSafeSettingsVersion(version)
+        ? path.substr(0, marker_position) : std::wstring{};
+}
+
+inline std::wstring ReadSettingsPointer(const std::wstring& path) {
+    std::ifstream input(std::filesystem::path(path), std::ios::binary);
+    if (!input.is_open()) return {};
+    std::string value;
+    std::getline(input, value);
+    if (value.size() >= 3 &&
+        static_cast<unsigned char>(value[0]) == 0xEF &&
+        static_cast<unsigned char>(value[1]) == 0xBB &&
+        static_cast<unsigned char>(value[2]) == 0xBF) {
+        value.erase(0, 3);
+    }
+    if (!value.empty() && value.back() == '\r') value.pop_back();
+    const std::wstring wide = Utf8ToWide(value);
+    return IsSafeSettingsVersion(wide) ? wide : std::wstring{};
+}
+
+inline void AddSettingsExecutableCandidate(
+    std::vector<std::wstring>* paths, const std::wstring& directory) {
+    if (paths == nullptr || directory.empty()) return;
+    const std::wstring candidate = directory + L"\\ShuruSettings.exe";
+    const std::wstring normalized = SettingsLowercase(candidate);
+    const bool duplicate = std::any_of(paths->begin(), paths->end(),
+        [&](const std::wstring& existing) {
+            return SettingsLowercase(existing) == normalized;
+        });
+    if (!duplicate) paths->push_back(candidate);
+}
+
+inline std::vector<std::wstring> SettingsExecutableCandidatesForRoot(
     const std::wstring& module_path,
-    const std::wstring& registered_module_path = {}) {
-    auto directory = [](const std::wstring& path) {
-        const auto split = path.find_last_of(L"\\/");
-        return split == std::wstring::npos ? std::wstring{} : path.substr(0, split);
-    };
+    const std::wstring& registered_module_path,
+    const std::wstring& install_root,
+    const std::wstring& current_version) {
     std::vector<std::wstring> paths;
-    auto add = [&](const std::wstring& dir) {
-        if (dir.empty()) return;
-        const std::wstring candidate = dir + L"\\ShuruSettings.exe";
-        if (std::find(paths.begin(), paths.end(), candidate) == paths.end()) paths.push_back(candidate);
-    };
-    add(directory(registered_module_path));
-    const std::wstring module_dir = directory(module_path);
-    add(module_dir);
-    add(module_dir + L"\\settings\\bin\\Release\\net8.0-windows");
-    add(module_dir + L"\\..\\settings\\bin\\Release\\net8.0-windows");
+    if (!install_root.empty() && IsSafeSettingsVersion(current_version)) {
+        AddSettingsExecutableCandidate(
+            &paths, install_root + L"\\versions\\" + current_version);
+    }
+    AddSettingsExecutableCandidate(
+        &paths, SettingsDirectory(registered_module_path));
+    const std::wstring module_dir = SettingsDirectory(module_path);
+    AddSettingsExecutableCandidate(&paths, module_dir);
+    if (!install_root.empty()) {
+        AddSettingsExecutableCandidate(&paths, install_root);
+    }
+    AddSettingsExecutableCandidate(
+        &paths, module_dir + L"\\settings\\bin\\Release\\net8.0-windows");
+    AddSettingsExecutableCandidate(
+        &paths, module_dir + L"\\..\\settings\\bin\\Release\\net8.0-windows");
     return paths;
 }
 
+inline std::vector<std::wstring> SettingsExecutableCandidates(
+    const std::wstring& module_path,
+    const std::wstring& registered_module_path = {}) {
+    std::wstring install_root = SettingsInstallRootFromPath(module_path);
+    if (install_root.empty()) {
+        install_root = SettingsInstallRootFromPath(registered_module_path);
+    }
+    const std::wstring current_version = install_root.empty()
+        ? std::wstring{}
+        : ReadSettingsPointer(install_root + L"\\current");
+    return SettingsExecutableCandidatesForRoot(
+        module_path, registered_module_path, install_root, current_version);
+}
+
+inline bool StartSettingsProcess(
+    const std::wstring& path, const wchar_t* params) {
+    std::wstring command_line = L"\"" + path + L"\"";
+    if (params != nullptr && *params != L'\0') {
+        command_line += L" ";
+        command_line += params;
+    }
+    std::vector<wchar_t> mutable_command(command_line.begin(),
+        command_line.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup {};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_SHOWNORMAL;
+    PROCESS_INFORMATION process_info {};
+    const std::wstring working_directory = SettingsDirectory(path);
+    const BOOL created = CreateProcessW(
+        path.c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
+        CREATE_UNICODE_ENVIRONMENT, nullptr,
+        working_directory.empty() ? nullptr : working_directory.c_str(),
+        &startup, &process_info);
+    if (!created) return false;
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    return true;
+}
+
+// 请求文件里写的是固定关键字而不是原始命令行：请求目录对所有沙箱应用可写，
+// 关键字化可确保它无法演变成任意进程启动。不在白名单内的参数不代理。
+inline const wchar_t* SettingsUiRequestCommand(const wchar_t* params) noexcept {
+    if (params == nullptr || *params == L'\0') return L"settings";
+    if (wcscmp(params, L"-quick") == 0) return L"clipboard";
+    if (wcscmp(params, L"-quick phrases") == 0) return L"phrases";
+    return nullptr;
+}
+
+inline std::wstring CreateUiRequestToken() {
+    GUID id {};
+    if (FAILED(CoCreateGuid(&id))) return {};
+    wchar_t formatted[40] {};
+    if (StringFromGUID2(id, formatted, ARRAYSIZE(formatted)) == 0) return {};
+    std::wstring token;
+    token.reserve(32);
+    for (const wchar_t character : std::wstring(formatted)) {
+        if (iswxdigit(character) != 0) {
+            token.push_back(static_cast<wchar_t>(towlower(character)));
+        }
+    }
+    return token.size() == 32 ? token : std::wstring {};
+}
+
+// AppContainer 宿主被系统禁止创建包外进程，把打开 UI 的意图落成请求文件，
+// 交给常驻的剪贴板监听进程代为执行。
+inline bool WriteSettingsUiRequest(const wchar_t* params) {
+    const wchar_t* command = SettingsUiRequestCommand(params);
+    if (command == nullptr) return false;
+    const std::wstring directory = CaishenUserDataPath(L"ui_requests");
+    if (directory.empty()) return false;
+    std::error_code error;
+    std::filesystem::create_directories(
+        std::filesystem::path(directory), error);
+    if (error) return false;
+    const std::wstring token = CreateUiRequestToken();
+    if (token.empty()) return false;
+
+    const std::wstring path = directory + L"\\" + token + L".txt";
+    // 临时文件不用 .txt 后缀，避免监听方在改名前就被唤醒读到半截内容。
+    const std::wstring temporary = directory + L"\\" + token + L".tmp";
+    {
+        std::ofstream output(
+            std::filesystem::path(temporary),
+            std::ios::binary | std::ios::trunc);
+        if (!output) return false;
+        output << "CAISHEN_UI_REQUEST_V1\n";
+        for (const wchar_t character : std::wstring(command)) {
+            output << static_cast<char>(character);
+        }
+        output << '\n';
+        output.flush();
+        if (!output) {
+            output.close();
+            DeleteFileW(temporary.c_str());
+            return false;
+        }
+    }
+    if (!MoveFileExW(
+            temporary.c_str(), path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(temporary.c_str());
+        return false;
+    }
+    return true;
+}
+
 inline bool LaunchSettingsExecutable(HWND owner, HINSTANCE module, const wchar_t* params = nullptr) {
+    // 沙箱宿主里 ShellExecute 与 CreateProcess 都会以 ERROR_ACCESS_DENIED
+    // 失败，没有可回退的启动路径，直接改走请求文件代理。
+    if (IsCurrentProcessAppContainer()) {
+        if (WriteSettingsUiRequest(params)) return true;
+        SHURU_LOG_WARN(
+            "settings ui request rejected in app container params=%ls",
+            params == nullptr ? L"(none)" : params);
+        return false;
+    }
     wchar_t module_path[MAX_PATH] = {};
     if (module == nullptr ||
         GetModuleFileNameW(module, module_path, ARRAYSIZE(module_path)) == 0) {
@@ -500,8 +699,25 @@ inline bool LaunchSettingsExecutable(HWND owner, HINSTANCE module, const wchar_t
         const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(
             owner, L"open", path.c_str(), params, nullptr, SW_SHOWNORMAL));
         if (result > 32) return true;
+        const DWORD shell_error = GetLastError();
+        if (StartSettingsProcess(path, params)) return true;
+        SHURU_LOG_WARN(
+            "settings-launch failed path=%ls shell=%p error=%lu create-error=%lu",
+            path.c_str(), reinterpret_cast<void*>(result), shell_error,
+            GetLastError());
     }
     return false;
+}
+
+// 沙箱中失败只可能是代理进程没常驻，与「设置程序缺失」是两回事，
+// 沿用同一句错误提示会把用户引向重装。
+inline void ReportSettingsLaunchFailure(HWND owner) {
+    const wchar_t* message = IsCurrentProcessAppContainer()
+        ? L"设置程序未在后台运行，无法从系统沙箱中打开。\n"
+          L"请先从开始菜单的「财神输入法设置」快捷方式打开一次。"
+        : L"无法找到或启动 ShuruSettings.exe。请重新安装设置程序。";
+    MessageBoxW(owner, message, L"财神输入法",
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 }
 
 inline bool IsClipboardMonitorRunning() noexcept {
@@ -515,6 +731,10 @@ inline bool IsClipboardMonitorRunning() noexcept {
 }
 
 inline bool EnsureClipboardMonitorExecutable(HINSTANCE module) {
+    // 沙箱宿主既启动不了监听进程，Local\ 命名空间又与普通宿主隔离，
+    // IsClipboardMonitorRunning 永远为假——不加这道闸每次激活都会白试一次
+    // 注定失败的进程启动。监听进程由普通宿主负责拉起。
+    if (IsCurrentProcessAppContainer()) return true;
     return IsClipboardMonitorRunning() ||
         LaunchSettingsExecutable(nullptr, module, L"-clipboard-monitor");
 }

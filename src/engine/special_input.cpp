@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <locale>
 #include <sstream>
@@ -20,7 +21,7 @@ bool IsAsciiUpper(char ch) noexcept { return ch >= 'A' && ch <= 'Z'; }
 
 class CalculatorParser {
 public:
-    explicit CalculatorParser(const std::string& expression) : expression_(expression) {}
+    explicit CalculatorParser(std::string expression) : expression_(std::move(expression)) {}
 
     bool Parse(double* result) noexcept {
         if (result == nullptr || expression_.empty() ||
@@ -128,7 +129,7 @@ private:
         return std::isfinite(value) && std::abs(value) <= kMaxAbsoluteResult;
     }
 
-    const std::string& expression_;
+    std::string expression_;
     std::size_t position_ = 0;
     int operations_ = 0;
 };

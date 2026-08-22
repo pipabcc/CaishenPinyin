@@ -50,7 +50,7 @@ public:
     bool Create(HINSTANCE instance);
     void Destroy();
 
-    void Show(const POINT& screen_pos);
+    void Show(const POINT& screen_pos, HWND owner = nullptr);
     void Hide();
     bool IsVisible() const { return visible_; }
     SIZE WindowSize() const;
@@ -138,6 +138,7 @@ private:
     static constexpr int kCandidateItemGap = 18;
     static constexpr UINT_PTR kReadyPollTimerId = 1;
     static constexpr UINT kReadyPollIntervalMs = 80;
+    static constexpr UINT kTypingStatsRefreshIntervalMs = 1000;
     static constexpr UINT_PTR kVModeTimerId = 1002;
     static constexpr UINT_PTR kSkinAnimationTimerId = 1003;
     // 延迟动作会为每一代递增编号，使用独立区间避免与固定轮询定时器碰撞。
@@ -191,6 +192,7 @@ private:
 
     std::wstring composing_;
     TypingStatsSnapshot typing_stats_;
+    std::uint64_t typing_stats_last_refresh_tick_ = 0;
     std::vector<Candidate> candidates_;
     size_t selected_ = 0;
     size_t page_ = 0;
@@ -220,6 +222,8 @@ private:
     std::function<void()> deferred_action_;
     std::deque<std::function<void()>> owner_thread_actions_;
     bool skin_animation_timer_active_ = false;
+    HWND host_owner_ = nullptr;
+    HWND rejected_owner_ = nullptr;
     std::wstring font_signature_;
     std::wstring layout_skin_id_;
 
@@ -246,6 +250,10 @@ private:
         void* graphics, uint8_t* pixels, int bitmap_width, int bitmap_height,
         int content_offset);
     bool UpdateLayeredWindowContent(const POINT& window_origin);
+    bool CreateNativeWindow(HWND owner);
+    bool EnsureOwner(HWND requested_owner);
+    HWND NormalizeOwner(HWND requested_owner) const noexcept;
+    void ResetWindowBoundState() noexcept;
     LRESULT OnPaint();
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 };

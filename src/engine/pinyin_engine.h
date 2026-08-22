@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../common/english_candidate_position.h"
 #include "candidate.h"
 #include "custom_phrase.h"
 #include "dictionary.h"
@@ -29,6 +30,11 @@ struct QueryOptions {
     InputSchema schema = InputSchema::Quanpin;
     bool fuzzy_enabled = true;
     FuzzyConfig fuzzy_config {};
+    bool english_mix_enabled = true;
+    EnglishCandidatePosition english_candidate_position =
+        EnglishCandidatePosition::Middle;
+    // Query 的 limit 可能是多页缓冲区；英文位置只按实际第一页计算。
+    size_t candidate_page_size = 9;
     // 最近一次上屏的候选文本（会话上下文）；用于 bigram 加权与整句转换。
     std::wstring context;
 };
@@ -109,6 +115,10 @@ private:
     bool fuzzy_enabled_ = true;
     FuzzyConfig fuzzy_config_ {};
     InputSchema schema_ = InputSchema::Quanpin;
+    bool english_mix_enabled_ = true;
+    EnglishCandidatePosition english_candidate_position_ =
+        EnglishCandidatePosition::Middle;
+    size_t candidate_page_size_ = 9;
     std::string last_learned_pinyin_;
     std::wstring last_learned_word_;
     // 同一输入码下连续选择同一候选的次数；达到 2 次后该候选直接置顶。

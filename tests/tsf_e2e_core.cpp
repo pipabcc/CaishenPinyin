@@ -142,6 +142,123 @@ private:
     TfActiveSelEnd* ase_ = nullptr;
 };
 
+class MoveSelectionToCompositionStartEditSession final : public ITfEditSession {
+public:
+    MoveSelectionToCompositionStartEditSession(
+        ITfContext* context, ITfComposition* composition)
+        : context_(context), composition_(composition) {
+        if (context_ != nullptr) context_->AddRef();
+        if (composition_ != nullptr) composition_->AddRef();
+    }
+
+    ~MoveSelectionToCompositionStartEditSession() {
+        if (composition_ != nullptr) composition_->Release();
+        if (context_ != nullptr) context_->Release();
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (object == nullptr) return E_INVALIDARG;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_ITfEditSession) {
+            *object = static_cast<ITfEditSession*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return InterlockedIncrement(&refs_);
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG refs = InterlockedDecrement(&refs_);
+        if (refs == 0) delete this;
+        return static_cast<ULONG>(refs);
+    }
+
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
+        if (context_ == nullptr || composition_ == nullptr) return E_INVALIDARG;
+
+        ITfRange* range = nullptr;
+        HRESULT hr = composition_->GetRange(&range);
+        if (FAILED(hr) || range == nullptr) return FAILED(hr) ? hr : E_FAIL;
+        hr = range->Collapse(edit_cookie, TF_ANCHOR_START);
+        if (SUCCEEDED(hr)) {
+            TF_SELECTION selection {};
+            selection.range = range;
+            selection.style.ase = TF_AE_START;
+            selection.style.fInterimChar = FALSE;
+            hr = context_->SetSelection(edit_cookie, 1, &selection);
+        }
+        range->Release();
+        return hr;
+    }
+
+private:
+    LONG refs_ = 1;
+    ITfContext* context_ = nullptr;
+    ITfComposition* composition_ = nullptr;
+};
+
+class ShiftCompositionStartForwardEditSession final : public ITfEditSession {
+public:
+    explicit ShiftCompositionStartForwardEditSession(ITfComposition* composition)
+        : composition_(composition) {
+        if (composition_ != nullptr) composition_->AddRef();
+    }
+
+    ~ShiftCompositionStartForwardEditSession() {
+        if (composition_ != nullptr) composition_->Release();
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (object == nullptr) return E_INVALIDARG;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_ITfEditSession) {
+            *object = static_cast<ITfEditSession*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return InterlockedIncrement(&refs_);
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const LONG refs = InterlockedDecrement(&refs_);
+        if (refs == 0) delete this;
+        return static_cast<ULONG>(refs);
+    }
+
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie edit_cookie) override {
+        if (composition_ == nullptr) return E_INVALIDARG;
+
+        ITfRange* new_start = nullptr;
+        HRESULT hr = composition_->GetRange(&new_start);
+        if (FAILED(hr) || new_start == nullptr) {
+            return FAILED(hr) ? hr : E_FAIL;
+        }
+        LONG shifted = 0;
+        hr = new_start->ShiftStart(edit_cookie, 1, &shifted, nullptr);
+        if (SUCCEEDED(hr) && shifted != 1) hr = TF_E_INVALIDPOS;
+        if (SUCCEEDED(hr)) {
+            hr = new_start->Collapse(edit_cookie, TF_ANCHOR_START);
+        }
+        if (SUCCEEDED(hr)) {
+            hr = composition_->ShiftStart(edit_cookie, new_start);
+        }
+        new_start->Release();
+        return hr;
+    }
+
+private:
+    LONG refs_ = 1;
+    ITfComposition* composition_ = nullptr;
+};
+
 class InsertPlainTextEditSession final : public ITfEditSession {
 public:
     InsertPlainTextEditSession(
@@ -278,7 +395,14 @@ int wmain() {
         }
     }
 
-    // 后续改写组合串不再重复 SetSelection；宿主应保留已经折叠到末端的光标。
+    // 新版 WinUI 控件可能在 SetText 前后把选择端重置到组合范围开头。
+    // 更新组合串必须检测实际选择端，并仅在偏离末端时修复。
+    if (!RunEditSession(
+            context, client_id,
+            new MoveSelectionToCompositionStartEditSession(
+                context, composition))) {
+        goto cleanup;
+    }
     if (!RunEditSession(
             context, client_id,
             new shuru::SetCompositionEditSession(
@@ -339,53 +463,81 @@ int wmain() {
         }
     }
 
-    // 某些宿主在 Ctrl+C 后绕过按键 sink，先把首字母作为普通文本写入。
-    // 恢复路径必须直接接管该范围，再继续写入后续拼音，不能丢失或重复首字母。
+    // 某些宿主在 Ctrl+C 后绕过按键 sink，异步恢复执行前可能已经连续
+    // 写入多个字母。恢复路径必须从最初范围扩展到当前光标并整体接管。
     {
         ITfRange* plain_range = nullptr;
+        ITfRange* trailing_range = nullptr;
         if (!RunEditSession(
                 context, client_id,
                 new InsertPlainTextEditSession(
-                    context, L"j", &plain_range)) ||
+                    context, L"n", &plain_range)) ||
             plain_range == nullptr) {
             if (plain_range != nullptr) plain_range->Release();
+            goto cleanup;
+        }
+        if (!RunEditSession(
+                context, client_id,
+                new InsertPlainTextEditSession(
+                    context, L"i", &trailing_range)) ||
+            trailing_range == nullptr) {
+            plain_range->Release();
+            if (trailing_range != nullptr) trailing_range->Release();
             goto cleanup;
         }
 
         shuru::ExistingTextCompositionResult adoption =
             shuru::ExistingTextCompositionResult::Failed;
+        std::wstring adopted_text;
+        ITfRange* recovered_composition_start = nullptr;
         if (!RunEditSession(
                 context, client_id,
                 new shuru::AdoptExistingTextEditSession(
-                    context, sink, plain_range, L'j', &composition,
+                    context, sink, plain_range, L'n', &composition,
+                    &recovered_composition_start,
                     TF_INVALID_GUIDATOM, []() { return true; },
-                    [&adoption](shuru::ExistingTextCompositionResult result) {
+                    [&adoption, &adopted_text](
+                        shuru::ExistingTextCompositionResult result,
+                        std::wstring text) {
                         adoption = result;
+                        adopted_text = text;
                     })) ||
             adoption != shuru::ExistingTextCompositionResult::Adopted ||
-            composition == nullptr) {
+            adopted_text != L"ni" ||
+            composition == nullptr || recovered_composition_start == nullptr) {
             plain_range->Release();
+            trailing_range->Release();
+            if (recovered_composition_start != nullptr) {
+                recovered_composition_start->Release();
+            }
             goto cleanup;
         }
         plain_range->Release();
+        trailing_range->Release();
 
         if (!RunEditSession(
                 context, client_id,
                 new shuru::SetCompositionEditSession(
-                    context, client_id, sink, &composition, L"jix",
+                    context, client_id, sink, &composition, L"nihao",
                     TF_INVALID_GUIDATOM, false)) ||
             !RunEditSession(
                 context, client_id,
+                new ShiftCompositionStartForwardEditSession(composition)) ||
+            !RunEditSession(
+                context, client_id,
                 new shuru::InsertTextEditSession(
-                    context, client_id, &composition, L"jix"))) {
+                    context, client_id, &composition, L"\u4f60\u597d",
+                    recovered_composition_start, L"nihao"))) {
+            recovered_composition_start->Release();
             goto cleanup;
         }
+        recovered_composition_start->Release();
 
         std::wstring text;
         if (!RunEditSession(
                 context, client_id, new ReadTextEditSession(context, &text),
                 TF_ES_SYNC | TF_ES_READ) ||
-            text != L"\u968f\u5fc3\u8f93\u51651 jix") {
+            text != L"\u968f\u5fc3\u8f93\u51651 \u4f60\u597d") {
             std::fwprintf(
                 stderr, L"unexpected adopted first-key text: %ls\n",
                 text.c_str());
