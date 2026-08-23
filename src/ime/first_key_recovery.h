@@ -8,6 +8,10 @@ namespace shuru {
 
 inline constexpr std::uint64_t kFirstKeyRecoveryWindowMs = 8000;
 inline constexpr std::uint64_t kFirstKeyRecoveryPendingTimeoutMs = 1000;
+// V 触发器武装后极短时间内出现的单字母写入，更可能是"粘贴了单个字母"
+// 本身而不是掉落键（粘贴紧跟击键的人力间隔远大于此值）；守卫窗口内
+// 跳过接管但不解除触发器，交给后续判定与清扫网兜底。
+inline constexpr std::uint64_t kFirstKeyPasteEditGuardMs = 150;
 inline constexpr std::size_t kFirstKeyRecoveryMaximumTextLength = 64;
 
 constexpr bool IsRecoverableAsciiLetter(wchar_t character) noexcept {

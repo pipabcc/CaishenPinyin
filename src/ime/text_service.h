@@ -105,6 +105,13 @@ private:
     RECT candidate_anchor_rect_ {};
     bool candidate_position_pending_ = false;
     bool candidate_layout_notified_ = false;
+    // 该宿主是否发送过 ITfTextLayoutSink 通知。发送布局通知的宿主必须
+    // 等到当前文本世代的布局到达后才允许解析锚点，否则 Chromium 系宿主
+    // 在渲染器重排完成前会返回组合起点的旧矩形，造成候选窗左闪。
+    bool candidate_layout_sink_seen_ = false;
+    // 锚点确认时的拼音长度。组合只增不减（正常输入）时，向左且未换行
+    // 的测量结果视为旧布局残留，拒绝更新锚点。
+    std::size_t candidate_anchor_pinyin_len_ = 0;
     std::uint64_t candidate_layout_generation_ = 0;
     std::uint64_t candidate_layout_serial_ = 0;
     unsigned candidate_position_attempts_ = 0;
@@ -129,6 +136,14 @@ private:
     std::uint64_t first_key_focus_tick_ = 0;
     ITfContext* first_key_copy_context_ = nullptr;
     HWND first_key_copy_window_ = nullptr;
+    // 武装触发器的快捷键（'C'/'V'/'X'；0 表示焦点触发）。V 触发器后面
+    // 预期紧跟宿主自己的整段粘贴写入，不能据此解除触发器。
+    wchar_t first_key_trigger_key_ = 0;
+    // 触发器存活期间观察到的"整段写入"末端（ACP）。粘贴正文末尾可能恰
+    // 好是孤立字母，清扫网只回收该边界之后新出现的字母，防止误吃正文。
+    bool first_key_boundary_valid_ = false;
+    LONG first_key_boundary_acp_ = 0;
+    ITfContext* first_key_boundary_context_ = nullptr;
     std::uint64_t first_key_recovery_generation_ = 0;
     std::uint64_t pending_first_key_generation_ = 0;
     std::uint64_t pending_first_key_started_tick_ = 0;
@@ -152,6 +167,8 @@ private:
     HRESULT BindEditContext(ITfContext* context);
     HRESULT AdviseTextEditSink(ITfDocumentMgr* doc_mgr);
     HRESULT UnadviseTextEditSink();
+    static void UnadviseContextSinks(
+        ITfContext* context, DWORD text_cookie, DWORD layout_cookie);
     HRESULT AdviseKeyEventSink();
     HRESULT UnadviseKeyEventSink();
 
@@ -172,12 +189,13 @@ private:
     void StopShiftReleasePolling();
     void StartShortcutReleasePolling();
     void StopShortcutReleasePolling();
-    void RecordCopyShortcutForFirstKeyRecovery(
+    void RecordShortcutForFirstKeyRecovery(
         ITfContext* context, WPARAM wparam,
         bool shortcut_modifier) noexcept;
     void TryRecoverExternalFirstKey(
         ITfContext* context, TfEditCookie read_cookie,
         ITfEditRecord* edit_record);
+    bool TrySweepFallenFirstKey(ITfContext* context);
     bool BeginFirstKeyRecovery(
         ITfContext* context, ITfRange* range, wchar_t character);
     bool CanAdoptFirstKeyRecovery(
@@ -188,6 +206,11 @@ private:
     void DisarmFirstKeyRecoveryTrigger() noexcept;
     void ArmFirstKeyRecoveryFocus() noexcept;
     void ExpireFirstKeyRecovery() noexcept;
+    bool FirstKeyTriggerScopeMatches(
+        ITfContext* context, std::uint64_t now,
+        bool* focus_rebuilt_after_copy = nullptr) const noexcept;
+    void RecordFirstKeyEditBoundary(
+        ITfContext* context, bool acp_known, LONG boundary_acp) noexcept;
     bool HandlePendingFirstKeyInput(
         ITfContext* context, WPARAM wparam, LPARAM lparam, bool shortcut_modifier,
         bool test_callback, bool* eaten);

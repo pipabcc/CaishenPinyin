@@ -947,4 +947,127 @@ STDMETHODIMP GetInputScopeEditSession::DoEditSession(TfEditCookie ec) {
     return ReadContextInputScopePrivacy(context_, ec, out_privacy_);
 }
 
+// -------- ProbeTailLetterEditSession --------
+
+ProbeTailLetterEditSession::ProbeTailLetterEditSession(
+    ITfContext* context, Found found)
+    : context_(context), found_(std::move(found)) {
+    if (context_) {
+        context_->AddRef();
+    }
+}
+
+ProbeTailLetterEditSession::~ProbeTailLetterEditSession() {
+    SafeRelease(&context_);
+}
+
+STDMETHODIMP ProbeTailLetterEditSession::QueryInterface(REFIID riid, void** ppvObj) {
+    if (ppvObj == nullptr) {
+        return E_INVALIDARG;
+    }
+    *ppvObj = nullptr;
+    if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ITfEditSession)) {
+        *ppvObj = static_cast<ITfEditSession*>(this);
+        AddRef();
+        return S_OK;
+    }
+    return E_NOINTERFACE;
+}
+
+STDMETHODIMP_(ULONG) ProbeTailLetterEditSession::AddRef() {
+    return InterlockedIncrement(&ref_);
+}
+
+STDMETHODIMP_(ULONG) ProbeTailLetterEditSession::Release() {
+    const LONG value = InterlockedDecrement(&ref_);
+    if (value == 0) {
+        delete this;
+    }
+    return static_cast<ULONG>(value);
+}
+
+STDMETHODIMP ProbeTailLetterEditSession::DoEditSession(TfEditCookie ec) {
+    if (context_ == nullptr || !found_) {
+        return E_FAIL;
+    }
+
+    TF_SELECTION selection {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(
+        ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched != 1 || selection.range == nullptr) {
+        if (SUCCEEDED(hr) && selection.range != nullptr) {
+            selection.range->Release();
+        }
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+
+    BOOL selection_empty = FALSE;
+    hr = selection.range->IsEmpty(ec, &selection_empty);
+    if (FAILED(hr) || !selection_empty) {
+        selection.range->Release();
+        return SUCCEEDED(hr) ? S_FALSE : hr;
+    }
+
+    // 回看光标前的字母尾巴：粘贴/切换后的竞态可能让首键（偶发两个键）
+    // 绕过按键 sink 直落正文。只接管长度 1-2 且前面是非字母的字母尾巴
+    // （三个及以上视为正文旧文本，绝不吞并），避免吃掉既有内容。
+    ITfRange* tail = nullptr;
+    hr = selection.range->Clone(&tail);
+    selection.range->Release();
+    if (FAILED(hr) || tail == nullptr) {
+        SafeRelease(&tail);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+    LONG moved = 0;
+    hr = tail->ShiftStart(ec, -3, &moved, nullptr);
+    if (FAILED(hr)) {
+        tail->Release();
+        return hr;
+    }
+    wchar_t text[4] {};
+    ULONG length = 0;
+    hr = tail->GetText(ec, 0, text, 3, &length);
+    tail->Release();
+    if (FAILED(hr) || length == 0) {
+        return SUCCEEDED(hr) ? S_FALSE : hr;
+    }
+
+    std::size_t run = 0;
+    while (run < length && IsRecoverableAsciiLetter(text[length - 1 - run])) {
+        ++run;
+    }
+    if (run == 0 || run > 2) {
+        return S_FALSE;
+    }
+    const wchar_t letter = text[length - run];
+
+    // 只覆盖字母尾巴的范围交给回调（回调内自行 AddRef）。
+    ITfRange* letter_range = nullptr;
+    hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched != 1 || selection.range == nullptr) {
+        if (selection.range != nullptr) selection.range->Release();
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+    hr = selection.range->Clone(&letter_range);
+    selection.range->Release();
+    if (FAILED(hr) || letter_range == nullptr) {
+        SafeRelease(&letter_range);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+    LONG letter_moved = 0;
+    hr = letter_range->ShiftStart(
+        ec, -static_cast<LONG>(run), &letter_moved, nullptr);
+    // 反向移动时 TSF 返回负的位移计数，只要求确实移满整个尾巴。
+    if (FAILED(hr) ||
+        letter_moved > 0 || static_cast<LONG>(letter_moved) <
+            -static_cast<LONG>(run)) {
+        letter_range->Release();
+        return FAILED(hr) ? hr : S_FALSE;
+    }
+    found_(letter_range, letter);
+    letter_range->Release();
+    return S_OK;
+}
+
 } // namespace shuru

@@ -727,34 +727,73 @@ HRESULT TextService::BindEditContext(ITfContext* context) {
     if (context == edit_context_ && text_edit_cookie_ != TF_INVALID_COOKIE) {
         return S_OK;
     }
-    UnadviseTextEditSink();
-    if (context == nullptr) return S_OK;
+    if (context == nullptr) {
+        UnadviseTextEditSink();
+        return S_OK;
+    }
+
+    // 先在新上下文上挂好新 sink，成功后才解除旧绑定。焦点切换或粘贴
+    // 瞬间宿主的新上下文可能尚未支持 ITfSource（QI 失败），此时保留旧
+    // sink 比完全裸奔更安全——OnEndEdit 首键接管网至少还能覆盖旧文档；
+    // 新文档由按键清扫网与按键时的补绑兜底。
+    ITfContext* previous_context = edit_context_;
+    edit_context_ = nullptr;
+    const DWORD previous_text_cookie = text_edit_cookie_;
+    const DWORD previous_layout_cookie = text_layout_cookie_;
+    text_edit_cookie_ = TF_INVALID_COOKIE;
+    text_layout_cookie_ = TF_INVALID_COOKIE;
 
     ITfSource* source = nullptr;
     HRESULT hr = context->QueryInterface(
         IID_ITfSource, reinterpret_cast<void**>(&source));
-    if (FAILED(hr)) {
-        return hr;
+    if (SUCCEEDED(hr) && source != nullptr) {
+        hr = source->AdviseSink(
+            IID_ITfTextEditSink, static_cast<ITfTextEditSink*>(this),
+            &text_edit_cookie_);
+        if (SUCCEEDED(hr)) {
+            const HRESULT layout_hr = source->AdviseSink(
+                IID_ITfTextLayoutSink,
+                static_cast<ITfTextLayoutSink*>(this),
+                &text_layout_cookie_);
+            if (FAILED(layout_hr)) {
+                text_layout_cookie_ = TF_INVALID_COOKIE;
+                SHURU_LOG_WARN("text layout sink unavailable: 0x%08X", layout_hr);
+            }
+        }
+        source->Release();
     }
 
-    hr = source->AdviseSink(
-        IID_ITfTextEditSink, static_cast<ITfTextEditSink*>(this), &text_edit_cookie_);
     if (SUCCEEDED(hr)) {
-        const HRESULT layout_hr = source->AdviseSink(
-            IID_ITfTextLayoutSink,
-            static_cast<ITfTextLayoutSink*>(this),
-            &text_layout_cookie_);
-        if (FAILED(layout_hr)) {
-            text_layout_cookie_ = TF_INVALID_COOKIE;
-            SHURU_LOG_WARN("text layout sink unavailable: 0x%08X", layout_hr);
-        }
-    }
-    source->Release();
-    if (SUCCEEDED(hr)) {
+        UnadviseContextSinks(
+            previous_context, previous_text_cookie, previous_layout_cookie);
+        SafeRelease(&previous_context);
         edit_context_ = context;
         edit_context_->AddRef();
+        return S_OK;
     }
+
+    // 新绑定失败：恢复旧 sink 的登记信息，让旧绑定继续生效。
+    edit_context_ = previous_context;
+    text_edit_cookie_ = previous_text_cookie;
+    text_layout_cookie_ = previous_layout_cookie;
     return hr;
+}
+
+void TextService::UnadviseContextSinks(
+    ITfContext* context, DWORD text_cookie, DWORD layout_cookie) {
+    if (context == nullptr) return;
+    ITfSource* source = nullptr;
+    if (SUCCEEDED(context->QueryInterface(
+            IID_ITfSource, reinterpret_cast<void**>(&source))) &&
+        source != nullptr) {
+        if (text_cookie != TF_INVALID_COOKIE) {
+            source->UnadviseSink(text_cookie);
+        }
+        if (layout_cookie != TF_INVALID_COOKIE) {
+            source->UnadviseSink(layout_cookie);
+        }
+        source->Release();
+    }
 }
 
 HRESULT TextService::AdviseTextEditSink(ITfDocumentMgr* doc_mgr) {
@@ -1139,10 +1178,22 @@ void TextService::StopShortcutReleasePolling() {
     candidate_window_.StopShortcutReleasePolling();
 }
 
-void TextService::RecordCopyShortcutForFirstKeyRecovery(
+// 复制（C）、粘贴（V）、剪切（X）完成后宿主可能短暂忙于处理剪贴板，
+// 随后的首个字母存在绕过按键 sink 直落正文的风险。这些快捷键统一
+// 记录为首键接管的触发器；设置程序注入的 v 模式粘贴（带 CPIM 标记）
+// 属于输入法自身动作，不参与武装。修饰键判定以物理 Ctrl 键态为准：
+// 个别宿主派发 V 键时 lparam 不含修饰键信息，若同时要求 shortcut_modifier
+// 会漏掉粘贴武装，而物理键态不会说谎。
+void TextService::RecordShortcutForFirstKeyRecovery(
     ITfContext* context, WPARAM wparam,
     bool shortcut_modifier) noexcept {
-    if (context == nullptr || wparam != 'C' || !shortcut_modifier) return;
+    (void)shortcut_modifier;
+    if (context == nullptr) return;
+    if (wparam != 'C' && wparam != 'V' && wparam != 'X') return;
+    if (wparam == 'V' && IsClipboardPasteInjectedShortcut(
+            wparam, static_cast<ULONG_PTR>(GetMessageExtraInfo()))) {
+        return;
+    }
     const ShortcutModifierPhysicalState physical =
         ReadShortcutModifierPhysicalState();
     if (!physical.left_control && !physical.right_control) return;
@@ -1154,6 +1205,7 @@ void TextService::RecordCopyShortcutForFirstKeyRecovery(
         DisarmFirstKeyRecoveryTrigger();
         first_key_copy_tick_ = now;
         first_key_focus_tick_ = 0;
+        first_key_trigger_key_ = static_cast<wchar_t>(wparam);
         first_key_copy_context_ = context;
         first_key_copy_context_->AddRef();
         first_key_copy_window_ = ActiveContextRootWindow(context);
@@ -1163,6 +1215,10 @@ void TextService::RecordCopyShortcutForFirstKeyRecovery(
 void TextService::DisarmFirstKeyRecoveryTrigger() noexcept {
     first_key_copy_tick_ = 0;
     first_key_focus_tick_ = 0;
+    first_key_trigger_key_ = 0;
+    first_key_boundary_valid_ = false;
+    first_key_boundary_acp_ = 0;
+    SafeRelease(&first_key_boundary_context_);
     SafeRelease(&first_key_copy_context_);
     first_key_copy_window_ = nullptr;
 }
@@ -1174,6 +1230,47 @@ void TextService::ArmFirstKeyRecoveryFocus() noexcept {
         now - first_key_copy_tick_ <= kFirstKeyRecoveryWindowMs;
     if (!copy_recent) DisarmFirstKeyRecoveryTrigger();
     first_key_focus_tick_ = now;
+}
+
+// 首键触发器的管辖范围判定。粘贴或焦点切换可能让宿主重建上下文，而
+// 绑定滞后时按键已经到达新上下文对象上——同根窗口视为同域；只有真正
+// 跨窗口的写入才不属于本触发器。OnEndEdit 网与清扫网共用此门。
+bool TextService::FirstKeyTriggerScopeMatches(
+    ITfContext* context, std::uint64_t now,
+    bool* focus_rebuilt_after_copy) const noexcept {
+    const bool copy_triggered = first_key_copy_tick_ != 0;
+    const bool recent_focus = first_key_focus_tick_ != 0 &&
+        now >= first_key_focus_tick_ &&
+        now - first_key_focus_tick_ <= kFirstKeyRecoveryWindowMs;
+    const bool focus_rebuilt = copy_triggered && recent_focus &&
+        first_key_focus_tick_ >= first_key_copy_tick_;
+    if (focus_rebuilt_after_copy != nullptr) {
+        *focus_rebuilt_after_copy = focus_rebuilt;
+    }
+    if (context == edit_context_ || context == first_key_copy_context_) {
+        return true;
+    }
+    const HWND context_root = ActiveContextRootWindow(context);
+    if (context_root == nullptr) return false;
+    if (first_key_copy_window_ != nullptr &&
+        context_root == first_key_copy_window_) {
+        return true;
+    }
+    if (edit_context_ != nullptr) {
+        const HWND edit_root = ActiveContextRootWindow(edit_context_);
+        if (edit_root != nullptr && context_root == edit_root) return true;
+    }
+    return false;
+}
+
+void TextService::RecordFirstKeyEditBoundary(
+    ITfContext* context, bool acp_known, LONG boundary_acp) noexcept {
+    if (context == nullptr) return;
+    SafeRelease(&first_key_boundary_context_);
+    first_key_boundary_context_ = context;
+    first_key_boundary_context_->AddRef();
+    first_key_boundary_valid_ = acp_known;
+    first_key_boundary_acp_ = boundary_acp;
 }
 
 void TextService::CancelFirstKeyRecovery(bool disarm_trigger) noexcept {
@@ -1201,10 +1298,12 @@ void TextService::ExpireFirstKeyRecovery() noexcept {
 
 bool TextService::CanAdoptFirstKeyRecovery(
     std::uint64_t generation, ITfContext* context) const noexcept {
+    // 不要求 context == edit_context_：粘贴或焦点切换瞬间绑定可能滞后，
+    // pending 上下文本身就是按键实际到达的焦点上下文。
     if (!first_key_recovery_pending_ ||
         generation != pending_first_key_generation_ ||
         context == nullptr || context != pending_first_key_context_ ||
-        context != edit_context_ || english_mode_ || composition_ != nullptr ||
+        english_mode_ || composition_ != nullptr ||
         !composing_pinyin_.empty()) {
         return false;
     }
@@ -1334,6 +1433,10 @@ bool TextService::BeginFirstKeyRecovery(
         &session_result);
     session->Release();
     if (FAILED(request_result) || FAILED(session_result)) {
+        SHURU_LOG_WARN(
+            "first-key adopt request failed req=0x%08X sess=0x%08X",
+            static_cast<unsigned>(request_result),
+            static_cast<unsigned>(session_result));
         if (first_key_recovery_pending_ &&
             pending_first_key_generation_ == generation) {
             CancelFirstKeyRecovery(true);
@@ -1355,8 +1458,7 @@ void TextService::CompleteFirstKeyRecovery(
 
     if (result != ExistingTextCompositionResult::Adopted ||
         !first_key_recovery_adopted_ ||
-        composition_ == nullptr ||
-        pending_first_key_context_ != edit_context_) {
+        composition_ == nullptr) {
         CancelFirstKeyRecovery(true);
         ResetCandidateAnchor();
         return;
@@ -1403,26 +1505,13 @@ void TextService::TryRecoverExternalFirstKey(
     ReadContextInputScopePrivacy(context, read_cookie, &privacy);
     const bool sensitive = privacy == InputScopePrivacy::Sensitive ||
         IsPasswordWindow(ActiveContextWindow(context));
-    const bool copy_triggered = first_key_copy_tick_ != 0;
-    const bool recent_focus = first_key_focus_tick_ != 0 &&
-        now >= first_key_focus_tick_ &&
-        now - first_key_focus_tick_ <= kFirstKeyRecoveryWindowMs;
-    const bool focus_rebuilt_after_copy = copy_triggered &&
-        recent_focus && first_key_focus_tick_ >= first_key_copy_tick_;
-    const HWND current_root_window = ActiveContextRootWindow(context);
-    const bool copy_scope_matches = copy_triggered
-        ? (context == first_key_copy_context_ ||
-           (focus_rebuilt_after_copy &&
-            first_key_copy_window_ != nullptr &&
-            current_root_window == first_key_copy_window_))
-        : recent_focus && context == edit_context_;
-    const std::uint64_t trigger_tick = copy_triggered
+    const std::uint64_t trigger_tick = first_key_copy_tick_ != 0
         ? first_key_copy_tick_ : first_key_focus_tick_;
 
     FirstKeyRecoverySignals signals {
         now,
         trigger_tick,
-        copy_scope_matches,
+        FirstKeyTriggerScopeMatches(context, now),
         !english_mode_,
         composition_ != nullptr || !composing_pinyin_.empty(),
         context == edit_context_,
@@ -1445,19 +1534,53 @@ void TextService::TryRecoverExternalFirstKey(
         return;
     }
 
+    // 枚举全部变更区域：单区域+单字母才有资格被当作掉落首键；整段或多
+    // 区域写入（典型：粘贴正文本身）只记录写入末端作为清扫边界。取所有
+    // 区域末端的最大 ACP，兼容宿主把一次粘贴拆成多个区域上报。
     ITfRange* range = nullptr;
     ULONG fetched = 0;
     const HRESULT first_hr = ranges->Next(1, &range, &fetched);
-    bool single_range = SUCCEEDED(first_hr) && fetched == 1 && range != nullptr;
-    if (single_range) {
-        ITfRange* extra_range = nullptr;
-        ULONG extra_fetched = 0;
-        const HRESULT extra_hr = ranges->Next(
-            1, &extra_range, &extra_fetched);
-        single_range = SUCCEEDED(extra_hr) && extra_fetched == 0;
-        SafeRelease(&extra_range);
+    if (FAILED(first_hr) || fetched != 1 || range == nullptr) {
+        SafeRelease(&range);
+        ranges->Release();
+        return;
+    }
+    bool boundary_seen = false;
+    LONG boundary_acp = 0;
+    unsigned range_count = 1;
+    auto extend_boundary = [&boundary_seen, &boundary_acp](ITfRange* item) {
+        ITfRangeACP* acp_range = nullptr;
+        if (FAILED(item->QueryInterface(
+                IID_ITfRangeACP,
+                reinterpret_cast<void**>(&acp_range))) ||
+            acp_range == nullptr) {
+            return;
+        }
+        LONG start = 0;
+        LONG length = 0;
+        if (SUCCEEDED(acp_range->GetExtent(&start, &length)) &&
+            (!boundary_seen || start + length > boundary_acp)) {
+            boundary_seen = true;
+            boundary_acp = start + length;
+        }
+        acp_range->Release();
+    };
+    extend_boundary(range);
+    for (;;) {
+        if (range_count >= 16) break;  // 异常宿主防御，避免无限枚举
+        ITfRange* more = nullptr;
+        ULONG more_fetched = 0;
+        if (FAILED(ranges->Next(1, &more, &more_fetched)) ||
+            more_fetched != 1 || more == nullptr) {
+            SafeRelease(&more);
+            break;
+        }
+        ++range_count;
+        extend_boundary(more);
+        more->Release();
     }
     ranges->Release();
+    const bool single_range = range_count == 1;
 
     wchar_t character = 0;
     bool single_ascii_letter = false;
@@ -1482,15 +1605,130 @@ void TextService::TryRecoverExternalFirstKey(
     const FirstKeyRecoveryDecision decision =
         EvaluateFirstKeyRecovery(signals);
     if (decision == FirstKeyRecoveryDecision::Eligible) {
+        // V 触发器刚武装就出现的单字母写入，更可能是粘贴了单个字母而
+        // 不是掉落键：粘贴紧跟着的击键间隔远大于守卫窗口。跳过本次接管
+        // 但不解除触发器，并把该字母末端记为写入边界——它若真是粘贴，
+        // 清扫网不会吃掉它；若真是掉落键，人手下一键远在守卫窗口之外。
+        if (first_key_trigger_key_ == 'V' &&
+            now - trigger_tick <= kFirstKeyPasteEditGuardMs) {
+            RecordFirstKeyEditBoundary(context, boundary_seen, boundary_acp);
+            SafeRelease(&range);
+            return;
+        }
         if (!BeginFirstKeyRecovery(context, range, character)) {
             DisarmFirstKeyRecoveryTrigger();
         }
-    } else if (range != nullptr) {
-        // 焦点重建后的第一次真实文本写入若不是精确的单字母场景，
-        // 当前 Ctrl+C 触发器立即失效，避免稍后的无关字母被误接管。
-        DisarmFirstKeyRecoveryTrigger();
+    } else {
+        // 写入不是可接管的单字母场景（典型：粘贴正文、成段应用写入）。
+        // 不能据此解除触发器——"粘贴后继续输入首键掉落"正是要防护的
+        // 场景；改为记录写入边界，让清扫网只回收边界之后新出现的字母，
+        // 避免把粘贴内容末尾恰好是孤立字母的旧文本误当掉落键吃掉。
+        RecordFirstKeyEditBoundary(context, boundary_seen, boundary_acp);
     }
     SafeRelease(&range);
+}
+
+// 按键清扫网：窗口切换或粘贴后宿主输入管线可能短暂繁忙，让首键绕过
+// 按键 sink 直接落字，且该瞬间的上下文未必绑定成功（ITfSource 未就绪），
+// OnEndEdit 接管网因此可能完全失明。这里在触发器窗口内的首个字母按键
+// 到达时，主动同步探测光标前是否恰好残留一个孤立字母；命中则走与
+// OnEndEdit 路径相同的接管流程。
+bool TextService::TrySweepFallenFirstKey(ITfContext* context) {
+    if (context == nullptr || client_id_ == TF_CLIENTID_NULL ||
+        first_key_recovery_pending_ || english_mode_ ||
+        composition_ != nullptr || !composing_pinyin_.empty()) {
+        return false;
+    }
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t trigger_tick = first_key_copy_tick_ != 0
+        ? first_key_copy_tick_ : first_key_focus_tick_;
+    if (trigger_tick == 0 || now < trigger_tick ||
+        now - trigger_tick > kFirstKeyRecoveryWindowMs) {
+        return false;
+    }
+    // 不做上下文级管辖门：绑定滞后或无窗口宿主（控制台类）解析不出根
+    // 窗口，硬性按上下文拦截会漏掉真正的掉落键。
+    // 跨窗口防护（尽力而为）：能解析出根窗口、且既不是触发器的复制窗口
+    // 也不是当前编辑上下文的窗口时，本次按键必然来自其他窗口——那里的
+    // 光标前若恰好有孤立字母，吸走它只会破坏用户正文。
+    const HWND sweep_window = ActiveContextRootWindow(context);
+    if (sweep_window != nullptr) {
+        const bool same_as_copy = first_key_copy_window_ != nullptr &&
+            sweep_window == first_key_copy_window_;
+        bool same_as_edit = false;
+        if (!same_as_copy && edit_context_ != nullptr) {
+            const HWND edit_root = ActiveContextRootWindow(edit_context_);
+            same_as_edit = edit_root != nullptr && edit_root == sweep_window;
+        }
+        if (!same_as_copy && !same_as_edit) {
+            SHURU_LOG_WARN("sweep: key from a different window");
+            return false;
+        }
+    }
+    if ((context != edit_context_ ||
+         text_edit_cookie_ == TF_INVALID_COOKIE) &&
+        thread_mgr_ != nullptr) {
+        // 焦点切换或粘贴时绑定失败的上下文，此刻通常已经成熟；先补绑
+        // 一次（含同上下文但 sink 曾 advise 失败的情况），让后续
+        // OnEndEdit 也有机会工作。失败不阻塞清扫本身。
+        ITfDocumentMgr* doc = nullptr;
+        if (SUCCEEDED(thread_mgr_->GetFocus(&doc)) && doc != nullptr) {
+            AdviseTextEditSink(doc);
+            doc->Release();
+        }
+    }
+
+    ITfRange* letter_range = nullptr;
+    wchar_t letter = 0;
+    auto* probe = new (std::nothrow) ProbeTailLetterEditSession(
+        context,
+        [&letter_range, &letter](ITfRange* found_range, wchar_t found_letter) {
+            if (found_range != nullptr) {
+                letter_range = found_range;
+                letter_range->AddRef();
+            }
+            letter = found_letter;
+        });
+    if (probe == nullptr) return false;
+    HRESULT session_result = E_FAIL;
+    const HRESULT request_result = context->RequestEditSession(
+        client_id_, probe, TF_ES_SYNC | TF_ES_READ, &session_result);
+    probe->Release();
+    if (FAILED(request_result) || FAILED(session_result) ||
+        letter_range == nullptr || !IsRecoverableAsciiLetter(letter)) {
+        SafeRelease(&letter_range);
+        SHURU_LOG_WARN(
+            "sweep: probe miss req=0x%08X sess=0x%08X",
+            static_cast<unsigned>(request_result),
+            static_cast<unsigned>(session_result));
+        return false;
+    }
+
+    // 触发器存活期间观察到过整段写入（粘贴正文）时，只回收写入边界
+    // 之后新出现的字母；边界之前的字母属于既有正文——例如粘贴内容
+    // 恰好以孤立字母结尾——吃掉它会破坏用户刚粘贴的内容。
+    if (first_key_boundary_valid_ && first_key_boundary_context_ == context) {
+        ITfRangeACP* acp_range = nullptr;
+        if (SUCCEEDED(letter_range->QueryInterface(
+                IID_ITfRangeACP,
+                reinterpret_cast<void**>(&acp_range))) &&
+            acp_range != nullptr) {
+            LONG start = 0;
+            LONG length = 0;
+            const HRESULT extent_hr = acp_range->GetExtent(&start, &length);
+            acp_range->Release();
+            if (SUCCEEDED(extent_hr) && start < first_key_boundary_acp_) {
+                SafeRelease(&letter_range);
+                SHURU_LOG_WARN("sweep: letter before paste boundary");
+                return false;
+            }
+        }
+    }
+
+    const bool began =
+        BeginFirstKeyRecovery(context, letter_range, letter);
+    SafeRelease(&letter_range);
+    return began;
 }
 
 bool TextService::IsKeyEaten(
@@ -1588,8 +1826,12 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
     }
     const bool shortcut_modifier = ShortcutModifierForKey(
         wParam, lParam, true);
-    RecordCopyShortcutForFirstKeyRecovery(
+    RecordShortcutForFirstKeyRecovery(
         pic, wParam, shortcut_modifier);
+    if (!shortcut_modifier && IsVirtualKeyAlpha(wParam) &&
+        !first_key_recovery_pending_) {
+        TrySweepFallenFirstKey(pic);
+    }
     bool pending_eaten = false;
     if (HandlePendingFirstKeyInput(
             pic, wParam, lParam, shortcut_modifier, true,
@@ -1599,9 +1841,9 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
             wParam, lParam, shortcut_modifier, GetTickCount());
         return S_OK;
     }
-    if (!shortcut_modifier && IsVirtualKeyAlpha(wParam)) {
-        DisarmFirstKeyRecoveryTrigger();
-    }
+    // 此处不能因字母键到达就解除首键触发器：TestKeyDown 只是预测回调，
+    // 忙碌宿主（典型：刚粘贴完）可能在 Test 之后丢弃 KeyDown 并自行落字。
+    // 触发器统一在按键真正进入组合成功时（HandleKeyDown 内）解除。
     if (IsShiftKey(wParam)) {
         // 单独按 Shift：预备在 KeyUp 切换中/英；与其它键组合则取消
         // bit30=1 表示按键重复，不重新武装
@@ -1750,15 +1992,19 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
     const bool shortcut_modifier = ShortcutModifierForKey(
         wparam, lparam, false);
-    RecordCopyShortcutForFirstKeyRecovery(
+    RecordShortcutForFirstKeyRecovery(
         context, wparam, shortcut_modifier);
+    if (!shortcut_modifier && IsVirtualKeyAlpha(wparam) &&
+        !first_key_recovery_pending_) {
+        TrySweepFallenFirstKey(context);
+    }
     if (HandlePendingFirstKeyInput(
             context, wparam, lparam, shortcut_modifier, false, eaten)) {
         return true;
     }
-    if (!shortcut_modifier && IsVirtualKeyAlpha(wparam)) {
-        DisarmFirstKeyRecoveryTrigger();
-    }
+    // 字母键的触发器解除推迟到组合写入成功之后：宿主刚粘贴完可能短暂
+    // 拒绝编辑会话，SetCompositionString 失败时按键会被放行落字，此刻
+    // 触发器必须仍在武装状态，OnEndEdit 接管网才能回收这个掉落字母。
 
     // Shift 本身不在 KeyDown 切换；部分宿主跳过 OnTestKeyDown 直接派发
     // OnKeyDown，这里兜底武装状态机（与 Test 路径同一时刻状态，结果幂等）。
@@ -2194,6 +2440,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
                 *eaten = false;
                 return true;
             }
+            DisarmFirstKeyRecoveryTrigger();
             StartVModeWindowTimer();
             *eaten = true;
             return true;
@@ -2202,6 +2449,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         // 2. 如果当前为 'v' 且输入第2个 'v' 且开启了 vv_mode_open_window
         if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && (ch == 'v' || ch == 'V') && config.vv_mode_open_window) {
             *eaten = true;
+            DisarmFirstKeyRecoveryTrigger();
             LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
             ClearCompositionState();
             if (context) (void)SetCompositionString(context, L"");
@@ -2217,6 +2465,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             *eaten = false;
             return true;
         }
+        DisarmFirstKeyRecoveryTrigger();
         RefreshCandidates();
         UpdateCandidateWindow(context);
         *eaten = true;
@@ -2496,6 +2745,13 @@ void TextService::ScheduleCandidateWindowUpdate() {
     if (!candidate_position_pending_ || edit_context_ == nullptr || composing_pinyin_.empty()) {
         return;
     }
+    // 已知宿主会发布局通知时，文本改写自带的调度不得早于当前世代的
+    // 布局通知读坐标：Chromium 系宿主渲染器重排滞后于文本提交，过早
+    // 的 GetTextExt 会返回组合起点的旧矩形，候选窗就会左闪再回正。
+    // 从未见过布局通知的宿主保持原时序，避免锚点冻结。
+    if (candidate_layout_sink_seen_ && !candidate_layout_notified_) {
+        return;
+    }
 
     // 每条布局通知或文本改写都重新开始防抖计时。
     const std::uint64_t generation = candidate_layout_generation_;
@@ -2518,7 +2774,26 @@ void TextService::TryResolveCandidateAnchor(
     RECT rect {};
     if (GetCaretScreenRect(edit_context_, &rect) &&
         IsReliableCandidateRect(rect)) {
+        // 组合只增不减（正常逐键输入）时，测量结果比现有锚点更靠左且
+        // 没有换行，只能是宿主尚未完成重排的旧布局残留（Chromium 系
+        // 宿主会把组合起点的矩形交出来）。拒绝本次结果并等待重试，
+        // 避免候选窗"闪回首字母位置再跳回光标"。
+        if (has_candidate_anchor_ &&
+            composing_pinyin_.size() > candidate_anchor_pinyin_len_ &&
+            rect.left < candidate_anchor_rect_.left - 2 &&
+            abs(rect.top - candidate_anchor_rect_.top) < 4) {
+            if (++candidate_position_attempts_ <
+                kCandidatePositionMaximumAttempts) {
+                candidate_window_.StartDeferredAction(
+                    [this, generation, layout_serial]() {
+                        TryResolveCandidateAnchor(generation, layout_serial);
+                    },
+                    kCandidatePositionRetryMs);
+            }
+            return;
+        }
         candidate_anchor_rect_ = rect;
+        candidate_anchor_pinyin_len_ = composing_pinyin_.size();
         has_candidate_anchor_ = true;
         candidate_position_pending_ = false;
         candidate_layout_notified_ = false;
@@ -2544,6 +2819,7 @@ void TextService::TryResolveCandidateAnchor(
         return;
     }
     candidate_anchor_rect_ = fallback;
+    candidate_anchor_pinyin_len_ = composing_pinyin_.size();
     has_candidate_anchor_ = true;
     candidate_position_pending_ = false;
     candidate_layout_notified_ = false;
@@ -2665,6 +2941,7 @@ void TextService::ClearCompositionState() {
 void TextService::ResetCandidateAnchor() noexcept {
     has_candidate_anchor_ = false;
     candidate_anchor_rect_ = {};
+    candidate_anchor_pinyin_len_ = 0;
     candidate_position_pending_ = false;
     candidate_layout_notified_ = false;
     candidate_position_attempts_ = 0;
@@ -2821,6 +3098,15 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
 
 STDMETHODIMP TextService::OnEndEdit(
     ITfContext* pic, TfEditCookie ecReadOnly, ITfEditRecord* pEditRecord) {
+    // 空闲（无组合）状态下的外部写入（粘贴、宿主自动插入等）刷新首键
+    // 接管触发器：粘贴后宿主短暂繁忙，随后的首键可能绕过按键 sink 直落
+    // 正文。新进程里 Ctrl+V 键本身也可能赶在按键 sink 就绪前绕过，因此
+    // 武装不能只依赖快捷键按键——粘贴必然产生的外部编辑是更可靠的信号。
+    if (!composition_edit_in_progress_ && pic == edit_context_ &&
+        composition_ == nullptr && composing_pinyin_.empty() &&
+        !english_mode_ && !first_key_recovery_pending_) {
+        first_key_focus_tick_ = GetTickCount64();
+    }
     TryRecoverExternalFirstKey(pic, ecReadOnly, pEditRecord);
     // OnEndEdit 发生在宿主布局刷新之前，不能在这里读取并应用候选窗坐标。
     // SetCompositionString/OnLayoutChange 会安排合并后的延迟刷新。
@@ -2843,6 +3129,7 @@ STDMETHODIMP TextService::OnLayoutChange(
     }
     // 即使通知发生在写入会话内部也不能丢弃：它描述的是当前文本世代
     // 的排版，延迟回调会等写入会话返回后再读取坐标。
+    candidate_layout_sink_seen_ = true;
     candidate_position_pending_ = true;
     candidate_layout_notified_ = true;
     candidate_position_attempts_ = 0;

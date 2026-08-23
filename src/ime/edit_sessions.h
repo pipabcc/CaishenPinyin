@@ -169,4 +169,24 @@ private:
     InputScopePrivacy* out_privacy_ = nullptr;
 };
 
+// 只读会话：探测折叠选区前是否恰好残留一个"孤立字母"（按键清扫网）。
+// 宿主在窗口切换或粘贴后短暂繁忙时，首键可能绕过按键 sink 直接落进
+// 正文；该会话在后续字母到达时检查光标前的残留并交回调接管。
+class ProbeTailLetterEditSession : public ITfEditSession {
+public:
+    using Found = std::function<void(ITfRange* letter_range, wchar_t letter)>;
+    ProbeTailLetterEditSession(ITfContext* context, Found found);
+    virtual ~ProbeTailLetterEditSession();
+
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
+    STDMETHODIMP_(ULONG) AddRef() override;
+    STDMETHODIMP_(ULONG) Release() override;
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    LONG ref_ = 1;
+    ITfContext* context_ = nullptr;
+    Found found_;
+};
+
 }  // namespace shuru
