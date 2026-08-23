@@ -104,19 +104,19 @@ target_link_libraries(ShuruIme PRIVATE
 )
 
 add_custom_target(copy_runtime_lexicon ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/data/lexicon
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          ${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon
-          ${CMAKE_CURRENT_BINARY_DIR}/data/lexicon
+  COMMAND ${CMAKE_COMMAND}
+    -DTOLERANT_COPY_SRC=${CMAKE_CURRENT_SOURCE_DIR}/data/lexicon
+    -DTOLERANT_COPY_DST=${CMAKE_CURRENT_BINARY_DIR}/data/lexicon
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TolerantCopyDirectory.cmake
   COMMENT "Copying the shared runtime lexicon"
 )
 add_dependencies(ShuruIme copy_runtime_lexicon)
 
 add_custom_target(copy_runtime_skins ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/data/skins
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          ${CMAKE_CURRENT_SOURCE_DIR}/data/skins
-          ${CMAKE_CURRENT_BINARY_DIR}/data/skins
+  COMMAND ${CMAKE_COMMAND}
+    -DTOLERANT_COPY_SRC=${CMAKE_CURRENT_SOURCE_DIR}/data/skins
+    -DTOLERANT_COPY_DST=${CMAKE_CURRENT_BINARY_DIR}/data/skins
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TolerantCopyDirectory.cmake
   COMMENT "Copying the shared runtime skins"
 )
 add_dependencies(ShuruIme copy_runtime_skins)
@@ -508,6 +508,23 @@ if(BUILD_TESTING)
   target_include_directories(tsf_e2e_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(tsf_e2e_host PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(tsf_e2e_host PRIVATE ole32 oleaut32 uuid user32)
+
+  add_executable(firstkey_sim tests/firstkey_sim.cpp)
+  target_include_directories(firstkey_sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(firstkey_sim PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(firstkey_sim PRIVATE ole32 oleaut32 uuid user32)
+  add_test(NAME firstkey_recovery COMMAND firstkey_sim $<TARGET_FILE:ShuruIme>)
+  add_test(NAME firstkey_recovery_tight
+    COMMAND firstkey_sim $<TARGET_FILE:ShuruIme> tight)
+  add_test(NAME firstkey_recovery_sweep
+    COMMAND firstkey_sim $<TARGET_FILE:ShuruIme> sweep)
+  add_test(NAME firstkey_recovery_paste
+    COMMAND firstkey_sim $<TARGET_FILE:ShuruIme> paste)
+  add_test(NAME firstkey_recovery_paste_mouse
+    COMMAND firstkey_sim $<TARGET_FILE:ShuruIme> paste_mouse)
+  set_tests_properties(firstkey_recovery firstkey_recovery_tight
+    firstkey_recovery_sweep firstkey_recovery_paste
+    firstkey_recovery_paste_mouse PROPERTIES TIMEOUT 90)
 
   add_executable(tsf_e2e_core tests/tsf_e2e_core.cpp
     src/ime/edit_sessions.cpp src/ime/display_attribute.cpp src/ime/input_policy.cpp
