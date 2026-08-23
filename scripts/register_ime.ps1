@@ -48,9 +48,12 @@ try {
     # 这里只负责显式 DLL 注册。版本化词库和 side-by-side 部署请使用 install_ime.ps1；
     # 不再向 DLL 目录复制系统词库或 user_dict.txt，避免升级覆盖用户数据。
     $regsvr = Join-Path $env:SystemRoot "System32\regsvr32.exe"
-    & $regsvr /s $DllPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "regsvr32 注册失败，退出码: $LASTEXITCODE。请确认已使用管理员权限。"
+    # regsvr32 是 GUI 子系统程序，部分宿主下 $LASTEXITCODE 不会更新（恒为
+    # null），会把成功的注册误判为失败。用 Start-Process 显式等待并读取退出码。
+    $registration = Start-Process -FilePath $regsvr `
+        -ArgumentList @('/s', "`"$DllPath`"") -Wait -PassThru
+    if ($registration.ExitCode -ne 0) {
+        throw "regsvr32 注册失败，退出码: $($registration.ExitCode)。请确认已使用管理员权限。"
     }
 
     # 将 TIP 加入当前用户的中文语言列表；语言/profile 激活也是注册事务的一部分。
