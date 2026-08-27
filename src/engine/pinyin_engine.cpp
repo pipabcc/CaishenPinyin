@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "../common/logger.h"
+#include "engine_snapshot.h"
 #include "../common/private_acl.h"
 #include "../common/runtime_config.h"
 #include "../common/user_data_paths.h"
@@ -399,6 +400,8 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     Dictionary& loaded_user_dictionary = loaded_user_lexicon->dictionary;
     EnglishDictionary& loaded_english_dictionary = loaded_lexicon->english_dictionary;
     const std::wstring base = lexicon_dir + L"\\base_dict.txt";
+    const std::wstring chars = lexicon_dir + L"\\char_dict.txt";
+    const std::wstring en_path = lexicon_dir + L"\\en_dict.txt";
     const std::wstring legacy_user_dict_path = lexicon_dir + L"\\user_dict.txt";
     const std::wstring loaded_user_dict_path = GetWritableUserDictPath(lexicon_dir);
     const std::wstring loaded_custom_phrase_path = GetCustomPhrasePath(lexicon_dir);
@@ -407,30 +410,52 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         SHURU_LOG_WARN("user dictionary ACL hardening unavailable; learning writes disabled");
     }
 
-    // 基础词库 + 单字库 + 单字反推共用一次批量装载：期间跳过逐条排序与
-    // 索引维护，结束时统一排序并只重建一次简拼/trie 索引。
-    loaded_dictionary.BeginBulkLoad();
-    const bool base_ok = loaded_dictionary.LoadFromFile(base, false);
-    // 完整单字库（含多音字）
-    const std::wstring chars = lexicon_dir + L"\\char_dict.txt";
-    bool char_ok = false;
-    if (FileExists(chars)) {
-        char_ok = loaded_dictionary.LoadFromFile(chars, false);
-        SHURU_LOG_INFO("char_dict load %s", char_ok ? "ok" : "fail");
-    } else {
-        SHURU_LOG_WARN("char_dict.txt missing, fallback derive-only");
-    }
-    if (base_ok && !char_ok) {
-        loaded_dictionary.DeriveSingleCharacters();
-    }
-    loaded_dictionary.EndBulkLoad();
-    // 英文单词词库
-    const std::wstring en_path = lexicon_dir + L"\\en_dict.txt";
-    if (FileExists(en_path)) {
-        const bool en_ok = loaded_english_dictionary.LoadFromFile(en_path);
-        SHURU_LOG_INFO("en_dict load %s size=%zu", en_ok ? "ok" : "fail", loaded_english_dictionary.Size());
-    } else {
-        SHURU_LOG_WARN("en_dict.txt missing");
+    // 冷加载首选只读快照：映射 + 顺序结构校验即就绪，避免每个宿主进程
+    // 重复解析与重建索引；失败才走下方文本/.bin 缓存的传统装载，并在
+    // 发布后重建快照供下次冷启动使用。
+    const auto snapshot_started = std::chrono::steady_clock::now();
+    const bool snapshot_ok = TryAdoptEngineSnapshot(
+        base, chars, en_path,
+        &loaded_lexicon->dictionary, &loaded_lexicon->english_dictionary);
+    SHURU_LOG_INFO(
+        "engine snapshot attempt ok=%d ms=%lld",
+        snapshot_ok ? 1 : 0,
+        static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - snapshot_started).count()));
+
+    bool base_ok = false;
+    if (!snapshot_ok) {
+        const auto legacy_started = std::chrono::steady_clock::now();
+        // 基础词库 + 单字库 + 单字反推共用一次批量装载：期间跳过逐条排序与
+        // 索引维护，结束时统一排序并只重建一次简拼/trie 索引。
+        loaded_dictionary.BeginBulkLoad();
+        base_ok = loaded_dictionary.LoadFromFile(base, false);
+        // 完整单字库（含多音字）
+        bool char_ok = false;
+        if (FileExists(chars)) {
+            char_ok = loaded_dictionary.LoadFromFile(chars, false);
+            SHURU_LOG_INFO("char_dict load %s", char_ok ? "ok" : "fail");
+        } else {
+            SHURU_LOG_WARN("char_dict.txt missing, fallback derive-only");
+        }
+        if (base_ok && !char_ok) {
+            loaded_dictionary.DeriveSingleCharacters();
+        }
+        loaded_dictionary.EndBulkLoad();
+        // 英文单词词库
+        if (FileExists(en_path)) {
+            const bool en_ok = loaded_english_dictionary.LoadFromFile(en_path);
+            SHURU_LOG_INFO("en_dict load %s size=%zu", en_ok ? "ok" : "fail", loaded_english_dictionary.Size());
+        } else {
+            SHURU_LOG_WARN("en_dict.txt missing");
+        }
+        // 阶段1 基准数据：传统装载总耗时（快照路径见上方 snapshot attempt 日志）。
+        SHURU_LOG_INFO(
+            "legacy lexicon load ms=%lld",
+            static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - legacy_started).count()));
     }
     const std::wstring grammar_path = lexicon_dir + L"\\rime-moqi-zh.gram";
     const std::wstring compact_grammar_path =
@@ -512,7 +537,7 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         loaded_bigram = std::make_shared<UserBigramModel>();
     }
 
-    if (!base_ok) {
+    if (!base_ok && !snapshot_ok) {
         // 失败不清空已发布快照：宿主可继续使用旧词库，后台稍后重试加载。
         SHURU_LOG_ERROR("PinyinEngine init failed; previous snapshot retained");
         return false;
@@ -542,6 +567,34 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     }
     SHURU_LOG_INFO("PinyinEngine ready, dict_size=%zu jianpin=%zu fuzzy=%d",
                    dictionary_size, jianpin_size, fuzzy_enabled ? 1 : 0);
+
+    // 快照再生：仅传统装载后执行一次，串行在本加载线程上、ready 已发布，
+    // 不影响首键延迟。生成失败（磁盘只读/AppContainer 等）静默放弃，下次
+    // 冷启动仍走传统路径。
+    if (!snapshot_ok && base_ok) {
+        std::shared_ptr<LexiconSnapshot> published = lexicon_;
+        std::string tag;
+        if (published != nullptr &&
+            ComputeEngineSnapshotTag(base, chars, en_path, &tag)) {
+            const auto build_started = std::chrono::steady_clock::now();
+            std::vector<std::uint8_t> blob;
+            EnglishDictionary* english = &published->english_dictionary;
+            if (SerializeEngineSnapshot(
+                    &published->dictionary, english,
+                    base, chars, en_path, &blob) &&
+                StoreEngineSnapshot(tag, blob)) {
+                SHURU_LOG_INFO(
+                    "engine snapshot stored tag=%s bytes=%zu ms=%lld",
+                    tag.c_str(), blob.size(),
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - build_started)
+                            .count()));
+            } else {
+                SHURU_LOG_WARN("engine snapshot store failed");
+            }
+        }
+    }
     return true;
 }
 

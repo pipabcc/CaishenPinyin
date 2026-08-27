@@ -54,6 +54,10 @@ std::string EnglishDictionary::Normalize(const std::string& value) {
 }
 
 bool EnglishDictionary::LoadFromFile(const std::wstring& path) {
+    if (mapped_mode_) {
+        SHURU_LOG_WARN("EnglishDictionary mapped snapshot rejects reload");
+        return false;
+    }
     words_.clear();
     std::ifstream input{std::filesystem::path(path)};
     if (!input) {
@@ -117,19 +121,63 @@ bool EnglishDictionary::LoadFromFile(const std::wstring& path) {
     return !words_.empty();
 }
 
+EnglishDictionary::ItemView EnglishDictionary::ItemAt(size_t index) const {
+    if (mapped_mode_) {
+        const auto& record = snap_records_[index];
+        return ItemView{
+            std::string_view(snap_blob_ + record.key_offset, record.key_length),
+            std::string_view(snap_blob_ + record.display_offset, record.display_length),
+            record.frequency,
+        };
+    }
+    const Item& item = words_[index];
+    return ItemView{item.word, item.display, item.frequency};
+}
+
+size_t EnglishDictionary::LowerBound(std::string_view key) const {
+    size_t low = 0;
+    size_t high = mapped_mode_ ? snap_count_ : words_.size();
+    while (low < high) {
+        const size_t mid = low + (high - low) / 2;
+        if (ItemAt(mid).word < key) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    return low;
+}
+
+bool EnglishDictionary::AdoptMappedSnapshot(
+    const void* base, size_t /*size*/, std::shared_ptr<void> region) {
+    // 调用方已完成整文件校验；这里只做进入映射模式前的指针装配。
+    const auto* header = static_cast<const EngineSnapshotHeader*>(base);
+    const auto* records = reinterpret_cast<const SnapshotEnglishRecord*>(
+        static_cast<const unsigned char*>(base) + header->ofs_en_records);
+    const char* blob = reinterpret_cast<const char*>(
+        static_cast<const unsigned char*>(base) + header->ofs_en_blob);
+    words_.clear();
+    snap_records_ = records;
+    snap_blob_ = blob;
+    snap_count_ = header->en_count;
+    mapped_region_ = std::move(region);
+    mapped_mode_ = true;  // 最后提交：失败路径不会留下半初始化状态
+    return true;
+}
+
 std::vector<Candidate> EnglishDictionary::LookupExact(const std::string& word) const {
     const std::string key = Normalize(word);
     std::vector<Candidate> result;
-    if (key.empty() || words_.empty()) return result;
-    const auto it = std::lower_bound(
-        words_.begin(), words_.end(), key,
-        [](const Item& item, const std::string& value) { return item.word < value; });
-    if (it == words_.end() || it->word != key) return result;
+    if (key.empty() || empty()) return result;
+    const size_t index = LowerBound(key);
+    if (index >= Size()) return result;
+    const ItemView item = ItemAt(index);
+    if (item.word != key) return result;
 
     Candidate candidate;
-    candidate.text = std::wstring(it->display.begin(), it->display.end());
-    candidate.pinyin = it->word;
-    candidate.frequency = it->frequency;
+    candidate.text = std::wstring(item.display.begin(), item.display.end());
+    candidate.pinyin = std::string(item.word);
+    candidate.frequency = item.frequency;
     candidate.from_user = false;
     candidate.is_english = true;
     result.push_back(std::move(candidate));
@@ -140,34 +188,34 @@ std::vector<Candidate> EnglishDictionary::LookupPrefix(
     const std::string& prefix, size_t limit) const {
     const std::string normalized = Normalize(prefix);
     std::vector<Candidate> result;
-    if (normalized.size() < 2 || limit == 0 || words_.empty()) return result;
+    if (normalized.size() < 2 || limit == 0 || empty()) return result;
 
-    const auto begin = std::lower_bound(
-        words_.begin(), words_.end(), normalized,
-        [](const Item& item, const std::string& value) { return item.word < value; });
     struct Match {
-        const Item* item = nullptr;
+        size_t index = 0;
         size_t completion_length = 0;
     };
     std::vector<Match> matches;
-    for (auto it = begin; it != words_.end(); ++it) {
-        if (it->word.size() < normalized.size() ||
-            it->word.compare(0, normalized.size(), normalized) != 0) {
+    for (size_t index = LowerBound(normalized); index < Size(); ++index) {
+        const ItemView item = ItemAt(index);
+        if (item.word.size() < normalized.size() ||
+            item.word.compare(0, normalized.size(), normalized) != 0) {
             break;
         }
-        matches.push_back(Match{&*it, it->word.size() - normalized.size()});
+        matches.push_back(Match{index, item.word.size() - normalized.size()});
     }
-    const auto match_less = [](const Match& left, const Match& right) {
+    const auto match_less = [this](const Match& left, const Match& right) {
         // Exact-length completions are easiest to recognize; frequency breaks
         // ties among words with the same completion length.
         if (left.completion_length != right.completion_length) {
             return left.completion_length < right.completion_length;
         }
-        if (left.item->frequency != right.item->frequency) {
-            return left.item->frequency > right.item->frequency;
+        const ItemView a = ItemAt(left.index);
+        const ItemView b = ItemAt(right.index);
+        if (a.frequency != b.frequency) {
+            return a.frequency > b.frequency;
         }
-        if (left.item->word != right.item->word) return left.item->word < right.item->word;
-        return left.item->display < right.item->display;
+        if (a.word != b.word) return a.word < b.word;
+        return a.display < b.display;
     };
     if (matches.size() > limit) {
         std::partial_sort(matches.begin(), matches.begin() + limit, matches.end(), match_less);
@@ -177,11 +225,11 @@ std::vector<Candidate> EnglishDictionary::LookupPrefix(
     }
     result.reserve(matches.size());
     for (const auto& match : matches) {
+        const ItemView item = ItemAt(match.index);
         Candidate candidate;
-        candidate.text = std::wstring(
-            match.item->display.begin(), match.item->display.end());
-        candidate.pinyin = match.item->word;
-        candidate.frequency = match.item->frequency;
+        candidate.text = std::wstring(item.display.begin(), item.display.end());
+        candidate.pinyin = std::string(item.word);
+        candidate.frequency = item.frequency;
         candidate.is_english = true;
         result.push_back(std::move(candidate));
     }

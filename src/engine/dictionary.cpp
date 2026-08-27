@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <string_view>
 #include <cmath>
 #include <exception>
 #include <unordered_map>
@@ -86,7 +88,142 @@ std::array<std::uint64_t, 2> WordFingerprint(const std::wstring& word) {
     return {first, second};
 }
 
+std::uint64_t KeyHash64(const void* data, size_t size) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 }  // namespace
+
+
+// 映射快照校验只做顺序边界扫描，不做指针追逐；查询侧用跳数上限兜底
+// 异常数据的环形兄弟链，正常词库的节点度数远低于该上限。
+constexpr int kMaxSiblingHops = 2048;
+
+// ===== 双模式（堆容器 / 只读映射快照）访问器 =====
+
+int Dictionary::TrieNodeTotal() const {
+    return mapped_mode_ ? static_cast<int>(snap_header_->trie_count)
+                        : static_cast<int>(trie_.size());
+}
+
+const Dictionary::TrieNode& Dictionary::TrieNodeAt(int index) const {
+    return mapped_mode_ ? snap_trie_[index] : trie_[index];
+}
+
+int Dictionary::StrTrieNodeTotal() const {
+    return mapped_mode_ ? static_cast<int>(snap_header_->str_trie_count)
+                        : static_cast<int>(syllable_trie_.size());
+}
+
+const Dictionary::SyllableTrieNode& Dictionary::StrTrieNodeAt(int index) const {
+    return mapped_mode_ ? snap_str_trie_[index] : syllable_trie_[index];
+}
+
+std::int32_t Dictionary::RootChildAt(size_t syllable_id) const {
+    return mapped_mode_ ? snap_root_children_[syllable_id]
+                        : syllable_root_children_[syllable_id];
+}
+
+size_t Dictionary::SylValueTotal() const {
+    return mapped_mode_ ? snap_header_->syllable_count : syllable_values_.size();
+}
+
+std::string_view Dictionary::SylValueAt(size_t syllable_id) const {
+    if (mapped_mode_) {
+        return std::string_view(
+            snap_syl_blob_ + snap_syl_offsets_[syllable_id],
+            snap_syl_offsets_[syllable_id + 1] - snap_syl_offsets_[syllable_id]);
+    }
+    return syllable_values_[syllable_id];
+}
+
+size_t Dictionary::FingerprintTotal() const {
+    return mapped_mode_ ? snap_fp_count_ : word_fingerprints_.size();
+}
+
+void Dictionary::FingerprintAt(size_t index, std::uint64_t (*out)[2]) const {
+    if (mapped_mode_) {
+        (*out)[0] = snap_fingerprints_[index][0];
+        (*out)[1] = snap_fingerprints_[index][1];
+    } else {
+        (*out)[0] = word_fingerprints_[index][0];
+        (*out)[1] = word_fingerprints_[index][1];
+    }
+}
+
+bool Dictionary::TrieEmpty() const { return TrieNodeTotal() == 0; }
+bool Dictionary::StrTrieEmpty() const { return StrTrieNodeTotal() == 0; }
+
+std::wstring Dictionary::MappedEntryWord(
+    const SnapshotEntryRecord& record) const {
+    return std::wstring(
+        snap_words_blob_ + record.word_offset,
+        static_cast<size_t>(record.word_units));
+}
+
+Dictionary::BucketRef Dictionary::FindBucket(std::string_view key) const {
+    BucketRef ref;
+    if (mapped_mode_) {
+        // 键索引按唯一哈希严格升序（生成侧保证，校验侧强制），
+        // 二分只看哈希，命中后回比键字节。
+        const std::uint64_t hash = KeyHash64(key.data(), key.size());
+        std::uint32_t low = 0;
+        std::uint32_t high = snap_key_count_;
+        while (low < high) {
+            const std::uint32_t mid = low + (high - low) / 2;
+            if (snap_key_index_[mid].hash < hash) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        if (low < snap_key_count_) {
+            const SnapshotKeyIndexEntry& item = snap_key_index_[low];
+            if (item.hash == hash && item.key_length == key.size() &&
+                std::memcmp(snap_keys_blob_ + item.key_offset, key.data(),
+                            key.size()) == 0) {
+                ref.recs = snap_entries_ + item.entries_first;
+                ref.rec_count = item.entry_count;
+            }
+        }
+        return ref;
+    }
+    const auto it = map_.find(std::string(key));
+    if (it != map_.end()) ref.heap = &it->second;
+    return ref;
+}
+
+void Dictionary::AppendBucketCandidates(
+    const std::string& key, const BucketRef& bucket,
+    std::vector<Candidate>* out) const {
+    if (bucket.heap != nullptr) {
+        std::vector<Candidate> part = ToCandidates(key, *bucket.heap);
+        out->insert(out->end(),
+                    std::make_move_iterator(part.begin()),
+                    std::make_move_iterator(part.end()));
+        return;
+    }
+    out->reserve(out->size() + bucket.rec_count);
+    for (std::uint32_t i = 0; i < bucket.rec_count; ++i) {
+        const SnapshotEntryRecord& record = bucket.recs[i];
+        Candidate candidate;
+        candidate.text = MappedEntryWord(record);
+        candidate.pinyin = key;
+        candidate.frequency = record.frequency;
+        candidate.selection_count = record.selection_count;
+        candidate.last_used_unix = record.last_used_unix;
+        candidate.learning_score = ComputeLearningScore(
+            record.selection_count, record.last_used_unix);
+        candidate.from_user = (record.flags & 1u) != 0;
+        out->push_back(std::move(candidate));
+    }
+}
 
 void Dictionary::EnsureTrieRoot() {
     if (trie_.empty()) {
@@ -142,28 +279,33 @@ void Dictionary::EnsureSyllableTable() {
 }
 
 int Dictionary::FindTrieChild(int node, char label) const {
-    if (node < 0 || node >= static_cast<int>(trie_.size())) return -1;
-    for (int child = trie_[node].first_child; child >= 0;
-         child = trie_[child].next_sibling) {
-        if (trie_[child].label == label) return child;
+    if (node < 0 || node >= TrieNodeTotal()) return -1;
+    int hops = 0;
+    for (int child = TrieNodeAt(node).first_child; child >= 0;
+         child = TrieNodeAt(child).next_sibling) {
+        if (++hops > kMaxSiblingHops) return -1;
+        if (TrieNodeAt(child).label == label) return child;
     }
     return -1;
 }
 
 int Dictionary::FindSyllableChild(
     int node, std::uint16_t syllable_id) const {
-    if (node < 0 || node >= static_cast<int>(syllable_trie_.size())) return -1;
-    if (node == 0 && syllable_id < syllable_root_children_.size()) {
-        return syllable_root_children_[syllable_id];
+    if (node < 0 || node >= StrTrieNodeTotal()) return -1;
+    if (node == 0 && syllable_id < SylValueTotal()) {
+        return RootChildAt(syllable_id);
     }
-    for (int child = syllable_trie_[node].first_child; child >= 0;
-         child = syllable_trie_[child].next_sibling) {
-        if (syllable_trie_[child].syllable_id == syllable_id) return child;
+    int hops = 0;
+    for (int child = StrTrieNodeAt(node).first_child; child >= 0;
+         child = StrTrieNodeAt(child).next_sibling) {
+        if (++hops > kMaxSiblingHops) return -1;
+        if (StrTrieNodeAt(child).syllable_id == syllable_id) return child;
     }
     return -1;
 }
 
 void Dictionary::SyllableTrieInsert(const std::string& pinyin) {
+    if (mapped_mode_) return;
     EnsureSyllableTable();
     EnsureSyllableTrieRoot();
     if (syllable_values_.empty() || syllable_spelling_trie_.empty() ||
@@ -275,6 +417,7 @@ void Dictionary::SyllableTrieInsert(const std::string& pinyin) {
 }
 
 void Dictionary::TrieInsert(const std::string& pinyin) {
+    if (mapped_mode_) return;
     EnsureTrieRoot();
     int key_frequency = 0;
     const auto& entries_by_pinyin = map_;
@@ -312,7 +455,7 @@ void Dictionary::TrieInsert(const std::string& pinyin) {
 void Dictionary::CollectTrieSubtree(
     int node, const std::string& prefix, size_t limit,
     std::vector<std::string>* out_keys) const {
-    if (!out_keys || node < 0 || node >= static_cast<int>(trie_.size())) {
+    if (!out_keys || node < 0 || node >= TrieNodeTotal()) {
         return;
     }
     struct WorkItem {
@@ -331,7 +474,7 @@ void Dictionary::CollectTrieSubtree(
     };
 
     std::priority_queue<WorkItem, std::vector<WorkItem>, LowerPriority> pending;
-    pending.push({node, trie_[node].max_frequency, prefix, false});
+    pending.push({node, TrieNodeAt(node).max_frequency, prefix, false});
     const size_t state_budget = (std::min)(
         size_t{65536},
         (std::max)(size_t{512},
@@ -346,22 +489,24 @@ void Dictionary::CollectTrieSubtree(
             out_keys->push_back(std::move(item.key));
             continue;
         }
-        const TrieNode& current = trie_[item.node];
+        const TrieNode& current = TrieNodeAt(item.node);
         if (current.terminal) {
             pending.push({-1, current.terminal_frequency, item.key, true});
         }
+        int hops = 0;
         for (int child = current.first_child; child >= 0;
-             child = trie_[child].next_sibling) {
+             child = TrieNodeAt(child).next_sibling) {
+            if (++hops > kMaxSiblingHops) break;
             std::string child_key = item.key;
-            child_key.push_back(trie_[child].label);
-            pending.push({child, trie_[child].max_frequency,
+            child_key.push_back(TrieNodeAt(child).label);
+            pending.push({child, TrieNodeAt(child).max_frequency,
                           std::move(child_key), false});
         }
     }
 }
 
 void Dictionary::CollectTriePrefix(const std::string& prefix, size_t limit, std::vector<std::string>* out_keys) const {
-    if (!out_keys || trie_.empty()) {
+    if (!out_keys || TrieEmpty()) {
         return;
     }
     int node = 0;
@@ -456,6 +601,10 @@ void Dictionary::EndBulkLoad() {
 }
 
 bool Dictionary::LoadFromFile(const std::wstring& path, bool from_user) {
+    if (mapped_mode_) {
+        SHURU_LOG_WARN("mapped system lexicon rejects reload");
+        return false;
+    }
     if (!from_user) {
         const std::wstring cache = path + L".bin";
         size_t row_count = 0;
@@ -485,6 +634,10 @@ bool Dictionary::LoadFromFile(const std::wstring& path, bool from_user) {
 }
 
 bool Dictionary::LoadFromUtf8Lines(const std::vector<std::string>& lines, bool from_user) {
+    if (mapped_mode_) {
+        SHURU_LOG_WARN("mapped system lexicon rejects reload");
+        return false;
+    }
     size_t loaded = 0;
     for (const auto& raw : lines) {
         const std::string line = Trim(raw);
@@ -558,6 +711,7 @@ void Dictionary::IndexPinyinKey(const std::string& pinyin) {
 }
 
 void Dictionary::RebuildTrieIndex() {
+    if (mapped_mode_) return;
     trie_.clear();
     EnsureTrieRoot();
     for (const auto& kv : map_) {
@@ -566,6 +720,7 @@ void Dictionary::RebuildTrieIndex() {
 }
 
 void Dictionary::RebuildSyllableTrieIndex() {
+    if (mapped_mode_) return;
     syllable_trie_.clear();
     if (map_.size() <=
         ((std::numeric_limits<size_t>::max)() - 1) / 5) {
@@ -585,6 +740,7 @@ void Dictionary::RebuildJianpinIndex() {
 }
 
 void Dictionary::IndexWordFingerprint(const std::wstring& word) {
+    if (mapped_mode_) return;
     const auto fingerprint = WordFingerprint(word);
     if (bulk_loading_) {
         word_fingerprints_.push_back(fingerprint);
@@ -598,6 +754,7 @@ void Dictionary::IndexWordFingerprint(const std::wstring& word) {
 }
 
 void Dictionary::RebuildWordFingerprints() {
+    if (mapped_mode_) return;
     word_fingerprints_.clear();
     for (const auto& [pinyin, entries] : map_) {
         (void)pinyin;
@@ -612,6 +769,13 @@ void Dictionary::RebuildWordFingerprints() {
 }
 
 void Dictionary::AddWord(const std::string& pinyin, const std::wstring& word, int frequency, bool from_user) {
+    if (mapped_mode_) {
+    if (mapped_mode_) {
+        // 只读映射快照：系统词典在引擎中从不接受写入；防御性拒绝。
+        SHURU_LOG_WARN("mapped system lexicon rejects mutation");
+        return;
+    }
+    }
     if (pinyin.empty() || word.empty()) {
         return;
     }
@@ -661,6 +825,13 @@ void Dictionary::IncreaseUserWord(
     int delta,
     int minimum_frequency,
     std::int64_t now_unix) {
+    if (mapped_mode_) {
+    if (mapped_mode_) {
+        // 只读映射快照：系统词典在引擎中从不接受写入；防御性拒绝。
+        SHURU_LOG_WARN("mapped system lexicon rejects mutation");
+        return;
+    }
+    }
     if (pinyin.empty() || word.empty()) {
         return;
     }
@@ -704,32 +875,56 @@ void Dictionary::IncreaseUserWord(
 int Dictionary::LookupFrequency(
     const std::string& pinyin,
     const std::wstring& word) const {
-    const auto found = map_.find(NormalizePinyin(pinyin));
-    if (found == map_.end()) {
+    const BucketRef bucket = FindBucket(NormalizePinyin(pinyin));
+    if (bucket.heap != nullptr) {
+        for (const Entry& entry : *bucket.heap) {
+            if (entry.word == word) return entry.frequency;
+        }
         return 0;
     }
-    for (const Entry& entry : found->second) {
-        if (entry.word == word) {
-            return entry.frequency;
+    for (std::uint32_t i = 0; i < bucket.rec_count; ++i) {
+        if (MappedEntryWord(bucket.recs[i]) == word) {
+            return bucket.recs[i].frequency;
         }
     }
     return 0;
 }
 
 bool Dictionary::ContainsWord(const std::wstring& word) const {
-    return std::binary_search(
-        word_fingerprints_.begin(), word_fingerprints_.end(),
-        WordFingerprint(word));
+    const auto fingerprint = WordFingerprint(word);
+    const size_t total = FingerprintTotal();
+    size_t low = 0;
+    size_t high = total;
+    while (low < high) {
+        const size_t mid = low + (high - low) / 2;
+        std::uint64_t current[2];
+        FingerprintAt(mid, &current);
+        if (current[0] < fingerprint[0] ||
+            (current[0] == fingerprint[0] && current[1] < fingerprint[1])) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    if (low >= total) return false;
+    std::uint64_t found[2];
+    FingerprintAt(low, &found);
+    return found[0] == fingerprint[0] && found[1] == fingerprint[1];
 }
 
 bool Dictionary::ContainsWordPinyin(
     const std::wstring& word,
     const std::string& pinyin) const {
-    const auto found = map_.find(NormalizePinyin(pinyin));
-    return found != map_.end() && std::any_of(
-        found->second.begin(), found->second.end(), [&](const Entry& entry) {
-            return entry.word == word;
-        });
+    const BucketRef bucket = FindBucket(NormalizePinyin(pinyin));
+    if (bucket.heap != nullptr) {
+        return std::any_of(
+            bucket.heap->begin(), bucket.heap->end(),
+            [&](const Entry& entry) { return entry.word == word; });
+    }
+    for (std::uint32_t i = 0; i < bucket.rec_count; ++i) {
+        if (MappedEntryWord(bucket.recs[i]) == word) return true;
+    }
+    return false;
 }
 
 int Dictionary::ComputeLearningScore(int selection_count, std::int64_t last_used_unix, std::int64_t now_unix) {
@@ -743,6 +938,10 @@ int Dictionary::ComputeLearningScore(int selection_count, std::int64_t last_used
 }
 
 bool Dictionary::DecreaseUserWord(const std::string& pinyin, const std::wstring& word, int delta) {
+    if (mapped_mode_) {
+        SHURU_LOG_WARN("mapped system lexicon rejects mutation");
+        return false;
+    }
     const std::string key = NormalizePinyin(pinyin);
     auto user = user_entries_.find({key, word});
     auto bucket = map_.find(key);
@@ -771,6 +970,10 @@ bool Dictionary::DecreaseUserWord(const std::string& pinyin, const std::wstring&
 }
 
 void Dictionary::ClearUserEntries() {
+    if (mapped_mode_) {
+        SHURU_LOG_WARN("mapped system lexicon rejects mutation");
+        return;
+    }
     for (auto map_it = map_.begin(); map_it != map_.end();) {
         auto& entries = map_it->second;
         entries.erase(std::remove_if(entries.begin(), entries.end(),
@@ -865,11 +1068,14 @@ void Dictionary::ImportUserEntries(const std::vector<UserDictionaryEntry>& entri
 }
 
 std::vector<Candidate> Dictionary::LookupExact(const std::string& pinyin) const {
-    const auto it = map_.find(NormalizePinyin(pinyin));
-    if (it == map_.end()) {
+    const std::string key = NormalizePinyin(pinyin);
+    const BucketRef bucket = FindBucket(key);
+    if (bucket.heap == nullptr && bucket.rec_count == 0) {
         return {};
     }
-    return ToCandidates(it->first, it->second);
+    std::vector<Candidate> out;
+    AppendBucketCandidates(key, bucket, &out);
+    return out;
 }
 
 std::vector<Candidate> Dictionary::LookupPrefix(const std::string& pinyin_prefix, size_t limit) const {
@@ -887,12 +1093,7 @@ std::vector<Candidate> Dictionary::LookupPrefix(const std::string& pinyin_prefix
 
     std::vector<Candidate> all;
     for (const auto& key : keys) {
-        const auto it = map_.find(key);
-        if (it == map_.end()) {
-            continue;
-        }
-        auto part = ToCandidates(it->first, it->second);
-        all.insert(all.end(), part.begin(), part.end());
+        AppendBucketCandidates(key, FindBucket(key), &all);
     }
     std::sort(all.begin(), all.end(), [](const Candidate& a, const Candidate& b) {
         if (a.frequency != b.frequency) {
@@ -908,7 +1109,7 @@ std::vector<Candidate> Dictionary::LookupPrefix(const std::string& pinyin_prefix
 
 std::vector<Candidate> Dictionary::LookupJianpin(const std::string& jianpin, size_t limit) const {
     const std::string jp = NormalizePinyin(jianpin);
-    if (jp.empty() || limit == 0 || syllable_trie_.empty()) return {};
+    if (jp.empty() || limit == 0 || StrTrieEmpty()) return {};
 
     struct InitialPath {
         int node = 0;
@@ -920,23 +1121,27 @@ std::vector<Candidate> Dictionary::LookupJianpin(const std::string& jianpin, siz
         std::vector<InitialPath> next;
         for (const auto& path : paths) {
             if (path.node < 0 ||
-                path.node >= static_cast<int>(syllable_trie_.size())) {
+                path.node >= StrTrieNodeTotal()) {
                 continue;
             }
-            const auto& node = syllable_trie_[path.node];
+            const auto& node = StrTrieNodeAt(path.node);
+            int jp_hops = 0;
             for (int child_index = node.first_child; child_index >= 0;
-                 child_index = syllable_trie_[child_index].next_sibling) {
-                const auto& child = syllable_trie_[child_index];
-                if (child.syllable_id >= syllable_values_.size()) continue;
-                const std::string& syllable = syllable_values_[child.syllable_id];
+                 child_index = StrTrieNodeAt(child_index).next_sibling) {
+                if (++jp_hops > kMaxSiblingHops) break;
+                const auto& child = StrTrieNodeAt(child_index);
+                if (child.syllable_id >= SylValueTotal()) continue;
+                const std::string_view syllable = SylValueAt(child.syllable_id);
                 if (syllable.empty() || syllable.front() != initial) continue;
-                next.push_back({child_index, path.full_pinyin + syllable});
+                std::string full = path.full_pinyin;
+                full.append(syllable);
+                next.push_back({child_index, std::move(full)});
             }
         }
         std::sort(next.begin(), next.end(), [&](const InitialPath& left,
                                                 const InitialPath& right) {
-            const int left_frequency = syllable_trie_[left.node].max_frequency;
-            const int right_frequency = syllable_trie_[right.node].max_frequency;
+            const int left_frequency = StrTrieNodeAt(left.node).max_frequency;
+            const int right_frequency = StrTrieNodeAt(right.node).max_frequency;
             if (left_frequency != right_frequency)
                 return left_frequency > right_frequency;
             return left.full_pinyin < right.full_pinyin;
@@ -952,12 +1157,9 @@ std::vector<Candidate> Dictionary::LookupJianpin(const std::string& jianpin, siz
 
     std::vector<Candidate> all;
     for (const auto& path : paths) {
-        if (!syllable_trie_[path.node].terminal) continue;
-        const auto found = map_.find(path.full_pinyin);
-        if (found == map_.end()) continue;
-        auto candidates = ToCandidates(found->first, found->second);
-        all.insert(all.end(), std::make_move_iterator(candidates.begin()),
-                   std::make_move_iterator(candidates.end()));
+        if (!StrTrieNodeAt(path.node).terminal) continue;
+        AppendBucketCandidates(path.full_pinyin,
+                               FindBucket(path.full_pinyin), &all);
     }
     std::sort(all.begin(), all.end(), [](const Candidate& left,
                                          const Candidate& right) {
@@ -1003,7 +1205,7 @@ std::vector<Candidate> Dictionary::LookupMixed(const std::string& input, size_t 
 std::vector<MixedPrefixMatch> Dictionary::LookupMixedPrefixes(
     const std::string& input, size_t limit) const {
     const std::string pattern = NormalizePinyin(input);
-    if (pattern.empty() || limit == 0 || syllable_trie_.empty()) return {};
+    if (pattern.empty() || limit == 0 || StrTrieEmpty()) return {};
 
     struct SearchState {
         int node = 0;
@@ -1040,8 +1242,8 @@ std::vector<MixedPrefixMatch> Dictionary::LookupMixedPrefixes(
         auto& bucket = states[position];
         if (bucket.empty()) continue;
         std::sort(bucket.begin(), bucket.end(), [&](const SearchState& left, const SearchState& right) {
-            const int left_frequency = syllable_trie_[left.node].max_frequency;
-            const int right_frequency = syllable_trie_[right.node].max_frequency;
+            const int left_frequency = StrTrieNodeAt(left.node).max_frequency;
+            const int right_frequency = StrTrieNodeAt(right.node).max_frequency;
             if (left_frequency != right_frequency) return left_frequency > right_frequency;
             if (left.abbreviated != right.abbreviated)
                 return left.abbreviated < right.abbreviated;
@@ -1053,13 +1255,15 @@ std::vector<MixedPrefixMatch> Dictionary::LookupMixedPrefixes(
         if (bucket.size() > kBeamPerPosition) bucket.resize(kBeamPerPosition);
 
         for (const auto& state : bucket) {
-            if (state.node < 0 || state.node >= static_cast<int>(syllable_trie_.size())) continue;
-            const auto& node = syllable_trie_[state.node];
+            if (state.node < 0 || state.node >= StrTrieNodeTotal()) continue;
+            const auto& node = StrTrieNodeAt(state.node);
+            int mx_hops = 0;
             for (int child_index = node.first_child; child_index >= 0;
-                 child_index = syllable_trie_[child_index].next_sibling) {
-                const auto& child = syllable_trie_[child_index];
-                if (child.syllable_id >= syllable_values_.size()) continue;
-                const std::string& syllable = syllable_values_[child.syllable_id];
+                 child_index = StrTrieNodeAt(child_index).next_sibling) {
+                if (++mx_hops > kMaxSiblingHops) break;
+                const auto& child = StrTrieNodeAt(child_index);
+                if (child.syllable_id >= SylValueTotal()) continue;
+                const std::string_view syllable = SylValueAt(child.syllable_id);
                 if (syllable.empty() || syllable.front() != pattern[position]) continue;
                 auto advance = [&](size_t consumed, bool abbreviated) {
                     SearchState next;
@@ -1069,17 +1273,20 @@ std::vector<MixedPrefixMatch> Dictionary::LookupMixedPrefixes(
                     next.omitted_letters = state.omitted_letters +
                         (abbreviated ? syllable.size() - 1 : 0);
                     next.syllables = state.syllables + 1;
-                    next.full_pinyin = state.full_pinyin + syllable;
+                    next.full_pinyin = state.full_pinyin;
+                    next.full_pinyin.append(syllable);
                     next.segmented = state.segmented;
                     if (!next.segmented.empty()) next.segmented.push_back('\'');
                     next.segmented.append(pattern, position, consumed);
 
-                    const auto& destination = syllable_trie_[next.node];
+                    const auto& destination = StrTrieNodeAt(next.node);
                     if (destination.terminal) {
-                        const auto found = map_.find(next.full_pinyin);
-                        if (found == map_.end()) return;
+                        std::vector<Candidate> bucket_candidates;
+                        AppendBucketCandidates(
+                            next.full_pinyin,
+                            FindBucket(next.full_pinyin), &bucket_candidates);
                         size_t entry_count = 0;
-                        for (auto candidate : ToCandidates(found->first, found->second)) {
+                        for (auto& candidate : bucket_candidates) {
                             // 同一拼音可能有多种切分（xian / xi'an）。只有字数与
                             // 音节数一致的中文词才能挂在这条路径上，否则会生成
                             // 汉字和输入音节错位的词边。
@@ -1175,6 +1382,7 @@ std::vector<MixedPrefixMatch> Dictionary::LookupMixedPrefixes(
 }
 
 size_t Dictionary::Size() const {
+    if (mapped_mode_) return snap_entry_count_;
     size_t n = 0;
     for (const auto& kv : map_) {
         n += kv.second.size();
@@ -1183,11 +1391,15 @@ size_t Dictionary::Size() const {
 }
 
 size_t Dictionary::JianpinSize() const {
-    return syllable_trie_.size();
+    return mapped_mode_ ? snap_header_->str_trie_count : syllable_trie_.size();
 }
 
 
 size_t Dictionary::DeriveSingleCharacters() {
+    if (mapped_mode_) {
+        SHURU_LOG_WARN("mapped system lexicon rejects derive");
+        return 0;
+    }
     // 快照，避免遍历中修改 map_
     struct Item {
         std::string py;

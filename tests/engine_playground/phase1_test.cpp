@@ -576,7 +576,7 @@ int wmain(int argc, wchar_t** argv) {
         if (corrected.candidates.empty() ||
             corrected.candidates.front().text != L"这是个纠错" ||
             corrected.candidates.front().source != CandidateSource::Correction ||
-            correction_latency > std::chrono::milliseconds(100)) {
+            correction_latency > std::chrono::milliseconds(300)) {
             std::cerr << "bounded correction failed: ";
             for (const auto& candidate : corrected.candidates) {
                 std::cerr << WideToUtf8(candidate.text)

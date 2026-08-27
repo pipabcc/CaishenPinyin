@@ -1,11 +1,14 @@
 #pragma once
 
 #include "candidate.h"
+#include "engine_snapshot.h"
 
 #include <array>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -32,6 +35,13 @@ class Dictionary {
 public:
     bool LoadFromFile(const std::wstring& path, bool from_user = false);
     bool LoadFromUtf8Lines(const std::vector<std::string>& lines, bool from_user = false);
+
+    // 只读映射快照模式：注入后本词典仅支持查询；所有可变操作被拒绝并记录
+    // 警告。引擎只对独立的用户词典实例做学习写入，系统词典纯查询，因此
+    // 映射模式无需覆盖层。region 持有映射生命周期（UnmapViewOfFile 等）。
+    bool AdoptMappedSnapshot(
+        const void* base, size_t size, std::shared_ptr<void> region);
+    bool is_mapped() const noexcept { return mapped_mode_; }
 
     // 批量装载模式：期间 AddWord 跳过桶内排序与简拼/trie 增量索引维护，
     // EndBulkLoad 统一排序并重建一次索引。仅用于初始加载，加载耗时从
@@ -73,12 +83,24 @@ public:
     size_t DeriveSingleCharacters();
 
 private:
+    friend bool SerializeEngineSnapshot(
+        Dictionary*, EnglishDictionary*,
+        const std::wstring&, const std::wstring&, const std::wstring&,
+        std::vector<std::uint8_t>*);
+
     struct Entry {
         std::wstring word;
         int frequency = 0;
         bool from_user = false;
         int selection_count = 0;
         std::int64_t last_used_unix = 0;
+    };
+
+    // 词桶的统一只读视图：堆模式指向 map_ 桶，映射模式指向快照词条切片。
+    struct BucketRef {
+        const std::vector<Entry>* heap = nullptr;
+        const SnapshotEntryRecord* recs = nullptr;
+        std::uint32_t rec_count = 0;
     };
 
     struct TrieNode {
@@ -116,6 +138,45 @@ private:
     std::vector<std::array<std::uint64_t, 2>> word_fingerprints_;
     mutable bool dirty_ = false;
     bool bulk_loading_ = false;
+
+    BucketRef FindBucket(std::string_view key) const;
+    void AppendBucketCandidates(
+        const std::string& key, const BucketRef& bucket,
+        std::vector<Candidate>* out) const;
+    std::wstring MappedEntryWord(const SnapshotEntryRecord& record) const;
+
+    // 双模式访问器：查询路径一律经由它们触达 Trie/音节表/指纹，屏蔽
+    // 堆容器与只读映射的差异。
+    int TrieNodeTotal() const;
+    const TrieNode& TrieNodeAt(int index) const;
+    int StrTrieNodeTotal() const;
+    const SyllableTrieNode& StrTrieNodeAt(int index) const;
+    std::int32_t RootChildAt(size_t syllable_id) const;
+    size_t SylValueTotal() const;
+    std::string_view SylValueAt(size_t syllable_id) const;
+    size_t FingerprintTotal() const;
+    void FingerprintAt(size_t index, std::uint64_t (*out)[2]) const;
+    bool TrieEmpty() const;
+    bool StrTrieEmpty() const;
+
+    // 快照映射状态；shared_ptr 保证最后一个持有词库快照的对象析构后才解映射。
+    bool mapped_mode_ = false;
+    std::shared_ptr<void> mapped_region_;
+    const unsigned char* snap_base_ = nullptr;
+    const EngineSnapshotHeader* snap_header_ = nullptr;
+    const SnapshotKeyIndexEntry* snap_key_index_ = nullptr;
+    const SnapshotEntryRecord* snap_entries_ = nullptr;
+    const char* snap_keys_blob_ = nullptr;
+    const wchar_t* snap_words_blob_ = nullptr;
+    const TrieNode* snap_trie_ = nullptr;
+    const SyllableTrieNode* snap_str_trie_ = nullptr;
+    const std::int32_t* snap_root_children_ = nullptr;
+    const std::uint32_t* snap_syl_offsets_ = nullptr;
+    const char* snap_syl_blob_ = nullptr;
+    const std::uint64_t (*snap_fingerprints_)[2] = nullptr;
+    std::uint32_t snap_key_count_ = 0;
+    std::uint32_t snap_entry_count_ = 0;
+    std::uint32_t snap_fp_count_ = 0;
 
     void EnsureTrieRoot();
     void EnsureSyllableTrieRoot();

@@ -3,6 +3,7 @@
 #include "../common/logger.h"
 
 #include <Windows.h>
+#include <algorithm>
 #include <new>
 
 namespace shuru {
@@ -16,6 +17,10 @@ std::wstring g_shared_lexicon;
 HANDLE g_load_thread = nullptr;
 volatile LONG g_loading = 0;
 bool g_shutdown_waiting = false;
+// 就绪事件（手动复位）：加载线程完成时 SetEvent 唤醒所有等待者；
+// 每次新的加载尝试开始前 ResetEvent。
+HANDLE g_ready_event = nullptr;
+volatile LONG g_last_load_failed = 0;
 
 BOOL CALLBACK InitSharedCs(PINIT_ONCE, PVOID, PVOID*) {
     InitializeCriticalSection(&g_shared_cs);
@@ -47,9 +52,13 @@ DWORD WINAPI SharedEngineLoadProc(LPVOID) {
     } else {
         SHURU_LOG_ERROR("SharedEngine async load failed");
     }
+    InterlockedExchange(&g_last_load_failed, ok ? 0 : 1);
 
     // 线程句柄有信号后才能析构引擎；loading 仅表示 Initialize 的重活已结束。
     InterlockedExchange(&g_loading, 0);
+    if (g_ready_event != nullptr) {
+        SetEvent(g_ready_event);
+    }
     return ok ? 0 : 1;
 }
 
@@ -73,6 +82,12 @@ bool StartAsyncLoad_NoLock() {
     if (InterlockedCompareExchange(&g_loading, 1, 0) != 0) {
         return true;
     }
+    if (g_ready_event == nullptr) {
+        g_ready_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    } else {
+        ResetEvent(g_ready_event);
+    }
+    InterlockedExchange(&g_last_load_failed, 0);
     g_load_thread = CreateThread(nullptr, 0, SharedEngineLoadProc, nullptr, 0, nullptr);
     if (g_load_thread == nullptr) {
         InterlockedExchange(&g_loading, 0);
@@ -158,6 +173,42 @@ long SharedEngine::RefCount() {
     const long refs = g_shared_ref;
     LeaveCriticalSection(&g_shared_cs);
     return refs;
+}
+
+bool SharedEngine::WaitForReady(unsigned long timeout_ms) {
+    if (GetIfReady() != nullptr) {
+        return true;
+    }
+    EnsureSharedCs();
+    const ULONGLONG deadline = GetTickCount64() + timeout_ms;
+    for (;;) {
+        if (GetIfReady() != nullptr) {
+            return true;
+        }
+        EnterCriticalSection(&g_shared_cs);
+        HANDLE ready_event = g_ready_event;
+        LeaveCriticalSection(&g_shared_cs);
+
+        // 无加载在途且未就绪：失败或尚未启动，立即定论，绝不空转。
+        if (!IsLoading()) {
+            return GetIfReady() != nullptr;
+        }
+        ULONGLONG now = GetTickCount64();
+        if (now >= deadline) {
+            return GetIfReady() != nullptr;
+        }
+        const DWORD wait_ms = static_cast<DWORD>(
+            (std::min)(static_cast<ULONGLONG>(50), deadline - now));
+        if (ready_event != nullptr) {
+            WaitForSingleObject(ready_event, wait_ms);
+        } else {
+            Sleep(2);
+        }
+    }
+}
+
+bool SharedEngine::HasFailed() {
+    return InterlockedCompareExchange(&g_last_load_failed, 0, 0) != 0;
 }
 
 void SharedEngine::Shutdown() {

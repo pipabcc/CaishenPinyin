@@ -31,6 +31,15 @@ Windows 只读文件映射和兼容 librime-octagram 的 Darts 双数组查询�
 
 可编辑文本是权威源；运行时优先加载按源文件 SHA-256 校验的 `.bin` 索引缓存。
 
+在 `.bin` 缓存之上还有一层 **EngineSnapshot v2**（`src/engine/engine_snapshot.cpp`）：
+把传统装载的最终产物（排序词条、键哈希索引、双 Trie、音节表、词指纹、英文词典）序列化为
+偏移量布局的只读快照，使每个宿主进程冷加载从"解析 + 重排 + 重建索引"降为一次文件映射
+（实测白霜全量词库从约 11-12 秒降到引擎整体约 150-160 毫秒就绪）。
+它是纯派生缓存：不入 `data/lexicon` 包与 `manifest.json`，运行时首次传统装载后自动生成到
+`%LOCALAPPDATA%\CaishenPinyin\snapshot\`（用户可写目录；`ProgramData` 对普通用户进程只读）。
+快照头部记录三个源文件的 size+mtime 与生成时 SHA-256；加载路径只 stat 比对并做顺序结构校验，
+不重算大文件强哈希。词库内容升级后源 stat 变化，旧 tag 快照自然失效并被清理。
+
 生成并校验：
 
 ```powershell
