@@ -426,6 +426,7 @@ void CandidateWindow::Destroy() {
         StopReadyPolling();
         StopShiftReleasePolling();
         StopShortcutReleasePolling();
+        StopDirectCommitPolling();
         StopDeferredAction();
         StopSkinAnimation();
         DestroyWindow(hwnd_);
@@ -791,6 +792,7 @@ void CandidateWindow::ResetWindowBoundState() noexcept {
     ready_poll_active_ = false;
     shift_release_poll_active_ = false;
     shortcut_release_poll_active_ = false;
+    direct_commit_poll_active_ = false;
     vmode_timer_active_ = false;
     deferred_action_active_ = false;
     skin_animation_timer_active_ = false;
@@ -799,6 +801,7 @@ void CandidateWindow::ResetWindowBoundState() noexcept {
     ready_poll_ = nullptr;
     shift_release_poll_ = nullptr;
     shortcut_release_poll_ = nullptr;
+    direct_commit_poll_ = nullptr;
     vmode_timer_cb_ = nullptr;
     deferred_action_ = nullptr;
     owner_thread_actions_.clear();
@@ -1062,6 +1065,28 @@ void CandidateWindow::StopShortcutReleasePolling() {
     }
     shortcut_release_poll_active_ = false;
     shortcut_release_poll_ = nullptr;
+}
+
+bool CandidateWindow::StartDirectCommitPolling(
+    std::function<bool()> poll) {
+    if (hwnd_ == nullptr) return false;
+    StopDirectCommitPolling();
+    direct_commit_poll_ = std::move(poll);
+    if (direct_commit_poll_) {
+        direct_commit_poll_active_ = SetTimer(
+            hwnd_, kDirectCommitPollTimerId,
+            kDirectCommitPollIntervalMs, nullptr) != 0;
+        if (!direct_commit_poll_active_) direct_commit_poll_ = nullptr;
+    }
+    return direct_commit_poll_active_;
+}
+
+void CandidateWindow::StopDirectCommitPolling() {
+    if (direct_commit_poll_active_ && hwnd_ != nullptr) {
+        KillTimer(hwnd_, kDirectCommitPollTimerId);
+    }
+    direct_commit_poll_active_ = false;
+    direct_commit_poll_ = nullptr;
 }
 
 void CandidateWindow::StartDeferredAction(
@@ -2102,6 +2127,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             const std::function<bool()> poll = self->shortcut_release_poll_;
             if (!poll || !poll()) {
                 self->StopShortcutReleasePolling();
+            }
+            return 0;
+        }
+        if (wparam == kDirectCommitPollTimerId) {
+            const std::function<bool()> poll = self->direct_commit_poll_;
+            if (!poll || !poll()) {
+                self->StopDirectCommitPolling();
             }
             return 0;
         }

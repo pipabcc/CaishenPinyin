@@ -160,6 +160,15 @@ namespace ShuruSettings
                 }
                 catch (COMException)
                 {
+                    if (retry == 2)
+                    {
+                        // 读取竞争同样持续存在时，记录占用者帮助定位。
+                        CrashLogger.Log(
+                            "ClipboardMonitor.ReadClipboard",
+                            new InvalidOperationException(
+                                "clipboard locked; holder=" +
+                                ClipboardImageService.DescribeClipboardHolder()));
+                    }
                     Thread.Sleep(40);
                 }
                 catch (Exception ex)

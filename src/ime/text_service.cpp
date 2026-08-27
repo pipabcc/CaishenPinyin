@@ -9,6 +9,7 @@
 #include "../common/guid_def.h"
 #include "edit_sessions.h"
 #include "first_key_recovery.h"
+#include "direct_text_commit_request.h"
 #include <new>
 
 
@@ -30,6 +31,11 @@
 namespace shuru {
 
 namespace {
+
+// 首键等待词库就绪的上限。快照冷加载毫秒级完成，正常路径此等待立即返回；
+// 仅在极慢磁盘上消耗，超时后走"保持组合态/异常保底"分支。
+constexpr UINT kEngineReadyWaitMs = 300;
+constexpr std::uint64_t kDirectTextCommitTimeoutMs = 10ULL * 60ULL * 1000ULL;
 
 bool IsShiftKey(WPARAM wparam) {
     return wparam == VK_SHIFT || wparam == VK_LSHIFT || wparam == VK_RSHIFT;
@@ -351,6 +357,7 @@ TextService::TextService() {
 }
 
 TextService::~TextService() {
+    CancelDirectTextCommit();
     CancelFirstKeyRecovery(true);
     RollbackActivation();
     ClearCompositionState();
@@ -494,13 +501,9 @@ void TextService::EnsureUiWindows() {
             candidate_override_pos_ = pos;
         });
         candidate_window_.SetSearchHandler([this]() {
-            const wchar_t* arguments = composing_pinyin_.rfind("vv", 0) == 0
-                ? L"-quick phrases"
-                : L"-quick";
-            if (!LaunchSettingsExecutable(
-                    candidate_window_.GetHwnd(), g_module, arguments)) {
-                SHURU_LOG_WARN("quick search window launch failed");
-            }
+            const bool phrases = composing_pinyin_.rfind("vv", 0) == 0;
+            (void)LaunchQuickWindowWithFallback(
+                edit_context_, phrases, false);
         });
         candidate_window_.SetClearSearchHandler([this]() {
             bool changed = false;
@@ -630,6 +633,7 @@ bool TextService::IsOwnerThread() const noexcept {
 }
 
 void TextService::RollbackActivation() noexcept {
+    CancelDirectTextCommit();
     CancelFirstKeyRecovery(true);
     shift_tap_.Reset();
     shortcut_modifier_state_.Reset();
@@ -1083,6 +1087,176 @@ bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidat
         ClearCompositionState(); candidate_window_.Hide(); return true;
     }
     RefreshCandidates(); UpdateCandidateWindow(context); return true;
+}
+
+bool TextService::StartDirectQuickWindow(
+    ITfContext* context, bool phrases) {
+    // AppContainer 进程只能通过常驻普通进程代理打开设置窗口，代理协议
+    // 只接受固定命令，无法安全地转发本次直达令牌；此处直接走旧入口。
+    if (IsCurrentProcessAppContainer()) {
+        SHURU_LOG_INFO("direct quick window skipped in AppContainer");
+        return false;
+    }
+    if (context == nullptr || !IsCurrentTopContext(context)) {
+        SHURU_LOG_WARN("direct quick window rejected: context is not focused");
+        return false;
+    }
+    const HWND target_window = ActiveContextWindow(context);
+    if (target_window == nullptr || !IsWindow(target_window)) {
+        SHURU_LOG_WARN("direct quick window rejected: target window unavailable");
+        return false;
+    }
+
+    CancelDirectTextCommit();
+    const std::wstring token = CreateDirectTextCommitToken();
+    if (token.empty() || !PrepareDirectTextCommitSession(token)) {
+        SHURU_LOG_WARN("direct quick window session preparation failed");
+        return false;
+    }
+
+    direct_commit_token_ = token;
+    direct_commit_context_ = context;
+    direct_commit_context_->AddRef();
+    direct_commit_window_ = target_window;
+    direct_commit_started_tick_ = GetTickCount64();
+    if (!candidate_window_.StartDirectCommitPolling([this]() {
+            return PollDirectTextCommit();
+        })) {
+        CancelDirectTextCommit();
+        SHURU_LOG_WARN("direct quick window polling start failed");
+        return false;
+    }
+
+    const std::wstring arguments = std::wstring(
+        phrases ? L"-quick phrases" : L"-quick") +
+        L" -direct-commit-token " + token +
+        L" -target-hwnd " +
+        std::to_wstring(reinterpret_cast<std::intptr_t>(target_window));
+    if (!LaunchSettingsExecutable(
+            candidate_window_.GetHwnd(), g_module, arguments.c_str())) {
+        CancelDirectTextCommit();
+        SHURU_LOG_WARN("direct quick window launch failed");
+        return false;
+    }
+
+    // 独立窗口接管后不再保留 v/vv 组合。目标上下文仍由成员引用保护，
+    // 等窗口隐藏并恢复目标焦点后再消费请求。
+    const HRESULT end_hr = EndComposition();
+    if (FAILED(end_hr)) {
+        SHURU_LOG_WARN(
+            "direct quick window composition cleanup failed: 0x%08X",
+            static_cast<unsigned>(end_hr));
+    }
+    ClearCompositionState();
+    candidate_window_.Hide();
+    return true;
+}
+
+bool TextService::LaunchQuickWindowWithFallback(
+    ITfContext* context, bool phrases, bool clear_composition) {
+    if (StartDirectQuickWindow(context, phrases)) return true;
+    const bool launched = LaunchSettingsExecutable(
+        candidate_window_.GetHwnd(), g_module,
+        phrases ? L"-quick phrases" : L"-quick");
+    if (!launched) return false;
+
+    if (clear_composition) {
+        const HRESULT end_hr = EndComposition();
+        if (FAILED(end_hr)) {
+            SHURU_LOG_WARN(
+                "quick window fallback composition cleanup failed: 0x%08X",
+                static_cast<unsigned>(end_hr));
+        }
+        ClearCompositionState();
+        candidate_window_.Hide();
+    }
+    return true;
+}
+
+bool TextService::PollDirectTextCommit() {
+    if (direct_commit_token_.empty() || direct_commit_context_ == nullptr) {
+        return false;
+    }
+    const std::uint64_t now = GetTickCount64();
+    if (now < direct_commit_started_tick_ ||
+        now - direct_commit_started_tick_ > kDirectTextCommitTimeoutMs) {
+        FinishDirectTextCommit(DirectTextCommitResult::RequestExpired);
+        return false;
+    }
+    if (direct_commit_window_ == nullptr ||
+        !IsWindow(direct_commit_window_)) {
+        FinishDirectTextCommit(DirectTextCommitResult::TargetUnavailable);
+        return false;
+    }
+
+    if (ConsumeDirectTextCommitCancellation(direct_commit_token_)) {
+        CancelDirectTextCommit();
+        return false;
+    }
+
+    HWND target_root = GetAncestor(direct_commit_window_, GA_ROOT);
+    if (target_root == nullptr) target_root = direct_commit_window_;
+    HWND foreground = GetForegroundWindow();
+    HWND foreground_root = foreground == nullptr
+        ? nullptr : GetAncestor(foreground, GA_ROOT);
+    if (foreground_root == nullptr) foreground_root = foreground;
+    if (foreground_root != target_root) return true;
+
+    std::wstring text;
+    const DirectTextCommitReadResult request =
+        ReadAndDeleteDirectTextCommitRequest(direct_commit_token_, &text);
+    if (request == DirectTextCommitReadResult::NotReady) return true;
+    if (request == DirectTextCommitReadResult::Invalid) {
+        FinishDirectTextCommit(DirectTextCommitResult::InvalidRequest);
+        return false;
+    }
+
+    // 搜索窗口打开期间目标文档会暂时失去焦点。不能在此时消费请求，
+    // 否则文本可能在错误的上下文中提交；等待目标重新成为 TSF 顶层焦点。
+    // 回焦通知可能稍晚于 Win32 前台切换，主动同步一次当前顶层上下文。
+    // 但绝不把会话迁移到新的 ITfContext：同一浏览器窗口内也可能是另一个
+    // 输入框，宁可明确失败，也不能把剪贴板记录写入错误位置。
+    if (!IsCurrentTopContext(direct_commit_context_)) {
+        (void)RebindFocusedContext();
+    }
+    if (!IsCurrentTopContext(direct_commit_context_)) {
+        FinishDirectTextCommit(DirectTextCommitResult::ContextChanged);
+        return false;
+    }
+    if (IsPasswordContext(direct_commit_context_)) {
+        FinishDirectTextCommit(DirectTextCommitResult::SensitiveContext);
+        return false;
+    }
+
+    const HRESULT hr = CommitText(
+        direct_commit_context_, text, false);
+    FinishDirectTextCommit(
+        SUCCEEDED(hr)
+            ? DirectTextCommitResult::Success
+            : DirectTextCommitResult::CommitFailed);
+    return false;
+}
+
+void TextService::FinishDirectTextCommit(DirectTextCommitResult result) {
+    if (!direct_commit_token_.empty()) {
+        (void)WriteDirectTextCommitResult(direct_commit_token_, result);
+    }
+    candidate_window_.StopDirectCommitPolling();
+    SafeRelease(&direct_commit_context_);
+    direct_commit_token_.clear();
+    direct_commit_window_ = nullptr;
+    direct_commit_started_tick_ = 0;
+}
+
+void TextService::CancelDirectTextCommit() noexcept {
+    candidate_window_.StopDirectCommitPolling();
+    if (!direct_commit_token_.empty()) {
+        DeleteDirectTextCommitSessionFiles(direct_commit_token_);
+    }
+    SafeRelease(&direct_commit_context_);
+    direct_commit_token_.clear();
+    direct_commit_window_ = nullptr;
+    direct_commit_started_tick_ = 0;
 }
 
 void TextService::OnCandidateSelected(size_t index) {
@@ -2306,6 +2480,14 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     }
     if (number >= 0 && !composing_pinyin_.empty()) {
         if (engine_ == nullptr || !engine_->IsReady()) {
+            SharedEngine::WaitForReady(kEngineReadyWaitMs);
+        }
+        if (engine_ == nullptr || !engine_->IsReady()) {
+            if (SharedEngine::IsLoading()) {
+                // 极慢盘兜底：保持组合态，不把原始拼音当选择结果上屏。
+                *eaten = true;
+                return true;
+            }
             std::wstring raw = PinyinToWide(composing_pinyin_);
             raw.push_back(static_cast<wchar_t>('1' + number));
             const HRESULT hr = CommitText(context, raw);
@@ -2329,21 +2511,25 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     if (wparam == VK_SPACE && !composing_pinyin_.empty()) {
         candidate_window_.StopVModeTimer();
         if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && config.v_mode_open_window) {
-            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick");
-            ClearCompositionState();
-            if (context) (void)SetCompositionString(context, L"");
+            (void)LaunchQuickWindowWithFallback(context, false, true);
             *eaten = true;
             return true;
         }
         if ((composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0) && config.vv_mode_open_window) {
-            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
-            ClearCompositionState();
-            if (context) (void)SetCompositionString(context, L"");
+            (void)LaunchQuickWindowWithFallback(context, true, true);
             *eaten = true;
             return true;
         }
 
         if (engine_ == nullptr || !engine_->IsReady()) {
+            SharedEngine::WaitForReady(kEngineReadyWaitMs);
+        }
+        if (engine_ == nullptr || !engine_->IsReady()) {
+            if (SharedEngine::IsLoading()) {
+                // 极慢盘兜底：保持组合态，空格不上屏原始拼音。
+                *eaten = true;
+                return true;
+            }
             const HRESULT hr = CommitText(context, PinyinToWide(composing_pinyin_) + L" ");
             if (SUCCEEDED(hr)) {
                 ClearCompositionState();
@@ -2369,16 +2555,12 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     if (wparam == VK_RETURN && !composing_pinyin_.empty()) {
         candidate_window_.StopVModeTimer();
         if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && config.v_mode_open_window) {
-            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick");
-            ClearCompositionState();
-            if (context) (void)SetCompositionString(context, L"");
+            (void)LaunchQuickWindowWithFallback(context, false, true);
             *eaten = true;
             return true;
         }
         if ((composing_pinyin_.rfind("vv", 0) == 0 || composing_pinyin_.rfind("VV", 0) == 0) && config.vv_mode_open_window) {
-            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
-            ClearCompositionState();
-            if (context) (void)SetCompositionString(context, L"");
+            (void)LaunchQuickWindowWithFallback(context, true, true);
             *eaten = true;
             return true;
         }
@@ -2450,10 +2632,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         if ((composing_pinyin_ == "v" || composing_pinyin_ == "V") && (ch == 'v' || ch == 'V') && config.vv_mode_open_window) {
             *eaten = true;
             DisarmFirstKeyRecoveryTrigger();
-            LaunchSettingsExecutable(candidate_window_.GetHwnd(), g_module, L"-quick phrases");
-            ClearCompositionState();
-            if (context) (void)SetCompositionString(context, L"");
-            candidate_window_.Hide();
+            (void)LaunchQuickWindowWithFallback(context, true, true);
             return true;
         }
 
@@ -2532,9 +2711,23 @@ void TextService::RefreshCandidates() {
     }
 
     if (!engine_->IsReady()) {
-        // 加载中：提供当前输入拼音作为保底回退候选，避免中间区域完全空白；
-        // 同时启动就绪轮询——词库在后台就绪后立刻自动刷新出完整候选词。
+        // 快照冷加载通常毫秒级完成：先有界等待，等待期间不显示也不提交
+        // 原始拼音。超时（极慢磁盘等）保持组合态，下一次击键或刷新重试；
+        // 只有加载真正失败才退回原始拼音异常保底。
+        SharedEngine::WaitForReady(kEngineReadyWaitMs);
+    }
+    if (!engine_->IsReady()) {
         candidate_display_ = comp;
+        if (SharedEngine::IsLoading()) {
+            // 仍在装载：组合串照常显示（TSF 组字区），但不产生任何候选，
+            // 避免用户把假候选当作真实词上屏。
+            current_result_.candidates.clear();
+            candidate_state_ = {};
+            SyncCandidateWindowCandidates();
+            return;
+        }
+        // 异常保底（仅加载失败）：提供当前输入拼音作为回退候选，避免
+        // 中间区域完全空白；同时启动就绪轮询，重试成功后自动换真候选。
         Candidate fallback_cand;
         fallback_cand.text = comp;
         fallback_cand.pinyin = composing_pinyin_;
@@ -3021,12 +3214,8 @@ void TextService::StartVModeWindowTimer() {
     candidate_window_.Hide();
     candidate_window_.StartVModeTimer([this]() {
         if (composing_pinyin_ == "v" || composing_pinyin_ == "V") {
-            LaunchSettingsExecutable(
-                candidate_window_.GetHwnd(), g_module, L"-quick");
-            ClearCompositionState();
-            if (edit_context_ != nullptr) {
-                (void)SetCompositionString(edit_context_, L"");
-            }
+            (void)LaunchQuickWindowWithFallback(
+                edit_context_, false, true);
         }
     }, 220);
 }

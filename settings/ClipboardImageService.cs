@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -19,8 +20,12 @@ internal static class ClipboardImageService
 
     private const int ClipboardCannotOpenHResult = unchecked((int)0x800401D0);
     private const long MaximumDecodedPixels = 100_000_000;
+    // 剪贴板是全系统单例资源，其它进程（含本程序自己的监视器在哈希/入库
+    // 大图片时）可能短暂持有；总重试窗口约 2.5 秒，覆盖常见竞争。
+    // 总重试窗口约 7 秒：覆盖常见竞争以及 GameViewer 之类会长时间
+    // 持有剪贴板的第三方工具的间歇性占用。
     private static readonly int[] ClipboardRetryDelaysMilliseconds =
-        [20, 40, 80, 160, 320];
+        [50, 100, 200, 300, 500, 500, 750, 750, 1000, 1000, 1000, 1000];
 
     internal static bool IsInternalPaste(IDataObject dataObject) =>
         dataObject.GetDataPresent(InternalPasteFormat, autoConvert: false);
@@ -113,6 +118,52 @@ internal static class ClipboardImageService
         SetClipboardDataObject(dataObject);
     }
 
+    // OLE 剪贴板要求 STA；用专用 STA 线程执行带重试的写入，让调用方
+    // （QuickWindow 的 UI 线程）在长达数秒的重试窗口内保持响应。
+    internal static Task SetClipboardTextAsync(string text)
+    {
+        var dataObject = new DataObject();
+        dataObject.SetData(InternalPasteFormat, "1");
+        dataObject.SetData(DataFormats.UnicodeText, text ?? string.Empty);
+        return SetClipboardDataObjectAsync(dataObject);
+    }
+
+    internal static Task SetClipboardImageAsync(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            throw new FileNotFoundException("剪贴板图片文件不存在", imagePath);
+
+        var fullPath = Path.GetFullPath(imagePath);
+        var original = File.ReadAllBytes(fullPath);
+        var normalized = NormalizePngAlpha(original);
+        if (normalized.AlphaRepaired)
+            RepairImageFileAtomically(fullPath, normalized.PngBytes);
+        return SetClipboardDataObjectAsync(
+            CreateClipboardImageDataObject(normalized.PngBytes));
+    }
+
+    internal static Task SetClipboardDataObjectAsync(DataObject dataObject)
+    {
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                SetClipboardDataObject(dataObject);
+                completion.TrySetResult(true);
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+        return completion.Task;
+    }
+
     private static void SetClipboardDataObject(DataObject dataObject)
     {
         for (var attempt = 0; ; attempt++)
@@ -123,11 +174,52 @@ internal static class ClipboardImageService
                 return;
             }
             catch (COMException ex) when (
-                ex.HResult == ClipboardCannotOpenHResult &&
-                attempt < ClipboardRetryDelaysMilliseconds.Length)
+                ex.HResult == ClipboardCannotOpenHResult)
             {
+                if (attempt >= ClipboardRetryDelaysMilliseconds.Length)
+                {
+                    // 竞争持续超过整个重试窗口：记录当前占用者，供定位
+                    // 是哪个进程长期锁死剪贴板。
+                    CrashLogger.Log(
+                        "ClipboardImageService.SetClipboardDataObject",
+                        new InvalidOperationException(
+                            "clipboard locked after retries; holder=" +
+                            DescribeClipboardHolder(), ex));
+                    throw;
+                }
                 Thread.Sleep(ClipboardRetryDelaysMilliseconds[attempt]);
             }
+        }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetOpenClipboardWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(
+        IntPtr hWnd, out uint processId);
+
+    internal static string DescribeClipboardHolder()
+    {
+        try
+        {
+            var window = GetOpenClipboardWindow();
+            if (window == IntPtr.Zero) return "none";
+            GetWindowThreadProcessId(window, out var processId);
+            var name = "<unknown>";
+            try
+            {
+                name = Process.GetProcessById((int)processId).ProcessName;
+            }
+            catch
+            {
+                // 进程可能恰好退出；保留 pid 即可。
+            }
+            return $"window=0x{window.ToInt64():X}; pid={processId}; process={name}";
+        }
+        catch (Exception ex)
+        {
+            return "diagnostic-failed: " + ex.Message;
         }
     }
 

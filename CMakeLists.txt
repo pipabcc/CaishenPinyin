@@ -39,6 +39,14 @@ set(SHURU_PINNED_CANDIDATE_SOURCES
   src/engine/pinned_candidate_store.cpp
 )
 
+set(SHURU_DIRECT_COMMIT_SOURCES
+  src/ime/direct_text_commit_request.cpp
+)
+
+set(SHURU_ENGINE_SNAPSHOT_SOURCES
+  src/engine/engine_snapshot.cpp
+)
+
 add_library(ShuruIme SHARED
   src/common/logger.cpp
   src/common/runtime_config.cpp
@@ -49,6 +57,7 @@ add_library(ShuruIme SHARED
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
   ${SHURU_PINNED_CANDIDATE_SOURCES}
+  ${SHURU_ENGINE_SNAPSHOT_SOURCES}
   ${SHURU_ENGINE_FEATURE_SOURCES}
   ${SHURU_CLIPBOARD_SOURCES}
   src/engine/shared_engine.cpp
@@ -56,6 +65,7 @@ add_library(ShuruIme SHARED
   src/ime/class_factory.cpp
   src/ime/register.cpp
   src/ime/edit_sessions.cpp
+  ${SHURU_DIRECT_COMMIT_SOURCES}
   src/ime/input_policy.cpp
   src/ime/punctuation_state.cpp
   src/ime/display_attribute.cpp
@@ -131,6 +141,7 @@ add_executable(engine_playground
   src/engine/english_dict.cpp
   src/engine/pinyin_engine.cpp
   ${SHURU_PINNED_CANDIDATE_SOURCES}
+  ${SHURU_ENGINE_SNAPSHOT_SOURCES}
   ${SHURU_ENGINE_FEATURE_SOURCES}
   src/engine/shared_engine.cpp
 )
@@ -209,6 +220,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
@@ -246,6 +258,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
@@ -295,6 +308,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
@@ -320,6 +334,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
     src/engine/shared_engine.cpp
@@ -343,6 +358,7 @@ if(BUILD_TESTING)
   src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )
@@ -355,6 +371,60 @@ if(BUILD_TESTING)
     ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata-stress"
     TIMEOUT 30
   )
+
+  # EngineSnapshot v2：堆装载 vs 只读映射的一致性、损坏拒绝、源变更失效。
+  add_executable(engine_snapshot_test
+    tests/engine_playground/engine_snapshot_test.cpp
+    src/common/logger.cpp
+    src/common/runtime_config.cpp
+    src/common/private_acl.cpp
+    src/engine/dictionary.cpp
+    src/engine/lexicon_cache.cpp
+    src/engine/english_dict.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
+  )
+  target_include_directories(engine_snapshot_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(engine_snapshot_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(engine_snapshot_test PRIVATE bcrypt)
+
+  # 加载基准工具（开发期手动运行）：传统装载 vs 快照装载耗时对比。
+  add_executable(load_timing_tool
+    tests/engine_playground/load_timing_tool.cpp
+    src/common/logger.cpp
+    src/common/runtime_config.cpp
+    src/common/private_acl.cpp
+    src/engine/dictionary.cpp
+    src/engine/lexicon_cache.cpp
+    src/engine/english_dict.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
+    src/engine/pinyin_engine.cpp
+    ${SHURU_PINNED_CANDIDATE_SOURCES}
+    ${SHURU_ENGINE_FEATURE_SOURCES}
+  )
+  target_include_directories(load_timing_tool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(load_timing_tool PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(load_timing_tool PRIVATE bcrypt user32)
+  add_test(NAME engine_snapshot COMMAND engine_snapshot_test
+    $<TARGET_FILE:engine_snapshot_build_tool>)
+  set_tests_properties(engine_snapshot PROPERTIES
+    ENVIRONMENT "LOCALAPPDATA=${CMAKE_CURRENT_BINARY_DIR}/test-userdata-snapshot"
+    TIMEOUT 60
+  )
+
+  # 安装期快照预生成工具（方案 C）：安装器部署成功后隐藏调用，
+  # 按运行时相同的传统装载路径生成快照并写入当前用户缓存目录。
+  add_executable(engine_snapshot_build_tool
+    tests/engine_playground/engine_snapshot_build_tool.cpp
+    src/common/logger.cpp
+    src/common/runtime_config.cpp
+    src/engine/dictionary.cpp
+    src/engine/lexicon_cache.cpp
+    src/engine/english_dict.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
+  )
+  target_include_directories(engine_snapshot_build_tool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(engine_snapshot_build_tool PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(engine_snapshot_build_tool PRIVATE bcrypt)
 
   add_executable(logger_test
     tests/engine_playground/logger_test.cpp
@@ -387,12 +457,14 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
     ${SHURU_CLIPBOARD_SOURCES}
     src/engine/shared_engine.cpp
     src/ime/globals.cpp
     src/ime/edit_sessions.cpp
+    ${SHURU_DIRECT_COMMIT_SOURCES}
     src/ime/input_policy.cpp
     src/ime/punctuation_state.cpp
     src/ime/display_attribute.cpp
@@ -436,6 +508,17 @@ if(BUILD_TESTING)
   target_link_libraries(clipboard_helper_test PRIVATE ole32 advapi32 winsqlite3)
   add_test(NAME clipboard_helper COMMAND clipboard_helper_test)
   set_tests_properties(clipboard_helper PROPERTIES TIMEOUT 30)
+
+  add_executable(direct_text_commit_request_test
+    tests/engine_playground/direct_text_commit_request_test.cpp
+    src/common/private_acl.cpp
+    src/ime/direct_text_commit_request.cpp
+  )
+  target_include_directories(direct_text_commit_request_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(direct_text_commit_request_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(direct_text_commit_request_test PRIVATE ole32 advapi32)
+  add_test(NAME direct_text_commit_request COMMAND direct_text_commit_request_test)
+  set_tests_properties(direct_text_commit_request PROPERTIES TIMEOUT 30)
 
   add_executable(candidate_window_test
     tests/engine_playground/candidate_window_test.cpp
@@ -491,6 +574,7 @@ if(BUILD_TESTING)
     src/engine/lexicon_cache.cpp
     src/engine/english_dict.cpp
     src/engine/pinyin_engine.cpp
+    ${SHURU_ENGINE_SNAPSHOT_SOURCES}
     ${SHURU_PINNED_CANDIDATE_SOURCES}
     ${SHURU_ENGINE_FEATURE_SOURCES}
   )

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace ShuruSettings
 {
@@ -33,19 +34,30 @@ namespace ShuruSettings
         private static extern IntPtr GetForegroundWindow();
 
         private readonly QuickWindowMode _mode;
+        private readonly string? _directCommitToken;
         private IntPtr _targetWindow;
         private CancellationTokenSource? _loadCancellation;
         private int _loadGeneration;
         private bool _isPasting;
         private bool _isShowingDialog;
+        private bool _directCommitSessionFinished;
 
-        public QuickWindow(QuickWindowMode mode = QuickWindowMode.Clipboard)
+        public QuickWindow(
+            QuickWindowMode mode = QuickWindowMode.Clipboard,
+            string? directCommitToken = null,
+            IntPtr targetWindow = default)
         {
             InitializeComponent();
             _mode = mode;
+            _directCommitToken =
+                DirectTextCommitRequestStore.IsValidToken(directCommitToken)
+                    ? directCommitToken!.ToLowerInvariant()
+                    : null;
 
             // 记录唤起此快捷窗口前的活动窗口，以便选择后准确粘贴回原窗口
-            _targetWindow = GetForegroundWindow();
+            _targetWindow = targetWindow != IntPtr.Zero
+                ? targetWindow
+                : GetForegroundWindow();
 
             if (_mode == QuickWindowMode.Clipboard)
             {
@@ -311,30 +323,135 @@ namespace ShuruSettings
             _isPasting = true;
             try
             {
+                if (!item.IsImage && _directCommitToken != null)
+                {
+                    if (_directCommitSessionFinished)
+                    {
+                        ShowTransientTitle("上屏会话已结束，请重新打开窗口");
+                        return;
+                    }
+                    Hide();
+                    var directResult = await PasteDirectTextAsync(item.Content);
+                    if (directResult == DirectTextCommitResult.Success)
+                    {
+                        Close();
+                    }
+                    else
+                    {
+                        Show();
+                        ShowTransientTitle(DescribeDirectFailure(directResult));
+                    }
+                    return;
+                }
+
+                // 写剪贴板在专用 STA 线程带重试执行（可能长达数秒），UI
+                // 线程保持响应；失败时窗口保持打开并给出提示，不再静默
+                // 关闭造成"崩溃"的观感。
                 if (item.IsImage)
                 {
                     if (!File.Exists(item.ImagePath))
                         throw new FileNotFoundException(
                             "剪贴板图片文件不存在", item.ImagePath);
-                    ClipboardImageService.SetClipboardImage(item.ImagePath);
+                    await ClipboardImageService.SetClipboardImageAsync(
+                        item.ImagePath);
                 }
                 else
-                    ClipboardImageService.SetClipboardText(item.Content);
+                {
+                    await ClipboardImageService.SetClipboardTextAsync(
+                        item.Content);
+                }
 
                 Hide();
-                await ClipboardPasteService.PasteCurrentClipboardAsync(
-                    _targetWindow);
+                if (!await ClipboardPasteService.PasteCurrentClipboardAsync(
+                        _targetWindow))
+                {
+                    Show();
+                    ShowTransientTitle("粘贴失败：目标窗口未响应");
+                    return;
+                }
                 Close();
             }
             catch (Exception ex)
             {
                 CrashLogger.Log("QuickWindow.PasteItem", ex);
-                Close();
+                if (!IsVisible) Show();
+                ShowTransientTitle(DescribeFailure(ex));
             }
+            finally
+            {
+                _isPasting = false;
+            }
+        }
+
+        private static string DescribeFailure(Exception ex)
+        {
+            if (ex is COMException) return "复制失败：剪贴板被其它程序占用";
+            var message = ex.Message;
+            return message.Length > 60 ? message[..60] : message;
+        }
+
+        private async Task<DirectTextCommitResult> PasteDirectTextAsync(
+            string text)
+        {
+            if (!await ClipboardPasteService.ActivateTargetAsync(
+                    _targetWindow).ConfigureAwait(true))
+            {
+                _directCommitSessionFinished = true;
+                DirectTextCommitRequestStore.CancelSession(
+                    _directCommitToken!);
+                return DirectTextCommitResult.TargetUnavailable;
+            }
+            var result = await DirectTextCommitRequestStore.PublishAndWaitAsync(
+                _directCommitToken!, text).ConfigureAwait(true);
+            _directCommitSessionFinished = true;
+            if (result == DirectTextCommitResult.Timeout)
+            {
+                DirectTextCommitRequestStore.CancelSession(
+                    _directCommitToken!);
+            }
+            return result;
+        }
+
+        private static string DescribeDirectFailure(
+            DirectTextCommitResult result) => result switch
+        {
+            DirectTextCommitResult.TargetUnavailable => "上屏失败：目标窗口不可用",
+            DirectTextCommitResult.ContextChanged => "上屏失败：输入焦点已改变",
+            DirectTextCommitResult.SensitiveContext => "上屏已拒绝：当前为敏感输入框",
+            DirectTextCommitResult.RequestExpired => "上屏超时：目标窗口未确认",
+            DirectTextCommitResult.InvalidRequest => "上屏失败：请求无效",
+            DirectTextCommitResult.CommitFailed => "上屏失败：目标输入框拒绝写入",
+            DirectTextCommitResult.Timeout => "上屏超时：目标窗口未响应",
+            _ => "上屏失败"
+        };
+
+        private void ShowTransientTitle(string message)
+        {
+            var previous = TitleBlock.Text;
+            TitleBlock.Text = message;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+            timer.Tick += (s, e) =>
+            {
+                TitleBlock.Text = previous;
+                timer.Stop();
+            };
+            timer.Start();
         }
 
         protected override void OnClosed(EventArgs e)
         {
+            if (_directCommitToken != null && !_directCommitSessionFinished)
+            {
+                try
+                {
+                    DirectTextCommitRequestStore.CancelSession(
+                        _directCommitToken);
+                }
+                catch (Exception ex)
+                {
+                    CrashLogger.Log("DirectTextCommit.WindowClosed", ex);
+                }
+            }
             _loadCancellation?.Cancel();
             _loadCancellation?.Dispose();
             _loadCancellation = null;

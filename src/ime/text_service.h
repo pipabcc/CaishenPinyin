@@ -10,6 +10,7 @@
 #include "input_policy.h"
 #include "langbar_item.h"
 #include "punctuation_state.h"
+#include "direct_text_commit_request.h"
 
 #include <msctf.h>
 
@@ -158,6 +159,13 @@ private:
     bool first_key_recovery_pending_ = false;
     bool first_key_recovery_adopted_ = false;
 
+    // 独立搜索窗口文本直达会话。目标上下文由创建会话的 TSF 线程持有，
+    // 设置程序只拿到不可预测令牌，不能自行选择其他输入框上屏。
+    std::wstring direct_commit_token_;
+    ITfContext* direct_commit_context_ = nullptr;
+    HWND direct_commit_window_ = nullptr;
+    std::uint64_t direct_commit_started_tick_ = 0;
+
     HRESULT InitEngine();
     void EnsureUiWindows();
     void RollbackActivation() noexcept;
@@ -215,6 +223,12 @@ private:
         ITfContext* context, WPARAM wparam, LPARAM lparam, bool shortcut_modifier,
         bool test_callback, bool* eaten);
     void StartVModeWindowTimer();
+    bool StartDirectQuickWindow(ITfContext* context, bool phrases);
+    bool LaunchQuickWindowWithFallback(
+        ITfContext* context, bool phrases, bool clear_composition);
+    bool PollDirectTextCommit();
+    void FinishDirectTextCommit(DirectTextCommitResult result);
+    void CancelDirectTextCommit() noexcept;
     void CompleteShiftTap(ITfContext* context);
     void ResetCandidateAnchor() noexcept;
     void ClearCompositionState();

@@ -98,6 +98,11 @@ public:
     void StartShortcutReleasePolling(std::function<bool()> poll);
     void StopShortcutReleasePolling();
 
+    // 独立搜索窗口通过一次性文件把文本交回目标进程。该轮询只检查请求
+    // 是否到达，必须与布局、Shift、词库和 V 模式定时器保持独立。
+    bool StartDirectCommitPolling(std::function<bool()> poll);
+    void StopDirectCommitPolling();
+
     // 将需要读取宿主布局的操作推迟到当前 TSF 编辑消息返回后执行。
     // 连续请求会合并为一次回调，避免在旧布局和新布局之间来回移动。
     void StartDeferredAction(std::function<void()> action, UINT delay_ms = 16);
@@ -147,6 +152,8 @@ private:
     static constexpr UINT kShiftReleasePollIntervalMs = 10;
     static constexpr UINT_PTR kShortcutReleasePollTimerId = 1006;
     static constexpr UINT kShortcutReleasePollIntervalMs = 10;
+    static constexpr UINT_PTR kDirectCommitPollTimerId = 1007;
+    static constexpr UINT kDirectCommitPollIntervalMs = 25;
     static constexpr UINT kOwnerThreadActionMessage = WM_APP + 0x31A;
 
     HWND hwnd_ = nullptr;
@@ -212,6 +219,8 @@ private:
     std::function<bool()> ready_poll_;
     std::function<bool()> shift_release_poll_;
     std::function<bool()> shortcut_release_poll_;
+    std::function<bool()> direct_commit_poll_;
+    bool direct_commit_poll_active_ = false;
     bool vmode_timer_active_ = false;
     std::function<void()> vmode_timer_cb_;
     bool deferred_action_active_ = false;

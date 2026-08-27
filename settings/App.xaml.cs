@@ -43,6 +43,7 @@ public partial class App : Application
         AppContainerAccess.EnsureUserData();
 
         TextPasteRequestStore.CleanupExpired();
+        DirectTextCommitRequestStore.CleanupExpired();
 
         var normalizeSkin = ArgumentValue(e.Args, "-normalize-skin");
         if (!string.IsNullOrWhiteSpace(normalizeSkin))
@@ -112,7 +113,19 @@ public partial class App : Application
                 mode = QuickWindowMode.CustomPhrases;
             }
 
-            var quickWin = new QuickWindow(mode);
+            var directCommitToken = ArgumentValue(
+                e.Args, "-direct-commit-token");
+            if (!string.IsNullOrWhiteSpace(directCommitToken) &&
+                !DirectTextCommitRequestStore.IsValidToken(directCommitToken))
+            {
+                CrashLogger.Log(
+                    "DirectTextCommit.Startup", "invalid direct commit token");
+                directCommitToken = null;
+            }
+            var target = ParseWindowHandle(
+                ArgumentValue(e.Args, "-target-hwnd"));
+            var quickWin = new QuickWindow(
+                mode, directCommitToken, target);
             quickWin.Show();
             return;
         }

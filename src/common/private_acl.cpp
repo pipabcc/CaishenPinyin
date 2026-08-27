@@ -100,7 +100,11 @@ bool HasExplicitAce(
     return false;
 }
 
-bool ApplyAcl(const std::wstring& path, PSID sid, bool directory) {
+bool ApplyAcl(
+    const std::wstring& path,
+    PSID sid,
+    bool directory,
+    bool allow_app_containers) {
     const LocalSid all_packages(L"S-1-15-2-1");
     const LocalSid restricted_packages(L"S-1-15-2-2");
     const DWORD inheritance = directory
@@ -113,12 +117,12 @@ bool ApplyAcl(const std::wstring& path, PSID sid, bool directory) {
     ULONG count = 0;
     FillAccess(
         &entries[count++], sid, GENERIC_ALL, inheritance, TRUSTEE_IS_USER);
-    if (all_packages.valid()) {
+    if (allow_app_containers && all_packages.valid()) {
         FillAccess(
             &entries[count++], all_packages.get(), kAppContainerWriteMask,
             inheritance, TRUSTEE_IS_WELL_KNOWN_GROUP);
     }
-    if (restricted_packages.valid()) {
+    if (allow_app_containers && restricted_packages.valid()) {
         FillAccess(
             &entries[count++], restricted_packages.get(),
             kAppContainerWriteMask, inheritance, TRUSTEE_IS_WELL_KNOWN_GROUP);
@@ -160,7 +164,12 @@ constexpr UserDataGrant kUserDataGrants[] = {
 // 从授权表里缺席只保证「我们不主动放行」。若上级目录带可继承的 AppContainer
 // ACE（部分机器的 Temp、LOCALAPPDATA 就是如此），权限仍会漏下来，因此这些
 // 路径还要显式 Deny。
-constexpr const wchar_t* kUserDataDenied[] = {L"clipboard"};
+constexpr const wchar_t* kUserDataDenied[] = {
+    L"clipboard",
+    // 独立搜索窗口只在普通桌面宿主启用直接上屏。请求正文可能来自剪贴板
+    // 历史，绝不能因为上级目录的继承条目暴露给任意 AppContainer。
+    L"direct_commit_requests",
+};
 
 }  // namespace
 
@@ -319,9 +328,31 @@ bool EnsureCurrentUserOnlyPath(const std::wstring& path, bool is_directory) {
         const std::filesystem::path directory = is_directory ? target : target.parent_path();
         if (directory.empty()) return false;
         std::filesystem::create_directories(directory);
-        if (!ApplyAcl(directory.wstring(), sid, true)) return false;
+        if (!ApplyAcl(directory.wstring(), sid, true, true)) return false;
         if (!is_directory && std::filesystem::exists(target)) {
-            return ApplyAcl(target.wstring(), sid, false);
+            return ApplyAcl(target.wstring(), sid, false, true);
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool EnsureCurrentUserPrivatePath(
+    const std::wstring& path, bool is_directory) {
+    if (path.empty()) return false;
+    std::vector<BYTE> sid_storage;
+    PSID sid = nullptr;
+    if (!CurrentUserSid(&sid_storage, &sid)) return false;
+    try {
+        const std::filesystem::path target(path);
+        const std::filesystem::path directory = is_directory
+            ? target : target.parent_path();
+        if (directory.empty()) return false;
+        std::filesystem::create_directories(directory);
+        if (!ApplyAcl(directory.wstring(), sid, true, false)) return false;
+        if (!is_directory && std::filesystem::exists(target)) {
+            return ApplyAcl(target.wstring(), sid, false, false);
         }
         return true;
     } catch (...) {

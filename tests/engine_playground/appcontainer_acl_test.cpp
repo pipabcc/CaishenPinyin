@@ -113,10 +113,18 @@ int wmain() {
     CHECK(shuru::EnsureCurrentUserOnlyPath(guarded.wstring(), true));
     CHECK(MentionsAllPackages(ReadDacl(guarded.wstring())));
 
+    const fs::path private_only = root / L"private-only";
+    CHECK(fs::create_directories(private_only, error) && !error);
+    CHECK(shuru::EnsureCurrentUserPrivatePath(
+        private_only.wstring(), true));
+    CHECK(!MentionsAllPackages(ReadDacl(private_only.wstring())));
+
     // 5. 分级表：clipboard 必须封死，data 可写，根目录只向直接子文件继承。
     const fs::path isolated = root / L"local-app-data";
     const fs::path user_data = isolated / L"CaishenPinyin";
     CHECK(fs::create_directories(user_data / L"clipboard", error) && !error);
+    CHECK(fs::create_directories(
+        user_data / L"direct_commit_requests", error) && !error);
     // 用户词库目录在真实环境里已被 EnsureCurrentUserOnlyPath 设成受保护 DACL，
     // 继承到此为止；分级表若不显式列出它，沙箱中的学习数据就仍然读不到。
     CHECK(fs::create_directories(user_data / L"data" / L"lexicon", error) && !error);
@@ -152,6 +160,12 @@ int wmain() {
     CHECK(DeniesAllPackages(clipboard_dacl));
     // Deny 必须排在继承下来的 Allow 之前才真正生效。
     CHECK(clipboard_dacl.find(L"(D;") < clipboard_dacl.find(L";;;AC)"));
+
+    const std::wstring direct_commit_dacl = ReadDacl(
+        (user_data / L"direct_commit_requests").wstring());
+    CHECK(DeniesAllPackages(direct_commit_dacl));
+    CHECK(direct_commit_dacl.find(L"(D;") <
+          direct_commit_dacl.find(L";;;AC)"));
 
     // settings.ini 靠根目录的 OI+NP 继承拿到读权限，被原子替换后依然有效。
     CHECK(MentionsAllPackages(ReadDacl((user_data / L"settings.ini").wstring())));

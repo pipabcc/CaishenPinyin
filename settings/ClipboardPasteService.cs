@@ -80,13 +80,38 @@ internal static class ClipboardPasteService
             targetWindow, "CurrentClipboard", cancellationToken).ConfigureAwait(true);
     }
 
+    internal static async Task<bool> ActivateTargetAsync(
+        IntPtr targetWindow,
+        string operation = "DirectTextCommit",
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsValidTargetWindow(targetWindow, operation)) return false;
+        var rootWindow = await PrepareTargetAsync(
+            targetWindow, operation, cancellationToken).ConfigureAwait(true);
+        if (rootWindow == IntPtr.Zero) return false;
+        return FocusTargetAndSendPaste(
+            targetWindow, rootWindow, operation, sendPaste: false);
+    }
+
     private static async Task<bool> PasteCurrentClipboardCoreAsync(
         IntPtr targetWindow,
         string operation,
         CancellationToken cancellationToken)
     {
+        var activateTarget = await PrepareTargetAsync(
+            targetWindow, operation, cancellationToken).ConfigureAwait(true);
+        if (activateTarget == IntPtr.Zero) return false;
+        return FocusTargetAndSendPaste(
+            targetWindow, activateTarget, operation, sendPaste: true);
+    }
+
+    private static async Task<IntPtr> PrepareTargetAsync(
+        IntPtr targetWindow,
+        string operation,
+        CancellationToken cancellationToken)
+    {
         await Task.Delay(80, cancellationToken).ConfigureAwait(true);
-        if (!IsValidTargetWindow(targetWindow, operation)) return false;
+        if (!IsValidTargetWindow(targetWindow, operation)) return IntPtr.Zero;
 
         var rootWindow = GetAncestor(targetWindow, AncestorRoot);
         var activateTarget = rootWindow != IntPtr.Zero ? rootWindow : targetWindow;
@@ -111,7 +136,7 @@ internal static class ClipboardPasteService
         if (!IsForegroundRoot(activateTarget))
         {
             LogStage(operation + ".Foreground", "result=failed");
-            return false;
+            return IntPtr.Zero;
         }
         LogStage(operation + ".Foreground", "result=active");
 
@@ -119,10 +144,9 @@ internal static class ClipboardPasteService
         if (!IsForegroundRoot(activateTarget))
         {
             LogStage(operation + ".Foreground", "result=lost-before-input");
-            return false;
+            return IntPtr.Zero;
         }
-        return FocusTargetAndSendPaste(
-            targetWindow, activateTarget, operation);
+        return activateTarget;
     }
 
     private static void RequestForegroundWindow(
@@ -171,12 +195,30 @@ internal static class ClipboardPasteService
     private static bool FocusTargetAndSendPaste(
         IntPtr targetWindow,
         IntPtr rootWindow,
-        string operation)
+        string operation,
+        bool sendPaste)
     {
         var targetThread = GetWindowThreadProcessId(targetWindow, out _);
         if (targetThread == 0)
         {
             LogStage(operation + ".Focus", "result=no-target-thread");
+            return false;
+        }
+
+        // 目标线程挂起时，AttachThreadInput/SetFocus 会把本 UI 线程的输入
+        // 队列与挂起队列耦合，拖死设置程序窗口。先探测目标响应性，挂起
+        // 则放弃本次粘贴（WM_NULL 探测本身带 SMTO_ABORTIFHUNG 上限）。
+        if (SendMessageTimeout(
+                targetWindow,
+                0, // WM_NULL
+                UIntPtr.Zero,
+                IntPtr.Zero,
+                SendMessageAbortIfHung,
+                300,
+                out _) == IntPtr.Zero)
+        {
+            LogStage(operation + ".Focus",
+                $"result=target-hung; target={FormatWindow(targetWindow)}");
             return false;
         }
 
@@ -221,6 +263,12 @@ internal static class ClipboardPasteService
                 LogStage(operation + ".Foreground",
                     "result=lost-during-focus");
                 return false;
+            }
+
+            if (!sendPaste)
+            {
+                LogStage(operation + ".Focus", "result=active-only");
+                return true;
             }
 
             if (SupportsDirectPasteMessage(actualFocus))

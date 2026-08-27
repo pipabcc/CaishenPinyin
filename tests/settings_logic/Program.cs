@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
@@ -38,6 +39,7 @@ static int RunMainTests()
         TestSkinCatalog(root);
         TestSsfConversion(root);
         TestTextPasteRequests(root);
+        TestDirectTextCommitRequests(root);
         TestCorruptMigrationInChildProcess(root);
         Console.WriteLine("settings_logic: OK");
         return 0;
@@ -749,6 +751,112 @@ static void TestTextPasteRequests(string root)
     }
 }
 
+static void TestDirectTextCommitRequests(string root)
+{
+    var requestDirectory = Path.Combine(root, "direct-commit-requests");
+    Environment.SetEnvironmentVariable(
+        "CAISHEN_DIRECT_COMMIT_REQUEST_DIR", requestDirectory);
+    try
+    {
+        var token = new string('b', 32);
+        Require(DirectTextCommitRequestStore.IsValidToken(token),
+            "直接上屏令牌校验失败");
+        var directHeaderBytes = new System.Text.UTF8Encoding(false)
+            .GetByteCount(DirectTextCommitRequestStore.RequestHeader);
+        Require(!DirectTextCommitRequestStore.IsPayloadSizeValid(directHeaderBytes) &&
+                DirectTextCommitRequestStore.IsPayloadSizeValid(directHeaderBytes + 1) &&
+                DirectTextCommitRequestStore.IsPayloadSizeValid(
+                    directHeaderBytes + DirectTextCommitRequestStore.MaximumPayloadBytes) &&
+                !DirectTextCommitRequestStore.IsPayloadSizeValid(
+                    directHeaderBytes + DirectTextCommitRequestStore.MaximumPayloadBytes + 1L),
+            "直接上屏请求大小边界错误");
+        var expected = "中文\r\nEmoji 😀";
+        var publish = DirectTextCommitRequestStore.PublishAndWaitAsync(
+            token, expected);
+        var requestPath = DirectTextCommitRequestStore.RequestPath(token);
+        var resultPath = DirectTextCommitRequestStore.ResultPath(token);
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+        while (!File.Exists(requestPath) && DateTime.UtcNow < deadline)
+            Thread.Sleep(10);
+        Require(File.Exists(requestPath), "直接上屏请求未原子发布");
+        Require(File.ReadAllText(
+                    requestPath,
+                    new System.Text.UTF8Encoding(false)) ==
+                DirectTextCommitRequestStore.RequestHeader + expected,
+            "直接上屏请求正文不一致");
+
+        var temporary = resultPath + ".test.tmp";
+        File.WriteAllText(
+            temporary,
+            DirectTextCommitRequestStore.ResultHeader + "success\n",
+            new System.Text.UTF8Encoding(false));
+        File.Move(temporary, resultPath);
+        Require(publish.GetAwaiter().GetResult() ==
+                DirectTextCommitResult.Success,
+            "直接上屏成功结果未被正确消费");
+        Require(!File.Exists(requestPath) && !File.Exists(resultPath),
+            "直接上屏请求或结果未清理");
+
+        var clipboardLockAcquired = ClipboardLockProbe.TryAcquire();
+        Require(clipboardLockAcquired ||
+                ClipboardLockProbe.GetOpenClipboardWindow() != IntPtr.Zero,
+            "无法建立或观察剪贴板独占状态");
+        try
+        {
+            var lockedToken = new string('c', 32);
+            var sequenceBefore = ClipboardLockProbe.GetClipboardSequenceNumber();
+            var lockedPublish = DirectTextCommitRequestStore.PublishAndWaitAsync(
+                lockedToken, "剪贴板锁定期间直接上屏");
+            var lockedRequest =
+                DirectTextCommitRequestStore.RequestPath(lockedToken);
+            var lockedResult =
+                DirectTextCommitRequestStore.ResultPath(lockedToken);
+            var responder = Task.Run(() =>
+            {
+                var responseDeadline =
+                    DateTime.UtcNow + TimeSpan.FromSeconds(2);
+                while (!File.Exists(lockedRequest) &&
+                       DateTime.UtcNow < responseDeadline)
+                {
+                    Thread.Sleep(10);
+                }
+                Require(File.Exists(lockedRequest),
+                    "剪贴板锁定期间请求未发布");
+                var responseTemporary = lockedResult + ".test.tmp";
+                File.WriteAllText(
+                    responseTemporary,
+                    DirectTextCommitRequestStore.ResultHeader + "success\n",
+                    new System.Text.UTF8Encoding(false));
+                File.Move(responseTemporary, lockedResult);
+            });
+            Require(lockedPublish.GetAwaiter().GetResult() ==
+                    DirectTextCommitResult.Success,
+                "剪贴板独占期间直接上屏协议失败");
+            responder.GetAwaiter().GetResult();
+            Require(ClipboardLockProbe.GetClipboardSequenceNumber() ==
+                    sequenceBefore,
+                "直接上屏协议意外修改了系统剪贴板");
+        }
+        finally
+        {
+            if (clipboardLockAcquired) ClipboardLockProbe.Release();
+        }
+
+        ExpectException<InvalidDataException>(() =>
+            DirectTextCommitRequestStore.PublishAndWaitAsync(
+                "../invalid", "text").GetAwaiter().GetResult());
+        ExpectException<InvalidDataException>(() =>
+            DirectTextCommitRequestStore.PublishAndWaitAsync(
+                token, new string('x', DirectTextCommitRequestStore.MaximumPayloadBytes + 1))
+                .GetAwaiter().GetResult());
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable(
+            "CAISHEN_DIRECT_COMMIT_REQUEST_DIR", null);
+    }
+}
+
 static void TestCorruptMigrationInChildProcess(string root)
 {
     var childDirectory = Path.Combine(root, "corrupt-clipboard");
@@ -890,4 +998,35 @@ sealed class PasteTrackingCustomControl : WinForms.Control
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern UIntPtr GetMessageExtraInfo();
+}
+
+static class ClipboardLockProbe
+{
+    internal static bool TryAcquire()
+    {
+        for (var attempt = 0; attempt < 10; ++attempt)
+        {
+            if (OpenClipboard(IntPtr.Zero)) return true;
+            Thread.Sleep(20);
+        }
+        return false;
+    }
+
+    internal static void Release() => CloseClipboard();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool OpenClipboard(IntPtr newOwner);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(
+        System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool CloseClipboard();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern IntPtr GetOpenClipboardWindow();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    internal static extern uint GetClipboardSequenceNumber();
 }

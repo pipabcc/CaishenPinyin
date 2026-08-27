@@ -43,7 +43,13 @@ internal static class AppContainerAccess
     };
 
     // 剪贴板历史可能含密码等敏感内容，沙箱场景也用不到 v 模式面板。
-    private static readonly string[] Denied = { "clipboard" };
+    private static readonly string[] Denied =
+    {
+        "clipboard",
+        // 直接上屏请求包含用户选择的正文，只供同一桌面用户下的设置程序
+        // 与目标宿主交换；AppContainer 入口保持旧剪贴板回退，不开放此目录。
+        "direct_commit_requests"
+    };
 
     internal static string UserDataRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
