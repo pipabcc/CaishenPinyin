@@ -61,6 +61,13 @@ CaishenPinyin-<version>-win-x64-Setup.exe /S
 CaishenPinyin-<version>-win-x64-Setup.exe /S /NODEFAULTIME
 ```
 
+安装事务成功后，安装器会以隐藏方式启动随包的 `engine_snapshot_build_tool.exe`
+（`--lexicon-dir` 指向刚部署的版本化词库目录），按运行时完全相同的传统装载路径
+预生成 EngineSnapshot v2 并写入当前用户的 `%LOCALAPPDATA%\CaishenPinyin\snapshot\`
+缓存。该步骤失败不影响安装结果——首次冷启动会自动回退到传统装载并自行再生快照。
+注意：快照写入的是执行安装的那个用户 profile；同机其他用户首次使用时仍走一次
+传统装载后自行生成。
+
 ## 卸载与数据
 
 图形卸载默认不删除个人数据，保留：

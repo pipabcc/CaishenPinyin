@@ -34,88 +34,14 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 # Copy release files to temp dir
 Copy-Item -Path "$packageRoot\*" -Destination $tempDir -Recurse -Force
 
-# Create 安装(以管理员身份运行).bat
-$installBatPath = Join-Path $tempDir '安装(以管理员身份运行).bat'
-$installBatContent = @'
-@echo off
-chcp 65001 >nul
-:: Check for admin rights
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo 请右键选择“以管理员身份运行”此脚本。
-    pause
-    exit /b
-)
-
-echo 正在安装 财神输入法 便携版...
-
-:: Register IME DLL
-regsvr32.exe /s "%~dp0ShuruIme.dll"
-if %errorLevel% neq 0 (
-    echo 注册 ShuruIme.dll 失败！
-    pause
-    exit /b
-)
-echo [OK] 注册输入法组件成功。
-
-:: Write registry key for startup (ShuruSettings)
-reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" /v "CaishenSettings" /t REG_SZ /d "\"%~dp0ShuruSettings.exe\" --minimized" /f >nul 2>&1
-if %errorLevel% neq 0 (
-    :: Fallback to HKCU if HKLM fails
-    reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "CaishenSettings" /t REG_SZ /d "\"%~dp0ShuruSettings.exe\" --minimized" /f >nul 2>&1
-)
-echo [OK] 已写入开机自启。
-
-:: Create desktop shortcut to ShuruSettings.exe
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$WshShell = New-Object -ComObject WScript.Shell; ^
-     $Shortcut = $WshShell.CreateShortcut([System.IO.Path]::Combine([Environment]::GetFolderPath('Desktop'), '财神输入法设置.lnk')); ^
-     $Shortcut.TargetPath = '%~dp0ShuruSettings.exe'; ^
-     $Shortcut.WorkingDirectory = '%~dp0'; ^
-     $Shortcut.Description = '财神输入法设置中心'; ^
-     $Shortcut.Save()"
-echo [OK] 已创建桌面快捷方式。
-
-echo 财神输入法便携版安装完成！请按 Win+Space 切换并体验。
-pause
-'@
-
-# Save as UTF-8 with BOM so Chinese characters show correctly in PowerShell/CMD with chcp 65001
-[System.IO.File]::WriteAllText($installBatPath, $installBatContent, [System.Text.Encoding]::UTF8)
-
-# Create 卸载(以管理员身份运行).bat
-$uninstallBatPath = Join-Path $tempDir '卸载(以管理员身份运行).bat'
-$uninstallBatContent = @'
-@echo off
-chcp 65001 >nul
-:: Check for admin rights
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo 请右键选择“以管理员身份运行”此脚本。
-    pause
-    exit /b
-)
-
-echo 正在卸载 财神输入法 便携版...
-
-:: Unregister IME DLL
-regsvr32.exe /u /s "%~dp0ShuruIme.dll"
-echo [OK] 已注销输入法组件。
-
-:: Remove startup registry keys
-reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" /v "CaishenSettings" /f >nul 2>&1
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "CaishenSettings" /f >nul 2>&1
-echo [OK] 已移除开机自启。
-
-:: Delete desktop shortcut
-del /f /q "%USERPROFILE%\Desktop\财神输入法设置.lnk" >nul 2>&1
-echo [OK] 已删除桌面快捷方式。
-
-echo 财神输入法便携版卸载完成！
-pause
-'@
-
-[System.IO.File]::WriteAllText($uninstallBatPath, $uninstallBatContent, [System.Text.Encoding]::UTF8)
+# Copy portable install/uninstall batch scripts and PowerShell helpers
+$portableSrc = Join-Path $RepositoryRoot 'installer\portable'
+Copy-Item -LiteralPath (Join-Path $portableSrc 'install.bat') -Destination (Join-Path $tempDir '安装(以管理员身份运行).bat') -Force
+Copy-Item -LiteralPath (Join-Path $portableSrc 'install.bat') -Destination (Join-Path $tempDir '安装.bat') -Force
+Copy-Item -LiteralPath (Join-Path $portableSrc 'uninstall.bat') -Destination (Join-Path $tempDir '卸载(以管理员身份运行).bat') -Force
+Copy-Item -LiteralPath (Join-Path $portableSrc 'uninstall.bat') -Destination (Join-Path $tempDir '卸载.bat') -Force
+Copy-Item -LiteralPath (Join-Path $portableSrc 'register_user.ps1') -Destination (Join-Path $tempDir 'register_user.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $portableSrc 'unregister_user.ps1') -Destination (Join-Path $tempDir 'unregister_user.ps1') -Force
 
 # Compress to ZIP
 New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null

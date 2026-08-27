@@ -37,8 +37,8 @@ function Assert-ReleasePackage([string]$PackageRoot, [string]$ProductVersion) {
     if ([string]$manifest.version -ne $ProductVersion) {
         throw "release manifest version $($manifest.version) does not match $ProductVersion"
     }
-    if ([string]$manifest.signingPolicy -ne 'Off') {
-        throw "release manifest signingPolicy must be Off, actual=$($manifest.signingPolicy)"
+    if ([string]$manifest.signingPolicy -notin @('Off', 'IfPresent')) {
+        throw "release manifest signingPolicy must be Off or IfPresent, actual=$($manifest.signingPolicy)"
     }
 
     $manifestPaths = @{}

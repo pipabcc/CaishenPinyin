@@ -357,6 +357,9 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
     Abort
   ${EndIf}
 
+  ; 方案 C 的快照预生成由 install_ime.ps1 在部署事务内启动：只有它知道
+  ; 实际部署的版本化词库目录名（含提交后缀），NSI 侧只知纯版本号。
+
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"

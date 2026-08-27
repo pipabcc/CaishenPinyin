@@ -1054,6 +1054,26 @@ try {
                 Set-Pointer (Join-Path $DataRoot 'previous') $rollbackDataVersion
             }
             Write-DeployLog "install complete $Version"
+            # 方案 C：部署事务成功后，以隐藏方式调用随包工具按刚部署的
+            # 版本化词库目录预生成 EngineSnapshot，写入当前用户缓存，
+            # 首次打字即命中快照路径。整段自包含防御式执行：任何失败
+            # （含路径解析）只记日志，绝不影响已完成的安装事务；运行时
+            # 会在首次传统装载后自行再生快照兜底。不使用续行符，避免
+            # 行尾空白破坏解析。
+            try {
+                $snapshotTool = $null
+                if ($PSScriptRoot) {
+                    $snapshotTool = Join-Path -Path $PSScriptRoot -ChildPath 'payload\engine_snapshot_build_tool.exe'
+                }
+                if ($snapshotTool -and (Test-Path -LiteralPath $snapshotTool -PathType Leaf)) {
+                    Start-Process -FilePath $snapshotTool -ArgumentList @('--lexicon-dir=' + $dataTarget) -WindowStyle Hidden
+                    Write-DeployLog 'snapshot pregeneration started'
+                } else {
+                    Write-DeployLog 'snapshot pregeneration skipped: tool not packaged'
+                }
+            } catch {
+                Write-DeployLog ('snapshot pregeneration skipped: ' + $_.Exception.Message)
+            }
             Write-DeployProgress 'complete' 'succeeded' 100 'Install transaction complete'
             exit 0
         } catch {
