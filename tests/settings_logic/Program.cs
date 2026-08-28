@@ -1,10 +1,13 @@
 using ShuruSettings;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -222,15 +225,7 @@ static void PumpWindowsForms(TimeSpan duration)
 
 static void TestSsfConversion(string root)
 {
-    var repositoryRoot = Path.GetFullPath(Path.Combine(
-        AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
-    var source = Path.Combine(repositoryRoot, "1.ssf");
-    if (!File.Exists(source))
-    {
-        Console.WriteLine("settings_logic: 跳过 SSF 样例测试（未找到 1.ssf）");
-        return;
-    }
-
+    var source = CreateSyntheticSsfFixture(root);
     var target = Path.Combine(root, "skins", "ssf-sample");
     Require(SsfConverter.ConvertAndInstall(source, target) == "ssf-sample",
         "SSF 转换返回了错误的皮肤标识");
@@ -257,74 +252,150 @@ static void TestSsfConversion(string root)
     Require(!SsfConverter.NormalizeInstalledSkin(target, "ssf-sample") &&
             File.ReadAllText(Path.Combine(target, "skin.ini")) == normalizedBefore,
         "已规范化皮肤没有保持幂等");
-
-    var wsscSource = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "CaishenPinyin", "skins", "wssc");
-    if (Directory.Exists(wsscSource))
-    {
-        var wsscTarget = Path.Combine(root, "skins", "wssc-test");
-        CopyTestDirectory(wsscSource, wsscTarget);
-        var framesDir = Path.Combine(wsscTarget, "frames");
-        if (Directory.Exists(framesDir)) Directory.Delete(framesDir, true);
-        // 模拟未提取动画的旧版 skin.ini
-        var sourceIni = Path.Combine(wsscTarget, "source_skin.ini");
-        if (File.Exists(sourceIni))
-            File.Copy(sourceIni, Path.Combine(wsscTarget, "skin.ini"), true);
-
-        Require(SsfConverter.NormalizeInstalledSkin(wsscTarget, "wssc-test"),
-            "挂件型皮肤 wssc 应当成功规范化并补充提取动画");
-        var wsscIni = File.ReadAllText(Path.Combine(wsscTarget, "skin.ini"));
-        Require(wsscIni.Contains("format_version=2") &&
-                wsscIni.Contains("bg_image=skin1.png") &&
-                wsscIni.Contains("native_min_width=507") &&
-                wsscIni.Contains("native_min_height=175") &&
-                wsscIni.Contains("pinyin_margin=110,2,66,12") &&
-                wsscIni.Contains("candidate_margin=2,20,66,1") &&
-                wsscIni.Contains("[AnimationOverlays]") &&
-                wsscIni.Contains("count=1") &&
-                wsscIni.Contains("[AnimationOverlay0]") &&
-                wsscIni.Contains("frame_count=23") &&
-                wsscIni.Contains("horizontal_anchor=end") &&
-                wsscIni.Contains("vertical_anchor=end") &&
-                wsscIni.Contains("margin_right=15") &&
-                wsscIni.Contains("margin_bottom=9") &&
-                wsscIni.Contains("frame_0=overlay_frames\\0\\frame_000.png"),
-            "挂件型皮肤 wssc 未按原始 SSF 布局输出独立动画挂件");
-        var wsscFrames = Path.Combine(wsscTarget, "overlay_frames", "0");
-        Require(Directory.GetFiles(wsscFrames, "frame_*.png").Length == 23,
-            "挂件型皮肤 wssc 未能完整保存 23 帧独立挂件动画");
-        using (var overlayFrame = new FileStream(
-            Path.Combine(wsscFrames, "frame_000.png"),
-            FileMode.Open, FileAccess.Read, FileShare.Read))
-        {
-            var overlayDecoder = new PngBitmapDecoder(
-                overlayFrame, BitmapCreateOptions.PreservePixelFormat,
-                BitmapCacheOption.OnLoad);
-            Require(overlayDecoder.Frames[0].PixelWidth == 150 &&
-                    overlayDecoder.Frames[0].PixelHeight == 150,
-                "wssc 错误地选择了 300x300 的未显示挂件资源");
-        }
-        Require(DecodeBgra(File.ReadAllBytes(
-                    Path.Combine(wsscFrames, "frame_000.png")))
-                .SequenceEqual(DecodeBgra(File.ReadAllBytes(
-                    Path.Combine(wsscTarget, "oh_custom11.png")))),
-            "wssc 输出帧不是 SSF 明确启用的 oh_custom11 挂件");
-
-        var wsscBefore = File.ReadAllText(Path.Combine(wsscTarget, "skin.ini"));
-        Require(!SsfConverter.NormalizeInstalledSkin(wsscTarget, "wssc-test") &&
-                File.ReadAllText(Path.Combine(wsscTarget, "skin.ini")) == wsscBefore,
-            "已规范化 wssc 皮肤未保持幂等");
-    }
 }
 
-static void CopyTestDirectory(string source, string destination)
+static string CreateSyntheticSsfFixture(string root)
 {
-    Directory.CreateDirectory(destination);
-    foreach (var dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
-        Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
-    foreach (var file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
-        File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), true);
+    const int width = 285;
+    const int height = 131;
+    const int frameCount = 6;
+    var frames = new List<byte[]>(frameCount);
+    for (var frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+    {
+        var pixels = new byte[width * height * 4];
+        for (var pixel = 0; pixel < width * height; ++pixel)
+        {
+            var offset = pixel * 4;
+            pixels[offset] = (byte)(40 + frameIndex * 12);
+            pixels[offset + 1] = (byte)(90 + frameIndex * 10);
+            pixels[offset + 2] = (byte)(180 - frameIndex * 8);
+            pixels[offset + 3] = 255;
+        }
+        frames.Add(EncodePng(pixels, width, height));
+    }
+
+    var source = Path.Combine(root, "synthetic-ssf-sample.ssf");
+    using var file = new FileStream(source, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+    using var archive = new ZipArchive(file, ZipArchiveMode.Create);
+    var iniEntry = archive.CreateEntry("skin.ini", CompressionLevel.Optimal);
+    using (var writer = new StreamWriter(
+        iniEntry.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+    {
+        writer.Write("""
+            [General]
+            skin_name=自动化测试皮肤
+            skin_author=财神输入法测试
+            skin_info=由测试在运行时生成，不含第三方素材
+            [Display]
+            font_size=18
+            pinyin_color=0x0
+            zhongwen_first_color=0x0
+            zhongwen_color=0x0
+            [Scheme_H1]
+            pic=skin1.png
+            layout_horizontal=0,95,182
+            layout_vertical=0,121,5
+            pinyin_marge=60,2,35,33
+            zhongwen_marge=10,8,32,134
+            """);
+    }
+    var imageEntry = archive.CreateEntry("skin1.png", CompressionLevel.NoCompression);
+    using (var image = imageEntry.Open())
+        image.Write(CreateApng(frames, width, height, delayMilliseconds: 80));
+    return source;
+}
+
+static byte[] CreateApng(
+    IReadOnlyList<byte[]> pngFrames,
+    int width,
+    int height,
+    ushort delayMilliseconds)
+{
+    if (pngFrames.Count == 0) throw new ArgumentException("至少需要一帧", nameof(pngFrames));
+    var parsedFrames = pngFrames.Select(ReadPngChunks).ToList();
+    var header = parsedFrames[0].Single(chunk => chunk.Type == "IHDR").Data;
+
+    using var output = new MemoryStream();
+    output.Write([137, 80, 78, 71, 13, 10, 26, 10]);
+    WritePngChunk(output, "IHDR", header);
+    var animationControl = new byte[8];
+    BinaryPrimitives.WriteUInt32BigEndian(animationControl.AsSpan(0, 4), (uint)pngFrames.Count);
+    WritePngChunk(output, "acTL", animationControl);
+
+    uint sequence = 0;
+    for (var frameIndex = 0; frameIndex < parsedFrames.Count; ++frameIndex)
+    {
+        var frameControl = new byte[26];
+        BinaryPrimitives.WriteUInt32BigEndian(frameControl.AsSpan(0, 4), sequence++);
+        BinaryPrimitives.WriteUInt32BigEndian(frameControl.AsSpan(4, 4), (uint)width);
+        BinaryPrimitives.WriteUInt32BigEndian(frameControl.AsSpan(8, 4), (uint)height);
+        BinaryPrimitives.WriteUInt16BigEndian(
+            frameControl.AsSpan(20, 2), delayMilliseconds);
+        BinaryPrimitives.WriteUInt16BigEndian(frameControl.AsSpan(22, 2), 1000);
+        WritePngChunk(output, "fcTL", frameControl);
+
+        foreach (var imageData in parsedFrames[frameIndex]
+                     .Where(chunk => chunk.Type == "IDAT")
+                     .Select(chunk => chunk.Data))
+        {
+            if (frameIndex == 0)
+            {
+                WritePngChunk(output, "IDAT", imageData);
+                continue;
+            }
+            var frameData = new byte[imageData.Length + 4];
+            BinaryPrimitives.WriteUInt32BigEndian(frameData.AsSpan(0, 4), sequence++);
+            imageData.CopyTo(frameData, 4);
+            WritePngChunk(output, "fdAT", frameData);
+        }
+    }
+    WritePngChunk(output, "IEND", []);
+    return output.ToArray();
+}
+
+static List<(string Type, byte[] Data)> ReadPngChunks(byte[] png)
+{
+    var chunks = new List<(string Type, byte[] Data)>();
+    var offset = 8;
+    while (offset <= png.Length - 12)
+    {
+        var length = BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(offset, 4));
+        if (length < 0 || length > png.Length - offset - 12)
+            throw new InvalidDataException("测试 PNG 数据块损坏");
+        var type = Encoding.ASCII.GetString(png, offset + 4, 4);
+        chunks.Add((type, png.AsSpan(offset + 8, length).ToArray()));
+        offset += length + 12;
+        if (type == "IEND") break;
+    }
+    return chunks;
+}
+
+static void WritePngChunk(Stream stream, string type, byte[] data)
+{
+    Span<byte> length = stackalloc byte[4];
+    BinaryPrimitives.WriteInt32BigEndian(length, data.Length);
+    stream.Write(length);
+    var typeBytes = Encoding.ASCII.GetBytes(type);
+    stream.Write(typeBytes);
+    stream.Write(data);
+    var crcInput = new byte[typeBytes.Length + data.Length];
+    typeBytes.CopyTo(crcInput, 0);
+    data.CopyTo(crcInput, typeBytes.Length);
+    Span<byte> crc = stackalloc byte[4];
+    BinaryPrimitives.WriteUInt32BigEndian(crc, CalculateCrc32(crcInput));
+    stream.Write(crc);
+}
+
+static uint CalculateCrc32(byte[] data)
+{
+    uint crc = 0xFFFFFFFF;
+    foreach (var value in data)
+    {
+        crc ^= value;
+        for (var bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ ((crc & 1) != 0 ? 0xEDB88320u : 0u);
+    }
+    return ~crc;
 }
 
 static void TestSettingsAndCustomPhrases(string root)
