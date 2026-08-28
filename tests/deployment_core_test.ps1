@@ -2,6 +2,18 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $temporaryRoot = Join-Path $env:TEMP ('facai-deploy-test-' + [guid]::NewGuid())
 
+foreach ($relativePath in @(
+    'installer\portable\register_user.ps1',
+    'installer\portable\unregister_user.ps1')) {
+    $tokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $root $relativePath), [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) {
+        throw "portable script syntax invalid: $relativePath : $($parseErrors[0])"
+    }
+}
+
 function New-TestLexiconPackage([string]$Path, [string]$Version, [string]$Content) {
     New-Item -ItemType Directory -Force -Path $Path | Out-Null
     $dictionaryPath = Join-Path $Path 'test_dict.txt'
@@ -17,6 +29,27 @@ function New-TestLexiconPackage([string]$Path, [string]$Version, [string]$Conten
         })
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath `
         (Join-Path $Path 'manifest.json') -Encoding UTF8
+}
+
+function Read-TestShortcutTarget([string]$ShortcutPath) {
+    $temporary = Join-Path (Split-Path -Parent $ShortcutPath) (
+        '.CaishenSettings-test-{0}.lnk' -f [guid]::NewGuid().ToString('N'))
+    $shell = $null
+    $shortcut = $null
+    try {
+        Copy-Item -LiteralPath $ShortcutPath -Destination $temporary -Force
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($temporary)
+        return [string]$shortcut.TargetPath
+    } finally {
+        foreach ($value in @($shortcut, $shell)) {
+            if ($null -ne $value -and
+                [Runtime.InteropServices.Marshal]::IsComObject($value)) {
+                [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($value)
+            }
+        }
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
 }
 
 try {
@@ -130,8 +163,7 @@ try {
     if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
         throw 'settings shortcut missing'
     }
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcutTarget = $shell.CreateShortcut($shortcutPath).TargetPath
+    $shortcutTarget = Read-TestShortcutTarget $shortcutPath
     if ([IO.Path]::GetFullPath($shortcutTarget) -ne [IO.Path]::GetFullPath($installedSettings)) {
         throw "settings shortcut target mismatch: actual=$shortcutTarget expected=$installedSettings"
     }
@@ -179,7 +211,7 @@ try {
     if ((Get-Content (Join-Path $installRoot 'current') -Raw).Trim() -ne 'test-2') {
         throw 'injected failure did not restore current DLL pointer'
     }
-    $shortcutTarget = $shell.CreateShortcut($shortcutPath).TargetPath
+    $shortcutTarget = Read-TestShortcutTarget $shortcutPath
     $expectedTarget = Join-Path $installRoot 'versions\test-2\ShuruSettings.exe'
     if ([IO.Path]::GetFullPath($shortcutTarget) -ne [IO.Path]::GetFullPath($expectedTarget)) {
         throw "failure rollback shortcut target failed: actual=$shortcutTarget expected=$expectedTarget"
@@ -191,7 +223,7 @@ try {
     if ((Get-Content (Join-Path $installRoot 'current') -Raw).Trim() -ne 'test-1') {
         throw 'rollback pointer failed'
     }
-    $shortcutTarget = $shell.CreateShortcut($shortcutPath).TargetPath
+    $shortcutTarget = Read-TestShortcutTarget $shortcutPath
     if ([IO.Path]::GetFullPath($shortcutTarget) -ne [IO.Path]::GetFullPath($installedSettings)) {
         throw "rollback shortcut target failed: actual=$shortcutTarget expected=$installedSettings"
     }

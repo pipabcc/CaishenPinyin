@@ -7,14 +7,25 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settings = Join-Path $root 'ShuruSettings.exe'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runName = 'CaishenSettings'
+$shortcutName = -join @(
+    [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
+    [char]0x8BBE, [char]0x7F6E)
+$shortcutDescription = $shortcutName + (-join @([char]0x4E2D, [char]0x5FC3))
 $runChanged = $false
 $runPreviouslyPresent = $false
 $runPreviousValue = ''
 $shortcutPath = ''
 $shortcutBackup = ''
+$shortcutTemporary = ''
 $shortcutWritten = $false
 $languageTipAdded = $false
 $languageAdded = $false
+
+function Release-ComObject($Value) {
+    if ($null -ne $Value -and [Runtime.InteropServices.Marshal]::IsComObject($Value)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Value)
+    }
+}
 
 function Restore-UserState {
     if ($languageTipAdded) {
@@ -81,18 +92,30 @@ try {
 
     $desktop = [Environment]::GetFolderPath('Desktop')
     if (-not $desktop) { throw 'Desktop directory is unavailable.' }
-    $shortcutPath = Join-Path $desktop '财神输入法设置.lnk'
+    $shortcutPath = Join-Path $desktop ($shortcutName + '.lnk')
     if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
         $shortcutBackup = "$shortcutPath.backup-$PID"
         Move-Item -LiteralPath $shortcutPath -Destination $shortcutBackup -Force -ErrorAction Stop
     }
-    $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = $settings
-    $shortcut.WorkingDirectory = $root
-    $shortcut.Description = '财神输入法设置中心'
+    $shortcutTemporary = Join-Path $desktop (
+        '.CaishenSettings-{0}.lnk' -f [guid]::NewGuid().ToString('N'))
+    $shell = $null
+    $shortcut = $null
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutTemporary)
+        $shortcut.TargetPath = $settings
+        $shortcut.WorkingDirectory = $root
+        $shortcut.Description = $shortcutDescription
+        $shortcut.Save()
+    } finally {
+        Release-ComObject $shortcut
+        Release-ComObject $shell
+    }
+    Move-Item -LiteralPath $shortcutTemporary -Destination $shortcutPath `
+        -Force -ErrorAction Stop
+    $shortcutTemporary = ''
     $shortcutWritten = $true
-    $shortcut.Save()
 
     $languages = Get-WinUserLanguageList -ErrorAction Stop
     $simplifiedChinese = $languages |
@@ -117,6 +140,9 @@ try {
     }
 } catch {
     $failure = $_.Exception.Message
+    if ($shortcutTemporary) {
+        Remove-Item -LiteralPath $shortcutTemporary -Force -ErrorAction SilentlyContinue
+    }
     Restore-UserState
     Write-Error "Portable per-user configuration failed: $failure"
     exit 1

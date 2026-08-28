@@ -770,6 +770,30 @@ function Get-ShortcutPath {
     return Join-Path $StartMenuRoot ($SettingsShortcutName + '.lnk')
 }
 
+function Release-ComObject($Value) {
+    if ($null -ne $Value -and [Runtime.InteropServices.Marshal]::IsComObject($Value)) {
+        [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($Value)
+    }
+}
+
+function Read-ShortcutTarget([string]$ShortcutPath) {
+    $shortcutDirectory = Split-Path -Parent $ShortcutPath
+    $temporary = Join-Path $shortcutDirectory (
+        '.CaishenSettings-read-{0}.lnk' -f [guid]::NewGuid().ToString('N'))
+    $shell = $null
+    $shortcut = $null
+    try {
+        Copy-Item -LiteralPath $ShortcutPath -Destination $temporary -Force
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($temporary)
+        return [string]$shortcut.TargetPath
+    } finally {
+        Release-ComObject $shortcut
+        Release-ComObject $shell
+        Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Sync-SettingsShortcut([string]$VersionDirectory) {
     $shortcutPath = Get-ShortcutPath
     if (-not $shortcutPath) { return }
@@ -782,6 +806,8 @@ function Sync-SettingsShortcut([string]$VersionDirectory) {
     New-Item -ItemType Directory -Force -Path $shortcutDirectory | Out-Null
     $temporary = Join-Path $shortcutDirectory (
         '.CaishenSettings-{0}.lnk' -f [guid]::NewGuid().ToString('N'))
+    $shell = $null
+    $shortcut = $null
     try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($temporary)
@@ -790,8 +816,14 @@ function Sync-SettingsShortcut([string]$VersionDirectory) {
         $shortcut.Description = $SettingsShortcutName
         $shortcut.IconLocation = "$settingsExecutable,0"
         $shortcut.Save()
+        Release-ComObject $shortcut
+        $shortcut = $null
+        Release-ComObject $shell
+        $shell = $null
         Move-Item -LiteralPath $temporary -Destination $shortcutPath -Force
     } finally {
+        Release-ComObject $shortcut
+        Release-ComObject $shell
         Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
     }
 }
@@ -921,10 +953,10 @@ function Test-SettingsShortcut([string]$VersionDirectory) {
     if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
         Stop-Deployment 31 'settings shortcut missing'
     }
-    $shell = New-Object -ComObject WScript.Shell
-    $target = $shell.CreateShortcut($shortcutPath).TargetPath
+    $target = Read-ShortcutTarget $shortcutPath
     $expected = Join-Path $VersionDirectory 'ShuruSettings.exe'
-    if ([IO.Path]::GetFullPath($target) -ne [IO.Path]::GetFullPath($expected)) {
+    if (-not $target -or
+        [IO.Path]::GetFullPath($target) -ne [IO.Path]::GetFullPath($expected)) {
         Stop-Deployment 31 'settings shortcut target mismatch'
     }
 }

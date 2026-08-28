@@ -4,6 +4,9 @@ param()
 $ErrorActionPreference = 'Continue'
 $tip = '0804:{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}{3A8B5C2E-9D1F-4E6A-B7C8-5D2E9F1A3B6C}'
 $hadFailure = $false
+$shortcutName = -join @(
+    [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
+    [char]0x8BBE, [char]0x7F6E)
 
 Stop-Process -Name 'ShuruSettings' -Force -ErrorAction SilentlyContinue
 
@@ -40,7 +43,11 @@ try {
 
 try {
     $desktop = [Environment]::GetFolderPath('Desktop')
-    $shortcut = if ($desktop) { Join-Path $desktop '财神输入法设置.lnk' } else { '' }
+    $shortcut = if ($desktop) {
+        Join-Path $desktop ($shortcutName + '.lnk')
+    } else {
+        ''
+    }
     if ($shortcut -and (Test-Path -LiteralPath $shortcut -PathType Leaf)) {
         Remove-Item -LiteralPath $shortcut -Force -ErrorAction Stop
     }
