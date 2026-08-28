@@ -314,8 +314,6 @@ Function ValidateInstallDirectory
     done:
     FindClose $8
   ${EndIf}
-
-  validate_install_directory_done:
 FunctionEnd
 
 Function InstallOptionsLeave
