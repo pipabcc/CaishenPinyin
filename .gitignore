@@ -46,16 +46,21 @@ userdata/
 *-result.txt
 /1
 
-# 根目录临时调试脚本与图片
-conv.ps1
-ocr*.ps1
-snap*.ps1
-tojpg.ps1
-upscale.ps1
+# 根目录临时调试脚本、截图与第三方皮肤样例
+/conv.ps1
+/ocr*.ps1
+/snap*.ps1
+/tojpg.ps1
+/upscale.ps1
 *.ssf
-*.png
-*.jpg
-*.jpeg
+/scratch_*/
+/clipboard_up.jpg
+/clipboard_up.png
+/taskbar_full.png
+/tray_snap.png
+/user_snap_32.png
+/user_snap_rgb.png
+/user_snap_up.png
 
 # 用户隐私数据与本地词库
 data/lexicon/user_dict.txt
