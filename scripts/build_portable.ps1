@@ -36,20 +36,28 @@ try {
     Copy-Item -Path "$packageRoot\*" -Destination $tempDir -Recurse -Force
 
     $portableSrc = Join-Path $RepositoryRoot 'installer\portable'
+    $installLabel = -join @([char]0x5B89, [char]0x88C5)
+    $uninstallLabel = -join @([char]0x5378, [char]0x8F7D)
+    $asAdministrator = -join @(
+        [char]0x4EE5, [char]0x7BA1, [char]0x7406, [char]0x5458,
+        [char]0x8EAB, [char]0x4EFD, [char]0x8FD0, [char]0x884C)
+    $portableReadme = -join @(
+        [char]0x4FBF, [char]0x643A, [char]0x7248, [char]0x4F7F,
+        [char]0x7528, [char]0x8BF4, [char]0x660E)
     Copy-Item -LiteralPath (Join-Path $portableSrc 'install.bat') `
-        -Destination (Join-Path $tempDir '安装(以管理员身份运行).bat') -Force
+        -Destination (Join-Path $tempDir "$installLabel($asAdministrator).bat") -Force
     Copy-Item -LiteralPath (Join-Path $portableSrc 'install.bat') `
-        -Destination (Join-Path $tempDir '安装.bat') -Force
+        -Destination (Join-Path $tempDir "$installLabel.bat") -Force
     Copy-Item -LiteralPath (Join-Path $portableSrc 'uninstall.bat') `
-        -Destination (Join-Path $tempDir '卸载(以管理员身份运行).bat') -Force
+        -Destination (Join-Path $tempDir "$uninstallLabel($asAdministrator).bat") -Force
     Copy-Item -LiteralPath (Join-Path $portableSrc 'uninstall.bat') `
-        -Destination (Join-Path $tempDir '卸载.bat') -Force
+        -Destination (Join-Path $tempDir "$uninstallLabel.bat") -Force
     Copy-Item -LiteralPath (Join-Path $portableSrc 'register_user.ps1') `
         -Destination (Join-Path $tempDir 'register_user.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $portableSrc 'unregister_user.ps1') `
         -Destination (Join-Path $tempDir 'unregister_user.ps1') -Force
     Copy-Item -LiteralPath (Join-Path $portableSrc 'README.txt') `
-        -Destination (Join-Path $tempDir '便携版使用说明.txt') -Force
+        -Destination (Join-Path $tempDir "$portableReadme.txt") -Force
 
     New-Item -ItemType Directory -Force -Path $outputDirectory | Out-Null
     $zipName = "CaishenPinyin-$productVersion-win-x64-Portable.zip"
