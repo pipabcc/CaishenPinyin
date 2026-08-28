@@ -4,7 +4,7 @@ param(
   [string]$BuildDir='build-release',
   [string]$OutputDir='artifacts\release',
   [string]$GrammarPath='',
-  [ValidateSet('Off','IfPresent','Required')][string]$SigningPolicy='IfPresent',
+  [ValidateSet('Off','IfPresent','Required')][string]$SigningPolicy='Off',
   [switch]$NoPackage
 )
 $ErrorActionPreference='Stop'

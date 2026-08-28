@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$PackageRoot,
   [Parameter(Mandatory=$true)][string]$Version,
-  [ValidateSet('Off','IfPresent','Required')][string]$SigningPolicy='IfPresent'
+  [ValidateSet('Off','IfPresent','Required')][string]$SigningPolicy='Off'
 )
 $ErrorActionPreference='Stop'
 $PackageRoot=(Resolve-Path -LiteralPath $PackageRoot).Path

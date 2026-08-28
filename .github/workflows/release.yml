@@ -1,56 +1,115 @@
-name: 自动发布 Release 安装包
+name: 构建并发布 GitHub Release
 
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-and-release:
-    name: 打包并发布 Windows 安装包
+    name: Windows x64 / ${{ github.ref_name }}
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
-      - name: 检出仓库代码
-        uses: actions/checkout@v4
+      - name: 检查标签是否已有 Release
+        id: release-state
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            'exists=true' >> $env:GITHUB_OUTPUT
+            Write-Host '该标签已有 Release，跳过自动重建和覆盖。'
+          } else {
+            'exists=false' >> $env:GITHUB_OUTPUT
+          }
 
-      - name: 配置 Python 3.11 环境
-        uses: actions/setup-python@v5
+      - name: 检出标签源码
+        if: steps.release-state.outputs.exists != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: 校验标签与源码版本
+        if: steps.release-state.outputs.exists != 'true'
+        shell: pwsh
+        run: |
+          $header = Get-Content -LiteralPath src/common/version.h -Raw
+          if ($header -notmatch '#define\s+SHURU_VERSION_STRING\s+"([^"]+)"') {
+            throw 'src/common/version.h 缺少版本号'
+          }
+          $expectedTag = "v$($Matches[1])"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "标签 $env:GITHUB_REF_NAME 与源码版本 $expectedTag 不一致"
+          }
+
+      - name: 配置 Python 3.11
+        if: steps.release-state.outputs.exists != 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
-      - name: 配置 .NET 8.0 SDK
-        uses: actions/setup-dotnet@v4
+      - name: 配置 .NET 8
+        if: steps.release-state.outputs.exists != 'true'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: 配置 MSVC C++ 开发者命令行环境 (x64)
-        uses: ilammy/msvc-dev-cmd@v1
+      - name: 配置 MSVC x64
+        if: steps.release-state.outputs.exists != 'true'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
 
-      - name: 安装 Ninja 构建工具
-        uses: numa08/setup-ninja@v1
+      - name: 安装 NSIS 3
+        if: steps.release-state.outputs.exists != 'true'
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
 
-      - name: 安装 NSIS 3 打包工具
-        run: |
-          choco install nsis -y
-
-      - name: 构建 Release 产物与 NSIS 图形安装包
+      - name: 构建并验证 Setup 与 Portable
+        if: steps.release-state.outputs.exists != 'true'
+        shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_installer.ps1 -Config Release
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_portable.ps1 -SigningPolicy Off
 
-      - name: 发布至 GitHub Releases
-        uses: softprops/action-gh-release@v2
+      - name: 保存发行产物
+        if: steps.release-state.outputs.exists != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
+          name: CaishenPinyin-${{ github.ref_name }}-win-x64
+          path: |
+            artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe
+            artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe.sha256
+            artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip
+            artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip.sha256
+          if-no-files-found: error
+
+      - name: 发布 GitHub Release
+        if: steps.release-state.outputs.exists != 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          name: 财神输入法 ${{ github.ref_name }}
+          body: |
+            > 本版本尚未进行 Authenticode 代码签名。UAC 会显示“未知发布者”，SmartScreen
+            > 也可能告警。请只从本 Release 下载，并在运行前核对随附的 SHA-256。
+
+            Setup 适合普通安装、升级和标准卸载；Portable 必须完整解压，并以管理员身份
+            运行包内安装脚本。两种文件是同一版本的不同部署形式。
           files: |
-            artifacts/installer/*.exe
-            artifacts/installer/*.sha256
-            artifacts/installer/*.json
+            artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe
+            artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe.sha256
+            artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip
+            artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
           draft: false
           prerelease: false
-          generate_release_notes: true
+          make_latest: true
