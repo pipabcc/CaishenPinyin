@@ -23,12 +23,20 @@ if %errorlevel% neq 0 (
 echo [1/2] Removing user shortcuts and language profiles...
 if exist "%~dp0unregister_user.ps1" (
     powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0unregister_user.ps1"
+    if errorlevel 1 (
+        echo [WARNING] Some per-user settings could not be removed. See the messages above.
+    )
 )
 echo [OK] User profiles cleaned.
 
 echo [2/2] Unregistering input method COM/TSF component...
 if exist "%~dp0ShuruIme.dll" (
     regsvr32.exe /u /s "%~dp0ShuruIme.dll"
+    if errorlevel 1 (
+        echo [ERROR] regsvr32 failed to unregister ShuruIme.dll.
+        pause
+        exit /b 2
+    )
 )
 echo [OK] COM/TSF component unregistered successfully.
 

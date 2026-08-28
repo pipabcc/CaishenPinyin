@@ -138,6 +138,54 @@ function Read-DefaultInputMethodState {
     return Read-RegistryStringState $DefaultInputMethodRegistryPath 'InputMethodOverride'
 }
 
+function Add-InputMethodToUserLanguageList([string]$InputTip) {
+    if ($NoRegister) { return $false }
+    try {
+        $langs = Get-WinUserLanguageList -ErrorAction Stop
+        $zh = $langs | Where-Object { $_.LanguageTag -like 'zh-Hans*' } | Select-Object -First 1
+        if (-not $zh) {
+            $newZh = (New-WinUserLanguageList 'zh-Hans-CN')[0]
+            $newZh.InputMethodTips.Clear()
+            [void]$newZh.InputMethodTips.Add($InputTip)
+            [void]$langs.Add($newZh)
+            Set-WinUserLanguageList -LanguageList $langs -Force -ErrorAction Stop | Out-Null
+            Write-DeployLog "added zh-Hans-CN with $InputTip to user language list" | Out-Null
+            return $true
+        }
+        if (-not ($zh.InputMethodTips -contains $InputTip)) {
+            [void]$zh.InputMethodTips.Add($InputTip)
+            Set-WinUserLanguageList -LanguageList $langs -Force -ErrorAction Stop | Out-Null
+            Write-DeployLog "added $InputTip to user language list" | Out-Null
+            return $true
+        }
+    } catch {
+        Write-DeployLog "Add-InputMethodToUserLanguageList warning: $($_.Exception.Message)" | Out-Null
+    }
+    return $false
+}
+
+function Remove-InputMethodFromUserLanguageList([string]$InputTip) {
+    if ($NoRegister) { return $false }
+    try {
+        $langs = Get-WinUserLanguageList -ErrorAction Stop
+        $changed = $false
+        foreach ($language in $langs) {
+            if ($language.InputMethodTips -contains $InputTip) {
+                [void]$language.InputMethodTips.Remove($InputTip)
+                $changed = $true
+            }
+        }
+        if ($changed) {
+            Set-WinUserLanguageList -LanguageList $langs -Force -ErrorAction Stop | Out-Null
+            Write-DeployLog "removed $InputTip from user language list" | Out-Null
+            return $true
+        }
+    } catch {
+        Write-DeployLog "Remove-InputMethodFromUserLanguageList warning: $($_.Exception.Message)" | Out-Null
+    }
+    return $false
+}
+
 function Set-DefaultInputMethodDirect([string]$InputTip) {
     New-Item -Path $DefaultInputMethodRegistryPath -Force | Out-Null
     New-ItemProperty -LiteralPath $DefaultInputMethodRegistryPath `
@@ -658,6 +706,7 @@ function Invoke-Uninstall {
         }
     }
     $defaultRestored = $false
+    $languageTipRemoved = $false
     try {
         if ($null -ne $managedDefault) {
             $currentDefault = Read-DefaultInputMethodState
@@ -671,6 +720,7 @@ function Invoke-Uninstall {
         }
 
         Write-DeployProgress 'unregister' 'running' 35 'Unregistering input method'
+        $languageTipRemoved = Remove-InputMethodFromUserLanguageList $DefaultInputMethodTip
         $installedDll = Resolve-InstalledDll
         if ($installedDll) {
             Unregister-Dll $installedDll -Strict
@@ -692,6 +742,9 @@ function Invoke-Uninstall {
         Remove-Item -LiteralPath (Join-Path $InstallRoot 'versions') `
             -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
+        if ($languageTipRemoved) {
+            [void](Add-InputMethodToUserLanguageList $DefaultInputMethodTip)
+        }
         if ($defaultRestored) {
             try { Set-DefaultInputMethod $DefaultInputMethodTip } catch {
                 Write-DeployLog "failed to restore managed default after uninstall error: $($_.Exception.Message)"
@@ -943,6 +996,7 @@ try {
         $oldDataVersion = Read-Pointer (Join-Path $DataRoot 'current')
         $defaultPlan = New-DefaultInputMethodPlan ([bool]$SetDefaultInputMethod)
         $stateCommitted = $false
+        $languageTipAdded = $false
         Write-DeployProgress 'prepare' 'running' 8 'Preparing install transaction'
         $oldDataHealthy = $oldDataVersion -and (Test-LexiconHealthy `
             (Join-Path $DataRoot "versions\$oldDataVersion"))
@@ -1031,6 +1085,7 @@ try {
 
             Write-DeployProgress 'register' 'running' 58 'Registering input method'
             Register-Dll (Join-Path $target 'ShuruIme.dll')
+            $languageTipAdded = Add-InputMethodToUserLanguageList $DefaultInputMethodTip
             Invoke-FailureInjection 'AfterRegister'
             if ($defaultPlan.Apply) {
                 Write-DeployProgress 'default' 'running' 68 'Setting default input method'
@@ -1096,6 +1151,9 @@ try {
                 Set-Pointer (Join-Path $InstallRoot 'current') $oldInstallVersion
                 Sync-SettingsShortcut $oldDirectory
             } else {
+                if ($languageTipAdded) {
+                    [void](Remove-InputMethodFromUserLanguageList $DefaultInputMethodTip)
+                }
                 Unregister-Dll (Join-Path $target 'ShuruIme.dll')
                 Remove-Item -LiteralPath (Join-Path $InstallRoot 'current') -Force -ErrorAction SilentlyContinue
                 $shortcutPath = Get-ShortcutPath
