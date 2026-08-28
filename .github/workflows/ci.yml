@@ -17,8 +17,10 @@ concurrency:
 jobs:
   build-and-test:
     name: Windows x64 / Release
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 90
+    env:
+      CAISHEN_SKIP_INTERACTIVE_TESTS: "1"
 
     steps:
       - name: 检出源码

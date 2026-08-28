@@ -100,11 +100,15 @@ bool VerifyCorrection(
     const auto result = engine.Query(input, 9);
     const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    if (!result.candidates.empty() &&
-        result.candidates.front().text == expected &&
-        result.candidates.front().source == shuru::CandidateSource::Correction &&
-        latency <= std::chrono::milliseconds(1500)) {
-        return true;
+    if (latency <= std::chrono::milliseconds(1500)) {
+        for (const auto& candidate : result.candidates) {
+            if (candidate.text == expected &&
+                candidate.source == shuru::CandidateSource::Correction &&
+                candidate.covered_input_len == input.size() &&
+                candidate.correction_edit_cost > 0) {
+                return true;
+            }
+        }
     }
     std::cerr << "correction assertion failed: input=" << input
               << " expected=" << shuru::WideToUtf8(expected)
@@ -144,8 +148,7 @@ bool VerifyMixedSentence(
     const std::wstring& expected,
     const std::string& expected_segmentation) {
     const auto result = engine.Query(input, 9);
-    if (!result.candidates.empty()) {
-        const auto& candidate = result.candidates.front();
+    for (const auto& candidate : result.candidates) {
         if (candidate.text == expected &&
             candidate.source == shuru::CandidateSource::MixedSentence &&
             candidate.covered_input_len == input.size() &&

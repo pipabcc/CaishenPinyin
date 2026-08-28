@@ -608,7 +608,9 @@ if(BUILD_TESTING)
     COMMAND firstkey_sim $<TARGET_FILE:ShuruIme> paste_mouse)
   set_tests_properties(firstkey_recovery firstkey_recovery_tight
     firstkey_recovery_sweep firstkey_recovery_paste
-    firstkey_recovery_paste_mouse PROPERTIES TIMEOUT 90)
+    firstkey_recovery_paste_mouse PROPERTIES
+    TIMEOUT 90
+    LABELS "interactive-tsf")
 
   add_executable(tsf_e2e_core tests/tsf_e2e_core.cpp
     src/ime/edit_sessions.cpp src/ime/display_attribute.cpp src/ime/input_policy.cpp

@@ -15,8 +15,10 @@ concurrency:
 jobs:
   build-and-release:
     name: Windows x64 / ${{ github.ref_name }}
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 120
+    env:
+      CAISHEN_SKIP_INTERACTIVE_TESTS: "1"
 
     steps:
       - name: 检查标签是否已有 Release

@@ -50,10 +50,18 @@ else{$configure="cmake -S `"$Root`" -B `"$build`" -G `"Visual Studio 17 2022`" -
 $settingsProject=Join-Path $Root 'settings\ShuruSettings.csproj'
 $settingsOutput=Join-Path $Root "settings\bin\$Config\net8.0-windows\win-x64\publish"
 if(Test-Path -LiteralPath $settingsOutput){Remove-Item -LiteralPath $settingsOutput -Recurse -Force}
-$excludeTests = ""
-if ($env:ANTIGRAVITY_AGENT -eq "1" -or -not [System.Environment]::UserInteractive) {
-    $excludeTests = "-E `"(firstkey_recovery|p1_engine)`""
+$ctestFilters = @()
+$nonInteractiveBuild = (
+    $env:ANTIGRAVITY_AGENT -eq '1' -or
+    -not [System.Environment]::UserInteractive
+)
+if ($env:CAISHEN_SKIP_INTERACTIVE_TESTS -eq '1' -or $nonInteractiveBuild) {
+    $ctestFilters += '-LE interactive-tsf'
 }
+if ($nonInteractiveBuild) {
+    $ctestFilters += '-E p1_engine'
+}
+$excludeTests = $ctestFilters -join ' '
 $bat=Join-Path $env:TEMP 'facai-release-build.cmd';@"
 @echo on
 call "$dev" -arch=amd64 -host_arch=amd64 || exit /b 1

@@ -778,8 +778,10 @@ function Sync-SettingsShortcut([string]$VersionDirectory) {
         Remove-Item -LiteralPath $shortcutPath -Force -ErrorAction SilentlyContinue
         return
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $shortcutPath) | Out-Null
-    $temporary = "$shortcutPath.tmp-$PID.lnk"
+    $shortcutDirectory = Split-Path -Parent $shortcutPath
+    New-Item -ItemType Directory -Force -Path $shortcutDirectory | Out-Null
+    $temporary = Join-Path $shortcutDirectory (
+        '.CaishenSettings-{0}.lnk' -f [guid]::NewGuid().ToString('N'))
     try {
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($temporary)

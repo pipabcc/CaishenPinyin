@@ -24,6 +24,34 @@ BOOL CALLBACK FindCandidateWindow(HWND window, LPARAM value) {
     return TRUE;
 }
 
+bool FindUnclampedCandidateAnchor(
+    SIZE window_size,
+    int shadow_margin,
+    UINT dpi,
+    POINT* anchor) {
+    if (anchor == nullptr) return false;
+    HMONITOR monitor = MonitorFromPoint(
+        POINT {40, 40}, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info {};
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitor_info)) {
+        return false;
+    }
+
+    const int edge_margin = MulDiv(4, static_cast<int>(dpi), 96);
+    const int min_x = monitor_info.rcWork.left + edge_margin + shadow_margin;
+    const int max_x = monitor_info.rcWork.right - edge_margin -
+        window_size.cx - shadow_margin;
+    const int min_y = monitor_info.rcWork.top + edge_margin + shadow_margin;
+    const int max_y = monitor_info.rcWork.bottom - edge_margin -
+        window_size.cy - shadow_margin;
+    if (min_x > max_x || min_y > max_y) return false;
+
+    anchor->x = min_x + (max_x - min_x) / 2;
+    anchor->y = min_y + (max_y - min_y) / 2;
+    return true;
+}
+
 struct ForeignOwnerWindowSearch {
     DWORD process_id = 0;
     HWND window = nullptr;
@@ -891,7 +919,12 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr, L"hidden candidate retained its previous anchor\n");
         return 19;
     }
-    const POINT second_anchor {320, 180};
+    POINT second_anchor {};
+    if (!FindUnclampedCandidateAnchor(
+            size, shadow_margin, dpi, &second_anchor)) {
+        std::fwprintf(stderr, L"could not select an unclamped candidate anchor\n");
+        return 20;
+    }
     window.Show(second_anchor);
     RECT second_rect {};
     if (!GetWindowRect(handle, &second_rect) ||
