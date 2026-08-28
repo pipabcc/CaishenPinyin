@@ -1,5 +1,5 @@
-# 激活 E 盘本地工具链（舒入拼音）
-# 用法: . E:\shurufa\tools\env.ps1
+# 激活仓库 tools 目录中的可选便携工具链。
+# 用法: . tools\env.ps1
 
 $ErrorActionPreference = 'Stop'
 
@@ -8,7 +8,7 @@ if ($PSScriptRoot) {
 } elseif ($MyInvocation.MyCommand.Path) {
     $ToolsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 } else {
-    $ToolsRoot = 'E:\shurufa\tools'
+    throw 'Unable to determine the repository-local tools directory.'
 }
 
 $RepoRoot = Split-Path -Parent $ToolsRoot

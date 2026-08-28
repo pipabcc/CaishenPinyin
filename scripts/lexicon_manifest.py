@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and validate the Facai Pinyin versioned lexicon manifest."""
+"""Generate and validate the Caishen Pinyin versioned lexicon manifest."""
 from __future__ import annotations
 import argparse, hashlib, json, re, struct, sys
 from pathlib import Path

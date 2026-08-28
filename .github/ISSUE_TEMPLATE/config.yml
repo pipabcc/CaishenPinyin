@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全漏洞报告
+    url: https://github.com/pipabcc/CaishenPinyin/security/advisories/new
+    about: 涉及权限提升、代码执行、敏感数据泄露等问题时，请勿创建公开 Issue。

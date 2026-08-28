@@ -1,4 +1,4 @@
-# Check build toolchain for Caishen IME (prefer E:\shurufa\tools)
+# Check the Caishen IME build toolchain; prefer an optional repo-local tools directory.
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $PSScriptRoot
 $ToolsRoot = Join-Path $Root "tools"
@@ -78,5 +78,5 @@ if ($ok) {
     exit 0
 }
 
-Write-Host "Environment incomplete. Need: E-disk VS2022 Build Tools + MSVC + Windows SDK + CMake" -ForegroundColor Red
+Write-Host "Environment incomplete. Need: VS 2022 Build Tools + MSVC + Windows SDK + CMake + .NET 8." -ForegroundColor Red
 exit 1

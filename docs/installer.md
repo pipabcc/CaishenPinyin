@@ -29,6 +29,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
 - `artifacts\installer\CaishenPinyin-<version>-win-x64-Setup.exe`
 - `artifacts\installer\CaishenPinyin-<version>-win-x64-Setup.exe.sha256`
 
+同一份已验证发行目录还可以生成便携版：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1 `
+  -SigningPolicy Off
+```
+
+便携版输出同名 `Portable.zip` 和 `.sha256`。它不会写入 Windows“已安装的应用”，但仍需
+管理员权限注册或注销 TSF COM DLL；用户必须先完整解压，并保留原目录供卸载脚本使用。
+
 只修改 NSIS 页面时可使用 `-SkipBuild`；该参数只跳过编译和 CTest，不跳过发布包校验。
 
 ## 安装行为
@@ -111,3 +121,5 @@ Authenticode 证书后，应同时签名 `ShuruIme.dll`、`ShuruSettings.exe`、
 5. 默认输入法勾选/取消、安装失败回滚和卸载条件恢复正确；
 6. “已安装的应用”存在卸载入口，默认卸载保留数据，显式删除数据可完整清理；
 7. 发布包和安装目录均不含 `rime-moqi-zh.gram`。
+8. Portable 可完整解压，包含安装、卸载和使用说明，且两个 Release 文件的 SHA-256
+   与各自 `.sha256` 一致。

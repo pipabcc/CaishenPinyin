@@ -1,189 +1,201 @@
-# 财神输入法（Caishen IME）
+# 财神输入法（Caishen Pinyin IME）
 
-一款面向 Windows 11 / 10 的现代原生本地拼音输入法。基于 Windows TSF（Text Services Framework）框架开发，核心采用现代 C++ 构建，配备独立自包含的 WPF 设置中心与本地化拼音纠错、双数组词库索引引擎。
+[![Windows CI](https://github.com/pipabcc/CaishenPinyin/actions/workflows/ci.yml/badge.svg)](https://github.com/pipabcc/CaishenPinyin/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/pipabcc/CaishenPinyin?display_name=tag)](https://github.com/pipabcc/CaishenPinyin/releases/latest)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4)](https://github.com/pipabcc/CaishenPinyin/releases/latest)
 
----
+财神输入法是一款面向 Windows 10/11 x64 的开源中文拼音输入法。核心使用 C++20 和
+Windows TSF（Text Services Framework）实现，候选窗基于 Win32/DirectWrite，设置中心
+使用 .NET 8 WPF。输入法运行时全离线，支持全拼、双拼、模糊音、本地用户词学习、白霜
+拼音词库、自定义短语、皮肤和剪贴板历史。
 
-## 核心特性
+English summary: an open-source, offline and privacy-focused Windows Pinyin IME built with
+C++20, TSF, DirectWrite and .NET 8 WPF.
 
-* **原生系统级集成**：基于微软 TSF 文本服务框架，完美兼容 Windows 11/10 桌面与 UWP 应用，无焦点 DirectWrite 高清候选窗。
-* **纯净离线与隐私保护**：全本地运行，无网络上传模块，不收集用户击键正文，日志默认关闭。
-* **海量高精词库**：内置白霜拼音精选词库（约 67.7 万多字词 + 8,247 条单字读音）与常用英文词库。
-* **分级回退语言模型**：支持多级统计语言模型（N-gram），长句精准打分，缺省状态下平滑回退，兼顾体积与智能排序。
-* **丰富个性化配置**：
-  * 支持全拼与多种主流双拼方案（自然码、微软双拼、小鹤双拼等）及一键快捷键切换
-  * 支持用户词自学习、自定义短语（`custom_phrases.txt`）与模糊音配置
-  * 皮肤管理与 DirectWrite 候选字体微调
-  * 剪贴板历史与图片/富文本直通输入（`v` 模式）
-* **引擎快照与极速冷启动**：采用内存镜像二进制快照技术（Engine Snapshot），消除多进程初次加载解析耗时。
-* **AppContainer 沙箱与现代应用适配**：原生支持 Windows 10/11 沙箱环境（Edge、Office、UWP 等）的只读 ACL 授权与安全跨进程通信。
-* **直接文本上屏请求协议**：支持剪贴板历史与快速面板向当前活跃的 TSF 编辑会话安全注入与即时上屏。
-* **现代化图形安装包**：提供 NSIS 单文件打包，支持自包含运行与干净彻底的卸载流程。
+> 当前发行包尚未进行 Authenticode 代码签名。UAC 会显示“未知发布者”，SmartScreen
+> 也可能拦截首次运行。下载后应先核对 Release 页面公布的 SHA-256；校验值一致只能证明
+> 文件完整性，不能替代发布者身份签名。
 
----
+## 下载与安装
 
-## 核心性能与资源占用对比
+最新稳定版：[财神输入法 2.0.1](https://github.com/pipabcc/CaishenPinyin/releases/tag/v2.0.1)
 
-下表为在当前 Windows 11 实机环境中，采集的真实系统进程指标与微秒级高精度基准测试（Benchmark，MSVC `/O2` 优化构建）实测数据对比：
+| 发行文件 | 适用场景 | 安装方式 |
+|---|---|---|
+| `CaishenPinyin-2.0.1-win-x64-Setup.exe` | 推荐给普通用户；支持安装目录、升级/修复、开始菜单和标准卸载 | 双击运行，按安装向导操作 |
+| `CaishenPinyin-2.0.1-win-x64-Portable.zip` | 适合测试或手动管理文件；仍需注册 Windows TSF 组件 | 完整解压后，以管理员身份运行包内安装脚本 |
 
-| 评估维度 / 指标 | 本项目输入法（财神输入法） | Windows 系统内置微软输入法 | 性能对比与分析 |
-| :--- | :--- | :--- | :--- |
-| **工作架构模式** | **In-Process 进程内 TSF COM 模型**<br>直接注入宿主进程，零 IPC 跨进程开销 | **Out-of-Process 跨进程现代 App 架构**<br>依赖 TSF CoreMessaging 与跨进程 IPC 管道 | 财神输入法无跨进程调度延迟，消息响应零管道阻塞 |
-| **常驻进程总内存（WorkingSet）** | **约 4.1 MB ~ 35 MB**（单宿主进程内）<br>词库与模型通过只读 mmap 跨进程共享 | **约 295.85 MB**（三进程总和）<br>• `TextInputHost.exe`: 228.37 MB<br>• `ctfmon.exe`: 58.91 MB<br>• `ChsIME.exe`: 8.57 MB | 微软输入法常驻内存约为财神输入法的 8 ~ 10 倍 |
-| **专用私有内存（Private Bytes）** | **约 0.88 MB ~ 25 MB**（随打字动态分配） | **约 216.85 MB**<br>• `TextInputHost.exe`: 189.38 MB<br>• `ctfmon.exe`: 26.01 MB<br>• `ChsIME.exe`: 1.46 MB | 财神输入法私有内存极低，对系统物理 RAM 压力极小 |
-| **单键首字母查询延迟（P50）** | **1.21 ms** (1,209.70 μs) | 约 8 ~ 15 ms (含跨进程 IPC 调度) | 财神输入法检索快 7 ~ 10 倍 |
-| **常用二字词检索延迟（P50）** | **0.99 ms** (995.40 μs) | 约 10 ~ 20 ms | 常用词检索低于 1 毫秒，极速响应 |
-| **四字成语/专名检索（P50）** | **32.58 ms** (32,582.20 μs) | 约 25 ~ 45 ms | 本地全候选打分与语言模型排序 |
-| **长句全量智能切分（P50）** | **180.15 ms** (全量 N-Gram Viterbi 求解) | 约 80 ~ 250 ms (本地模型+云端混合) | 本地纯统计模型解码，长句切分精度高 |
-| **连续按键流模拟耗时（7键连续）** | **10.07 ms**（平均每键 1.43 ms） | 约 50 ~ 120 ms（累积 UI 刷新耗时） | 高频打字无丢键、无跳帧、无手感延迟 |
-| **单字/短词吞吐量（QPS）** | **802 ~ 938 QPS**（单线程峰值） | 约 60 ~ 150 QPS（受 IPC 队列限制） | 吞吐能力高出 6 ~ 10 倍 |
-| **用户词动态学习与匹配（P50）** | **0.44 ms** (440.40 μs，吞吐 2,120 QPS) | 约 5 ~ 15 ms | 本地哈希词频提升，微秒级即时生效 |
-| **UI 渲染管线** | **Win32 DirectWrite 硬件加速轻量无焦点浮窗**<br>微秒级 Direct2D/DirectWrite 绘制，零 XAML 树开销 | **UWP / XAML / DirectComposition 跨进程渲染**<br>庞大的 UI 视觉树，冷启动易闪烁 | 财神输入法候选框显示/隐藏耗时极低 |
-| **核心二进制体积** | **1.21 MB** (`ShuruIme.dll`) | 约 25 MB+（含 CBS、ChsIME、InputMethod） | 核心动态库体积极小，便于分发与极速加载 |
-| **系统词库与模型体积** | **约 27 MB** (`base_dict` + `ngram.bin` + `prior.bin`) | 约 50 MB ~ 150 MB（含系统字典、拼音组件） | 白霜 67.7 万词库 + 紧凑二进制模型 |
-| **网络与云端 IO 开销** | **0 KB/s**（绝对零网络请求，纯本地） | 动态网络请求（云联想、动态词库同步、遥测） | 财神输入法彻底杜绝击键隐私泄漏与弱网卡顿 |
+两种包都是 `2.0.1`，区别是部署形式，不是两个不同版本。仅支持 AMD64/x64 Windows，
+不支持 ARM64、x86、macOS、Linux、Android 或 iOS。
 
-### 数据深度解析与架构优势
+安装完成后按 `Win + Space`，选择“财神输入法”。输入法 DLL 被宿主进程加载后通常不会
+自动换成新文件；升级后若仍显示旧行为，请关闭所有用过输入法的程序，或注销并重新登录。
 
-1. **单字与短词极限响应（< 1.2 ms）**：
-   用户日常打字中 80% 以上的操作为单字或 2~3 字词组。本项目输入法对这些核心输入场景的中位数延迟（P50）仅为 0.99 ms ~ 1.21 ms，单核吞吐量逼近 1,000 QPS，达到“按键即见候选”的人眼零感知延迟（人类神经反应通常在 100ms 级别，1ms 仅为其百分之一）。
-2. **连续键入流平滑度**：
-   在逐键递增键入（如 `r` -> `re` -> `ren` -> `renz` -> `renzh` -> `renzhe` -> `renzhen`）的完整击键生命周期中，7 次连续查询并刷新候选的总耗时仅 10.07 ms，平均每个按键触发耗时仅 1.43 ms，彻底消除击键卡顿与丢键。
-3. **用户词动态学习与召回极速**：
-   动态更新用户词频并在后续输入中置顶仅需 0.44 ms，QPS 超过 2,100，保证高频词越用越顺手且不卡顿。
-4. **隐私安全与网络零开销**：
-   100% 离线运行，代码中完全不包含网络套接字代码（Winsock），用户词库与打字历史只安全保存在本地机器的 `%LOCALAPPDATA%` 中，具备绝对的数据安全性与确定性的响应时间。
-5. **UI 渲染开销与零视觉延迟**：
-   采用原生的 Win32 Layered Window + DirectWrite 硬件加速渲染（位于 [`candidate_window.cpp`](src/ime/ui/candidate_window.cpp) 和 [`directwrite_text_renderer.cpp`](src/ime/ui/directwrite_text_renderer.cpp)）。候选词绘制耗时仅在 0.1 ms ~ 0.3 ms 级别，候选框紧跟光标，无动画拖沓与渲染延迟。
-6. **高效内存机制（mmap 物理页跨进程共享）**：
-   核心逻辑基于精炼的 C++ 实现，`ShuruIme.dll` 仅 1.21 MB。系统词库和语言模型（`base.bin`、`system_ngram.bin`、`system_lexeme_prior.bin`）采用 Windows 内存映射文件（Memory Mapped File / mmap）技术。当在 10 个不同的软件（如浏览器、记事本、Word、微信等）同时打字时，所有宿主进程共享同一份词库物理内存页，不会随进程增多而线性消耗系统 RAM。
-7. **进程模型与零 IPC 通信成本**：
-   采用经典的高性能 TSF 进程内（In-Process）COM 动态库架构。击键事件直接在前台线程就地处理，检索本地内存词库并直接调用 DirectWrite 渲染，无进程上下文切换（Context Switch），无 IPC 序列化/反序列化开销。
+### 校验下载文件
 
----
+Release 会同时提供两个 `.sha256` 文件。在 PowerShell 中执行：
 
-## 项目架构
-
-```
-按键输入 → TSF 文本服务 (TextService) → 拼音引擎 (PinyinEngine) → 词典核心 (Dictionary)
-                        ↓
-                 候选窗口 (CandidateWindow)
-                        ↓
-                     文字上屏
-```
-
-* `src/ime`：TSF 接口实现、COM 组件生命周期与 Win32/DirectWrite 候选窗
-* `src/engine`：拼音切分、模糊音纠错、双数组 Trie 检索与用户词频学习
-* `data/lexicon`：系统基础词库、单字先验与英文词库定义
-* `settings`：基于 .NET 8 WPF 开发的独立设置管理程序
-* `installer`：NSIS 图形安装与卸载脚本
-* `scripts`：构建、注册、测试与环境检查脚本
-
----
-
-## 常用快捷键
-
-| 快捷键 | 功能说明 |
-| :--- | :--- |
-| `字母 a-z` | 进入拼音输入状态 |
-| `Space`（空格） | 上屏当前首选候选词 |
-| `1` - `9` | 数字键快速选词上屏 |
-| `Esc` | 清空当前拼音并退出输入状态 |
-| `Enter` | 直接上屏当前输入的原始拼音字母 |
-| `Shift`（单按） | 拼音输入状态下单按上屏原始拼音；未输入时单按切换中/英文模式 |
-| `Ctrl + Space` | 切换中/英文模式 |
-| `←` / `→` | 移动拼音光标或翻页查看候选 |
-| `F9` | 打开 / 关闭虚拟软键盘 |
-| `F10` | 拼音输入状态下快速切换全拼 / 双拼模式 |
-
----
-
-## 开发与编译环境要求
-
-1. **操作系统**：Windows 10 / 11（x64）
-2. **C++ 编译工具**：Visual Studio 2022（需安装 C++ 桌面开发组件，含 MSVC v143 及 Windows 10/11 SDK，包含 `msctf.h`）
-3. **CMake**：>= 3.20
-4. **.NET SDK**：.NET 8.0 SDK（编译 WPF 设置中心与 C# 演练工具）
-5. **NSIS**：NSIS 3.x（仅在生成单文件图形安装包时需要）
-
-检查本地开发环境：
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
+Get-FileHash .\CaishenPinyin-2.0.1-win-x64-Setup.exe -Algorithm SHA256
+Get-FileHash .\CaishenPinyin-2.0.1-win-x64-Portable.zip -Algorithm SHA256
 ```
 
----
+输出应与 Release 页面及对应 `.sha256` 文件完全一致。若不一致，请不要运行。
 
-## 快速构建
+### 卸载与个人数据
 
-正式编译统一使用根目录的构建脚本 `scripts\build.ps1`，脚本会自动配置 CMake、执行编译并运行完整的 CTest 自动化测试套件：
+Setup 版可从 Windows“已安装的应用”卸载。默认卸载保留设置、皮肤、剪贴板记录和用户词；
+选择删除个人数据时会再次确认。Portable 版使用原解压目录中的卸载脚本注销组件，因此安装
+后不要随意移动或删除该目录。
+
+## 主要能力
+
+- 原生 TSF 输入法：C++20 进程内 COM DLL，接入 Windows 文本服务框架。
+- 拼音引擎：全拼、自然码/微软/小鹤等双拼方案、简拼、模糊音和常见击键纠错。
+- 本地词库：白霜拼音派生词库、英文词库、字符先验和轻量 N-gram 回退模型。
+- 候选界面：Win32 无焦点窗口与 DirectWrite 绘制，支持多显示器和 DPI 跟随。
+- 个性化：用户词学习、自定义短语、候选置顶、皮肤管理和本地打字统计。
+- 设置中心：自包含 .NET 8 WPF 应用，目标电脑无需另装 .NET Desktop Runtime。
+- 剪贴板工具：本地剪贴板历史、文本直接上屏，以及图片/富文本粘贴辅助。
+- 冷启动缓存：词库二进制索引和 EngineSnapshot 只读映射，源数据变化后自动失效重建。
+
+具体宿主兼容性取决于应用对 TSF 的实现。发现 Office、浏览器、WinUI、终端或游戏中的兼容
+问题时，请按 Issue 模板提供 Windows 版本、宿主版本、输入模式和最小复现步骤。
+
+## 隐私与安全边界
+
+- 输入法运行时不需要网络，拼音查询、候选排序、学习和统计都在本机完成。
+- 密码及私密 `InputScope` 完全旁路，不拦截、不学习、不记录。
+- 内容日志默认关闭；日志设计上不写原始输入串或候选正文。
+- 用户词和配置位于 `%LOCALAPPDATA%\CaishenPinyin\`，ACL 初始化失败时会禁用学习写入，
+  但基础输入仍可继续使用。
+- 系统词库安装在 `%ProgramData%\CaishenPinyin\data\lexicon\` 的版本化目录中。
+- 文件更新采用临时文件加原子替换；跨进程共享数据使用命名互斥量协调。
+
+完整规则见 [隐私与输入策略](docs/privacy-input-policy.md)。发现安全问题时，请不要公开披露，
+请按照 [安全政策](SECURITY.md) 使用 GitHub 私密漏洞报告。
+
+## 常用按键
+
+| 按键 | 行为 |
+|---|---|
+| `a-z` | 进入或继续拼音组合 |
+| `Space` | 上屏首选候选 |
+| 主键盘 `1` - `9` | 组合状态下选择候选；数字小键盘不选词 |
+| `Enter` | 上屏原始拼音字母 |
+| `Esc` | 清空组合 |
+| `Shift` 单击 | 有组合时上屏原始拼音；无组合时切换中英文 |
+| `Ctrl + Space` | 切换中英文 |
+| `F9` | 打开或关闭软键盘 |
+| `F10` | 组合状态下切换全拼/双拼 |
+
+## 架构概览
+
+```text
+按键事件
+   │
+   ▼
+TSF 接入层（src/ime）
+   ├── 隐私/InputScope 策略
+   ├── 组合与编辑会话
+   └── Win32 + DirectWrite 候选窗
+   │
+   ▼
+拼音引擎（src/engine）
+   ├── 拼音切分、双拼、模糊音
+   ├── 双数组 Trie 与候选打分
+   ├── N-gram / 字符先验
+   └── 用户词、短语与置顶候选
+   │
+   ▼
+只读系统词库 + 本地用户数据
+```
+
+主要目录：
+
+- `src/ime`：TSF/COM 生命周期、编辑会话、按键状态机和候选窗口。
+- `src/engine`：拼音检索、纠错、语言模型、用户学习和快照缓存。
+- `src/common`：运行时配置、日志、私有 DACL 和打字统计。
+- `settings`：.NET 8 WPF 设置中心。
+- `data/lexicon`：受清单和 SHA-256 约束的系统词库及派生模型。
+- `installer`：NSIS 安装器和 Portable 辅助脚本。
+- `tests`：C++、C#、TSF 与部署事务测试。
+
+进一步阅读：[架构说明](docs/architecture.md)、[词库治理](docs/lexicon-governance.md)、
+[构建说明](docs/build.md)、[安装器说明](docs/installer.md)。
+
+## 从源码构建
+
+### 环境要求
+
+- Windows 10/11 x64
+- Visual Studio 2022 Build Tools，含 MSVC v143 与 Windows 10/11 SDK
+- CMake 3.20 或更高版本
+- Ninja，或 Visual Studio CMake Generator
+- .NET 8 SDK
+- Python 3.11 或兼容版本
+- NSIS 3.x，仅生成 Setup 时需要
+
+仓库中的 `tools/env.ps1` 会优先使用项目本地便携工具链；外部贡献者也可以直接使用已加入
+`PATH` 的标准工具链。环境检查：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check_env.ps1
+```
+
+正式构建入口会编译 WPF 设置中心、配置 CMake、编译 C++ 目标、运行 CTest，并生成
+`SigningPolicy=Off` 的发行目录：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
 ```
 
-* 默认构建目录为 `build-release/`
-* 发布产物输出至 `artifacts/release/`（设置中心采用 `win-x64` 自包含方式发布，目标机无需单独安装 .NET Desktop Runtime）
-
-生成单文件图形安装包：
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
-```
-安装包将输出至 `artifacts\installer\CaishenPinyin-<版本号>-win-x64-Setup.exe`。
-
----
-
-## 本地安装与调试
-
-在管理员权限 PowerShell 中直接部署并注册发布包：
+生成 Setup 和 Portable：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
-  -Action Install `
-  -DllPath artifacts\release\ShuruIme.dll `
-  -SettingsPath artifacts\release `
-  -PackagePath artifacts\release\data\lexicon `
-  -Version 2.0.1 `
-  -SetDefaultInputMethod `
-  -HealthCheckExe build-release\release_health_check.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1 -Config Release
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1
 ```
 
-注销已注册的输入法 DLL：
+主要输出：
+
+- `build-release/ShuruIme.dll`
+- `artifacts/release/`
+- `artifacts/installer/CaishenPinyin-<version>-win-x64-Setup.exe`
+- `artifacts/installer/CaishenPinyin-<version>-win-x64-Portable.zip`
+
+仅运行 C# 设置逻辑：
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\unregister_ime.ps1
+dotnet build settings\ShuruSettings.csproj -c Release
+dotnet run --project tests\settings_logic
 ```
 
----
+## 词库与第三方许可
 
-## 词库与数据存储说明
+`data/lexicon/manifest.json` 固定词库版本、来源提交、文件大小和 SHA-256。可编辑文本是权威
+源，`.bin` 文件是确定性派生缓存。完整墨奇模型 `rime-moqi-zh.gram` 因上游没有明确许可证，
+不会进入源码仓库或官方发行包；用户可以根据自身权利自行安装。
 
-1. **用户配置文件与个人词库**：
-   * 设置文件：`%LOCALAPPDATA%\CaishenPinyin\settings.ini`
-   * 用户词库：`%LOCALAPPDATA%\CaishenPinyin\data\lexicon\user_dict.txt`
-   * 自定义短语：`%LOCALAPPDATA%\CaishenPinyin\data\lexicon\custom_phrases.txt`
-   * 字数统计：`%LOCALAPPDATA%\CaishenPinyin\data\typing_stats.txt`（仅保存按键计数与日期，不记录任何文字内容）
-   * *注：升级或重新安装输入法时，用户个人数据默认保留，不会被覆盖。*
+项目源码采用 [GPL-3.0-only](LICENSE)；第三方词库、格式兼容实现和 .NET Runtime 许可见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与 `licenses/`。提交代码或数据前，请确认你
+有权按相应许可证再分发，避免提交来源不明的皮肤、截图、词库或二进制文件。
 
-2. **可选统计语言模型**：
-   * `rime-moqi-zh.gram` 属于可选的高阶长句统计语言模型（基于 N-gram），因体积较大，未随源码或安装包直接分发。
-   * 用户可自行下载（下载地址：[rime-build-grammar 1.0.0 Releases](https://github.com/gaboolic/rime-build-grammar/releases/tag/1.0.0)）并置于当前词库目录；当未放置该模型时，输入法将自动使用内置的轻量化 `system_ngram.bin`。
+## 参与项目
 
----
+- 缺陷和兼容性问题：[创建 Bug Report](https://github.com/pipabcc/CaishenPinyin/issues/new?template=bug_report.md)
+- 功能建议：[创建 Feature Request](https://github.com/pipabcc/CaishenPinyin/issues/new?template=feature_request.md)
+- 贡献流程：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 社区行为规范：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- 更新历史：[CHANGELOG.md](CHANGELOG.md)
 
-## 参与贡献与社区
+## 相关技术与检索词
 
-* 详细贡献规范与开发准则请阅读 [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)。
-* 版本发布历史与详细变更记录请查看 [更新日志 (CHANGELOG.md)](CHANGELOG.md)。
-* 安全漏洞披露与隐私政策请查阅 [安全政策 (SECURITY.md)](SECURITY.md)。
-* 第三方组件许可与数据来源说明请查看 [第三方数据与许可 (THIRD_PARTY_NOTICES.md)](THIRD_PARTY_NOTICES.md)。
+Windows 拼音输入法、Windows 中文输入法、开源输入法、离线输入法、隐私输入法、全拼、
+双拼、自然码、小鹤双拼、微软双拼、白霜拼音、Rime Frost、Windows Pinyin IME、Chinese
+input method、offline IME、privacy-first IME、TSF input method、Text Services Framework、
+C++20、Win32、DirectWrite、WPF、.NET 8。
 
----
-
-## 友情链接
-
-* LinuxDo — [https://linux.do](https://linux.do/)（真诚、友善、团结、专业，共建你我引以为荣之社区）
-
----
-
-## 开源许可证
-
-本项目核心源码采用 [GNU General Public License v3.0 (GPL-3.0)](LICENSE) 许可证开源。所引用的第三方库及词库授权遵循各自的开源协议，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+这些关键词描述本项目的真实平台和技术范围；本项目不是 Rime 前端，也不支持 Windows
+以外的平台。

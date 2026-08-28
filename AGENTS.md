@@ -15,7 +15,9 @@ Windows 10/11 原生拼音输入法：C++20 TSF（Text Services Framework）进�
 
 ## 构建与测试
 
-本机工具链在 `E:\shurufa\tools`（VS2022 BuildTools、CMake、Ninja、dotnet 均为本地便携版），构建前需激活 `. tools\env.ps1`。
+维护者可在仓库 `tools/` 下使用便携工具链；外部贡献者也可直接使用已加入 `PATH` 的
+VS2022 Build Tools、CMake、Ninja 和 .NET 8。正式构建脚本会在存在时自动加载
+`tools/env.ps1`。
 
 ```powershell
 # 唯一正式入口：配置 CMake + 编译 + 完整 CTest（含 WPF 设置程序发布）

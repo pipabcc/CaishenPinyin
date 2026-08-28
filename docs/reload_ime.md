@@ -5,7 +5,7 @@ IME DLL **加载进每个应用进程后不会自动换新**。已经打开的�
 
 ## 立刻隐藏（不重启）
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File E:\shurufa\scripts\hide_status_bar_now.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\hide_status_bar_now.ps1
 ```
 
 ## 真正重载（推荐）
@@ -17,4 +17,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File E:\shurufa\scripts\hide_stat
 
 ## 当前版本
 - DLL：2.0.1（版本化旁路安装，旧版本目录保留）
-- 词库：2.0.1（白霜词库、完整墨奇与必需回退模型，升级不覆盖用户词库）
+- 词库：2.0.1（白霜词库与必需回退模型，升级不覆盖用户词库；完整墨奇模型不随包分发）
