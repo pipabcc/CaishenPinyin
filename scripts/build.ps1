@@ -71,7 +71,7 @@ $compile || exit /b 1
 ctest --test-dir "$build" -C $Config $excludeTests --output-on-failure || exit /b 1
 rem settings_ui_smoke uses dotnet run and rebuilds with the project defaults.
 rem Publish the final settings application with its own Windows desktop runtime.
-dotnet publish "$settingsProject" --configuration $Config --runtime win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1
+dotnet publish "$settingsProject" --configuration $Config --runtime win-x64 --self-contained true --output "$settingsOutput" -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1
 "@ | Set-Content -LiteralPath $bat -Encoding ASCII
 cmd /c "`"$bat`"";if($LASTEXITCODE-ne 0){throw "configure/build/full CTest failed: $LASTEXITCODE"}
 if(-not(Test-Path $dll)){throw "expected DLL missing: $dll"}
