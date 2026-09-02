@@ -46,7 +46,11 @@ $versionHeader=Get-Content -LiteralPath (Join-Path $Root 'src\common\version.h')
 if($versionHeader-notmatch '#define\s+SHURU_VERSION_STRING\s+"([^"]+)"'){throw 'version string missing'}
 $productVersion=$Matches[1]
 $ninja=Get-Command ninja -ErrorAction SilentlyContinue
-if($ninja){
+$cl=Get-Command cl -ErrorAction SilentlyContinue
+# Ninja 必须配合当前进程可见的 cl.exe；只有 Ninja 而没有 MSVC 环境时，
+# 退回 Visual Studio Generator，让各架构批处理自行加载对应的工具链。
+$useNinja=$null -ne $ninja -and $null -ne $cl
+if($useNinja){
  $configure="cmake -S `"$Root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
  $compile="cmake --build `"$build`" --config $Config --clean-first"
  $x86Configure="cmake -S `"$Root`" -B `"$x86Build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
@@ -76,26 +80,52 @@ if ($nonInteractiveBuild) {
     $ctestFilters += '-E p1_engine'
 }
 $excludeTests = $ctestFilters -join ' '
-$bat=Join-Path $env:TEMP 'facai-release-build.cmd';@"
+# x64、x86 和最终发布分别使用新 cmd 进程，避免两套 VsDevCmd 环境叠加后
+# 超过 Windows 命令行长度限制，尤其是 GitHub Windows Runner 的场景。
+function Invoke-BuildBatch {
+ param(
+  [Parameter(Mandatory=$true)][string]$Path,
+  [Parameter(Mandatory=$true)][string]$Content,
+  [Parameter(Mandatory=$true)][string]$FailureMessage
+ )
+ $Content | Set-Content -LiteralPath $Path -Encoding ASCII
+ try {
+  cmd /d /c "`"$Path`""
+  $exitCode=$LASTEXITCODE
+  if($exitCode-ne 0){throw "$FailureMessage`: $exitCode"}
+ } finally {
+  Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+ }
+}
+$batchId=[guid]::NewGuid().ToString('N')
+$x64Bat=Join-Path $env:TEMP "facai-release-$batchId-x64.cmd"
+$x86Bat=Join-Path $env:TEMP "facai-release-$batchId-x86.cmd"
+$publishBat=Join-Path $env:TEMP "facai-release-$batchId-publish.cmd"
+Invoke-BuildBatch -Path $x64Bat -FailureMessage 'x64 configure/build/full CTest failed' -Content @"
 @echo on
 call "$dev" -arch=amd64 -host_arch=amd64 || exit /b 1
 dotnet build "$settingsProject" --configuration $Config -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1
 $configure || exit /b 1
 $compile || exit /b 1
 ctest --test-dir "$build" -C $Config $excludeTests --output-on-failure || exit /b 1
+"@
+Invoke-BuildBatch -Path $x86Bat -FailureMessage 'x86 configure/build/CTest failed' -Content @"
+@echo on
 call "$dev" -arch=x86 -host_arch=amd64 || exit /b 1
 $x86Configure || exit /b 1
 $x86Compile || exit /b 1
 ctest --test-dir "$x86Build" -C $Config -R "input_policy|engine_snapshot|release_health|tsf_e2e_core" --output-on-failure || exit /b 1
+"@
+Invoke-BuildBatch -Path $publishBat -FailureMessage 'settings publish failed' -Content @"
+@echo on
 rem settings_ui_smoke uses dotnet run and rebuilds with the project defaults.
 rem Publish the final settings application with its own Windows desktop runtime.
 call "$dev" -arch=amd64 -host_arch=amd64 || exit /b 1
 dotnet publish "$settingsProject" --configuration $Config --runtime win-x64 --self-contained true --output "$settingsOutput" -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1
-"@ | Set-Content -LiteralPath $bat -Encoding ASCII
-cmd /c "`"$bat`"";if($LASTEXITCODE-ne 0){throw "configure/build/full CTest failed: $LASTEXITCODE"}
+"@
 if(-not(Test-Path $dll)){throw "expected x64 DLL missing: $dll"}
 if(-not(Test-Path $x86Dll)){throw "expected x86 DLL missing: $x86Dll"}
-if($ninja){$snapshotTool=Join-Path $build 'engine_snapshot_build_tool.exe'}else{$snapshotTool=Join-Path $build "$Config\engine_snapshot_build_tool.exe"}
+if($useNinja){$snapshotTool=Join-Path $build 'engine_snapshot_build_tool.exe'}else{$snapshotTool=Join-Path $build "$Config\engine_snapshot_build_tool.exe"}
 if(-not(Test-Path -LiteralPath $snapshotTool)){throw "expected snapshot build tool missing: $snapshotTool"}
 $builtVersion=(Get-Item -LiteralPath $dll).VersionInfo.FileVersion
 if($builtVersion-ne$productVersion){throw "DLL file version $builtVersion does not match source version $productVersion"}
