@@ -35,6 +35,7 @@ if ([string]$manifest.signingPolicy -ne $ExpectedSigningPolicy) {
 }
 
 $manifestPaths = @{}
+$manifestEntries = @{}
 foreach ($entry in @($manifest.files)) {
     $relativePath = ([string]$entry.path).Replace('/', '\')
     if (-not $relativePath -or [IO.Path]::IsPathRooted($relativePath) -or
@@ -46,6 +47,7 @@ foreach ($entry in @($manifest.files)) {
         throw "duplicate release manifest path: $relativePath"
     }
     $manifestPaths[$key] = $true
+    $manifestEntries[$key] = $entry
     $filePath = [IO.Path]::GetFullPath((Join-Path $package $relativePath))
     if (-not $filePath.StartsWith(
             $packagePrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -74,6 +76,7 @@ foreach ($file in Get-ChildItem -LiteralPath $package -Recurse -File) {
 
 $requiredFiles = @(
     'ShuruIme.dll',
+    'ShuruIme32.dll',
     'ShuruSettings.exe',
     'ShuruSettings.dll',
     'ShuruSettings.runtimeconfig.json',
@@ -87,6 +90,21 @@ $requiredFiles = @(
     'licenses\dotnet-LICENSE.txt',
     'licenses\dotnet-ThirdPartyNotices.txt'
 )
+$requiredSkinFiles = @(
+    'data\skins\classic_blue\skin.ini',
+    'data\skins\classic_blue\cand_bg.png',
+    'data\skins\classic_gold\skin.ini',
+    'data\skins\classic_gold\cand_bg.png',
+    'data\skins\minimal_light\skin.ini',
+    'data\skins\minimal_light\cand_bg.png',
+    'data\skins\cyber_dark\skin.ini',
+    'data\skins\cyber_dark\cand_bg.png',
+    'data\skins\sakura_pink\skin.ini',
+    'data\skins\sakura_pink\cand_bg.png',
+    'data\skins\celadon_jade\skin.ini',
+    'data\skins\celadon_jade\cand_bg.png'
+)
+ $requiredFiles += $requiredSkinFiles
 foreach ($required in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $package $required) -PathType Leaf)) {
         throw "required release file missing: $required"
@@ -102,6 +120,27 @@ foreach ($forbidden in @('rime-moqi-zh.gram', 'zh-moqi.gram', 'user_dict.txt')) 
 $dllVersion = (Get-Item -LiteralPath (Join-Path $package 'ShuruIme.dll')).VersionInfo.FileVersion
 if ($dllVersion -ne $ProductVersion) {
     throw "ShuruIme.dll version $dllVersion does not match $ProductVersion"
+}
+$x86DllVersion = (Get-Item -LiteralPath (Join-Path $package 'ShuruIme32.dll')).VersionInfo.FileVersion
+if ($x86DllVersion -ne $ProductVersion) {
+    throw "ShuruIme32.dll version $x86DllVersion does not match $ProductVersion"
+}
+if ([string]$manifestEntries['shuruime.dll'].architecture -ne 'x64' -or
+    [string]$manifestEntries['shuruime32.dll'].architecture -ne 'x86') {
+    throw 'IME DLL architecture metadata is invalid'
+}
+function Get-PeMachine([string]$Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40 -or
+        [BitConverter]::ToUInt16($bytes, 0) -ne 0x5A4D) { return 0 }
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { return 0 }
+    if ([BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x00004550) { return 0 }
+    return [int][BitConverter]::ToUInt16($bytes, $peOffset + 4)
+}
+if ((Get-PeMachine (Join-Path $package 'ShuruIme.dll')) -ne 0x8664 -or
+    (Get-PeMachine (Join-Path $package 'ShuruIme32.dll')) -ne 0x014c) {
+    throw 'IME DLL PE architectures are invalid'
 }
 $settingsVersion = (Get-Item -LiteralPath (Join-Path $package 'ShuruSettings.dll')).VersionInfo.FileVersion
 if (([Version]$settingsVersion).ToString(3) -ne $ProductVersion) {

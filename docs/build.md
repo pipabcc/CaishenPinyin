@@ -2,7 +2,8 @@
 
 ## 支持环境
 
-项目只支持 Windows 10/11 x64。标准开发环境需要：
+项目只支持 Windows 10/11 x64 操作系统。正式构建同时产出 x64 与 x86 TSF DLL，
+使 64 位系统上的 WOW64 宿主也能加载输入法。标准开发环境需要：
 
 - Visual Studio 2022 Build Tools，包含 MSVC v143、C++ 桌面开发组件和 Windows SDK；
 - CMake 3.20 或更高版本；
@@ -35,8 +36,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 `
 默认输出：
 
 - `build-release/ShuruIme.dll`；
+- `build-release-x86/ShuruIme32.dll`；
 - `build-release/engine_playground.exe`；
 - `artifacts/release/ShuruIme.dll`；
+- `artifacts/release/ShuruIme32.dll`；
 - `artifacts/release/ShuruSettings.exe` 及完整 `win-x64` .NET 8 Desktop Runtime；
 - `artifacts/release/data/lexicon/`；
 - `artifacts/release/release-manifest.json`。

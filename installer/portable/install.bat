@@ -27,11 +27,26 @@ if not exist "%~dp0ShuruIme.dll" (
     pause
     exit /b 1
 )
+if not exist "%~dp0ShuruIme32.dll" (
+    echo.
+    echo [ERROR] ShuruIme32.dll not found! Please extract the full zip archive before running.
+    echo.
+    pause
+    exit /b 1
+)
 
-echo [1/2] Registering input method COM/TSF component...
-regsvr32.exe /s "%~dp0ShuruIme.dll"
+echo [1/2] Registering x86 and x64 input method COM/TSF components...
+"%SystemRoot%\SysWOW64\regsvr32.exe" /s "%~dp0ShuruIme32.dll"
 if %errorlevel% neq 0 (
-    echo [ERROR] regsvr32 failed with error code %errorlevel%
+    echo [ERROR] x86 regsvr32 failed with error code %errorlevel%
+    echo.
+    pause
+    exit /b 1
+)
+"%SystemRoot%\System32\regsvr32.exe" /s "%~dp0ShuruIme.dll"
+if %errorlevel% neq 0 (
+    echo [ERROR] x64 regsvr32 failed with error code %errorlevel%
+    "%SystemRoot%\SysWOW64\regsvr32.exe" /u /s "%~dp0ShuruIme32.dll"
     echo.
     pause
     exit /b 1
@@ -41,7 +56,8 @@ echo [OK] COM/TSF component registered successfully.
 echo [2/2] Configuring system language profile and shortcuts...
 if not exist "%~dp0register_user.ps1" (
     echo [ERROR] register_user.ps1 not found. Please extract the full zip archive.
-    regsvr32.exe /u /s "%~dp0ShuruIme.dll"
+    "%SystemRoot%\SysWOW64\regsvr32.exe" /u /s "%~dp0ShuruIme32.dll"
+    "%SystemRoot%\System32\regsvr32.exe" /u /s "%~dp0ShuruIme.dll"
     pause
     exit /b 2
 )
@@ -49,7 +65,8 @@ powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 
 if errorlevel 1 (
     echo [ERROR] User language profile or shortcut configuration failed.
     echo [INFO] Rolling back COM/TSF registration...
-    regsvr32.exe /u /s "%~dp0ShuruIme.dll"
+    "%SystemRoot%\SysWOW64\regsvr32.exe" /u /s "%~dp0ShuruIme32.dll"
+    "%SystemRoot%\System32\regsvr32.exe" /u /s "%~dp0ShuruIme.dll"
     pause
     exit /b 2
 )

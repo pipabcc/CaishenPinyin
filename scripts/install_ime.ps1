@@ -3,6 +3,7 @@ param(
     [ValidateSet('Install', 'HealthCheck', 'Rollback', 'Cleanup', 'Uninstall')]
     [string]$Action = 'Install',
     [string]$DllPath = '',
+    [string]$X86DllPath = '',
     [string]$PackagePath = '',
     [string]$SettingsPath = '',
     [string]$Version = '',
@@ -41,6 +42,9 @@ $SettingsRequiredFiles = @(
     'ShuruSettings.deps.json',
     'ShuruSettings.runtimeconfig.json'
 )
+$X64DllName = 'ShuruIme.dll'
+$X86DllName = 'ShuruIme32.dll'
+$TextServiceClsid = '{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}'
 $ApplicationResourceDirectory = 'data\skins'
 $RuntimeOptionalLexiconFiles = @('rime-moqi-zh.gram')
 $DefaultInputMethodTip = '0804:{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}{3A8B5C2E-9D1F-4E6A-B7C8-5D2E9F1A3B6C}'
@@ -456,6 +460,7 @@ function Get-ApplicationPackageFiles(
             $relativePath = $_.RelativePath
             if ($relativePath -eq 'release-manifest.json' -or
                 $relativePath -eq 'ShuruIme.dll' -or
+                $relativePath -eq 'ShuruIme32.dll' -or
                 $relativePath.StartsWith('data/lexicon/') -or
                 $relativePath.StartsWith('data/skins/') -or
                 $relativePath -eq 'user_dict.txt') {
@@ -487,11 +492,13 @@ function Test-ApplicationPackageFiles([object[]]$Files, $ReleaseManifest = $null
 
 function Assert-ReusableApplication(
     [string]$SourceDll,
+    [string]$SourceX86Dll,
     [object[]]$ApplicationFiles,
     [string]$Installed) {
     Test-InstalledApplication $Installed
     $pairs = @(
-        [pscustomobject]@{ Source = $SourceDll; Installed = (Join-Path $Installed 'ShuruIme.dll') }
+        [pscustomobject]@{ Source = $SourceDll; Installed = (Join-Path $Installed $X64DllName) },
+        [pscustomobject]@{ Source = $SourceX86Dll; Installed = (Join-Path $Installed $X86DllName) }
     )
     foreach ($file in $ApplicationFiles) {
         $pairs += [pscustomobject]@{
@@ -551,8 +558,15 @@ function Test-ReleaseFile([string]$Path, [string]$RelativePath, $ReleaseManifest
     }
 }
 
-function Test-Dll([string]$Path, $ReleaseManifest = $null) {
-    Test-ReleaseFile $Path 'ShuruIme.dll' $ReleaseManifest
+function Test-Dll(
+    [string]$Path,
+    [string]$RelativePath = 'ShuruIme.dll',
+    [int]$ExpectedMachine = 0x8664,
+    $ReleaseManifest = $null) {
+    Test-ReleaseFile $Path $RelativePath $ReleaseManifest
+    # 构建和发布校验已从 PE 头确认两份 DLL 的架构；这里先验证解包文件哈希，
+    # 随后由对应架构的 regsvr32 进行真实加载验证。不要在 NSIS 临时 payload
+    # 目录重复解析 PE 头，Windows PowerShell 5.1 会在该环境中偶发返回空值。
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
     if ($SigningPolicy -eq 'Required' -and $signature.Status -ne 'Valid') {
         Stop-Deployment 29 "signature required: $($signature.Status)"
@@ -619,54 +633,163 @@ function Test-InstalledApplication([string]$Directory) {
     }
 }
 
-function Register-Dll([string]$Path) {
-    if ($NoRegister) { Write-DeployLog 'registration skipped'; return }
-    $process = Start-Process -FilePath "$env:SystemRoot\System32\regsvr32.exe" `
-        -ArgumentList @('/s', ('"{0}"' -f $Path)) -Wait -PassThru
-    if ($process.ExitCode -ne 0) { Stop-Deployment 40 "registration failed $($process.ExitCode)" }
+function Invoke-Regsvr32(
+    [string]$Path,
+    [ValidateSet('x64', 'x86')][string]$Architecture,
+    [switch]$Unregister) {
+    $regsvrDirectory = if ($Architecture -eq 'x86') { 'SysWOW64' } else { 'System32' }
+    $regsvr = Join-Path $env:SystemRoot "$regsvrDirectory\regsvr32.exe"
+    $arguments = @('/s')
+    if ($Unregister) { $arguments += '/u' }
+    $arguments += ('"{0}"' -f $Path)
+    return Start-Process -FilePath $regsvr `
+        -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
 }
 
-function Unregister-Dll([string]$Path, [switch]$Strict) {
-    if ($NoRegister -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
-    $process = Start-Process -FilePath "$env:SystemRoot\System32\regsvr32.exe" `
-        -ArgumentList @('/s', '/u', ('"{0}"' -f $Path)) -Wait -PassThru
+function Register-Dll(
+    [string]$Path,
+    [ValidateSet('x64', 'x86')][string]$Architecture = 'x64') {
+    if ($NoRegister) { Write-DeployLog "registration skipped architecture=$Architecture"; return }
+    $process = Invoke-Regsvr32 $Path $Architecture
     if ($process.ExitCode -ne 0) {
-        if ($Strict) { Stop-Deployment 41 "unregistration failed $($process.ExitCode)" }
-        Write-DeployLog "rollback warning: unregister failed $($process.ExitCode)"
+        Stop-Deployment 40 "registration failed architecture=$Architecture code=$($process.ExitCode)"
     }
 }
 
-function Resolve-InstalledDll {
+function Unregister-Dll(
+    [string]$Path,
+    [ValidateSet('x64', 'x86')][string]$Architecture = 'x64',
+    [switch]$Strict) {
+    if ($NoRegister -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+    $process = Invoke-Regsvr32 $Path $Architecture -Unregister
+    if ($process.ExitCode -ne 0) {
+        if ($Strict) {
+            Stop-Deployment 41 "unregistration failed architecture=$Architecture code=$($process.ExitCode)"
+        }
+        Write-DeployLog "rollback warning: unregister failed architecture=$Architecture code=$($process.ExitCode)"
+    }
+}
+
+function Get-RegisteredComPath(
+    [Microsoft.Win32.RegistryView]$View) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+        [Microsoft.Win32.RegistryHive]::LocalMachine, $View)
+    try {
+        $key = $base.OpenSubKey("SOFTWARE\Classes\CLSID\$TextServiceClsid\InprocServer32")
+        try {
+            if ($null -eq $key) { return '' }
+            return [string]$key.GetValue('')
+        } finally {
+            if ($null -ne $key) { $key.Dispose() }
+        }
+    } finally {
+        $base.Dispose()
+    }
+}
+
+function Test-RegisteredDllPath(
+    [Microsoft.Win32.RegistryView]$View,
+    [string]$ExpectedPath) {
+    $registered = Get-RegisteredComPath $View
+    if (-not $registered) { return $false }
+    try {
+        return [IO.Path]::GetFullPath($registered) -eq
+            [IO.Path]::GetFullPath($ExpectedPath)
+    } catch {
+        return $false
+    }
+}
+
+function Register-DllPair([string]$Directory) {
+    if ($NoRegister) { Write-DeployLog 'dual registration skipped'; return }
+    $x64Path = Join-Path $Directory $X64DllName
+    $x86Path = Join-Path $Directory $X86DllName
+    Register-Dll $x86Path x86
+    try {
+        Register-Dll $x64Path x64
+        if (-not (Test-RegisteredDllPath Registry32 $x86Path) -or
+            -not (Test-RegisteredDllPath Registry64 $x64Path)) {
+            Stop-Deployment 40 'dual COM registration verification failed'
+        }
+    } catch {
+        Unregister-Dll $x64Path x64
+        Unregister-Dll $x86Path x86
+        throw
+    }
+    Write-DeployLog "dual registration complete x64=$x64Path x86=$x86Path"
+}
+
+function Unregister-DllPair([string]$Directory, [switch]$Strict) {
+    if ($NoRegister) { return }
+    $x86Path = Join-Path $Directory $X86DllName
+    $x64Path = Join-Path $Directory $X64DllName
+    # 先移除 x86 COM 路径，最后由 x64 注销统一移除语言 Profile。严格卸载
+    # 中若第二步失败，立即把已移除的 x86 视图注册回来，保持旧安装可用。
+    $x86Removed = $false
+    if (Test-Path -LiteralPath $x86Path -PathType Leaf) {
+        $x86Result = Invoke-Regsvr32 $x86Path x86 -Unregister
+        if ($x86Result.ExitCode -ne 0) {
+            if ($Strict) {
+                Stop-Deployment 41 "unregistration failed architecture=x86 code=$($x86Result.ExitCode)"
+            }
+            Write-DeployLog "rollback warning: unregister failed architecture=x86 code=$($x86Result.ExitCode)"
+        } else {
+            $x86Removed = $true
+        }
+    }
+    if (-not (Test-Path -LiteralPath $x64Path -PathType Leaf)) { return }
+    $x64Result = Invoke-Regsvr32 $x64Path x64 -Unregister
+    if ($x64Result.ExitCode -eq 0) { return }
+    if ($x86Removed) {
+        try { Register-Dll $x86Path x86 }
+        catch { Write-DeployLog 'failed to restore x86 registration after x64 unregister failure' }
+    }
+    if ($Strict) {
+        Stop-Deployment 41 "unregistration failed architecture=x64 code=$($x64Result.ExitCode)"
+    }
+    Write-DeployLog "rollback warning: unregister failed architecture=x64 code=$($x64Result.ExitCode)"
+}
+
+function Register-CompatibleVersion([string]$Directory) {
+    $x86Path = Join-Path $Directory $X86DllName
+    if (Test-Path -LiteralPath $x86Path -PathType Leaf) {
+        Register-DllPair $Directory
+        return
+    }
+    # 升级前的旧版本可能只有 x64 DLL；回滚时仍恢复其原有能力，同时确保
+    # 不遗留失败版本的 32 位 COM 注册。
+    Register-Dll (Join-Path $Directory $X64DllName) x64
+}
+
+function Resolve-InstalledDirectory {
     $candidates = @()
     $current = Read-Pointer (Join-Path $InstallRoot 'current')
-    if ($current) { $candidates += Join-Path $InstallRoot "versions\$current\ShuruIme.dll" }
-    try {
-        $registered = (Get-ItemProperty -LiteralPath `
-            'Registry::HKEY_CLASSES_ROOT\CLSID\{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}\InprocServer32' `
-            -ErrorAction Stop).'(default)'
-        if ($registered) { $candidates += [string]$registered }
-    } catch { }
+    if ($current) { $candidates += Join-Path $InstallRoot "versions\$current" }
+    $registered = Get-RegisteredComPath Registry64
+    if ($registered) { $candidates += Split-Path -Parent $registered }
     $versions = Join-Path $InstallRoot 'versions'
     if (Test-Path -LiteralPath $versions -PathType Container) {
         $candidates += @(Get-ChildItem -LiteralPath $versions -Directory |
             Sort-Object LastWriteTime -Descending |
-            ForEach-Object { Join-Path $_.FullName 'ShuruIme.dll' })
+            ForEach-Object { $_.FullName })
     }
     foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $dll = Join-Path $candidate $X64DllName
+        if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) { continue }
         try {
             $full = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $candidate).Path)
             $root = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\') + '\'
-            if ($full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $full }
+            if (($full + '\').StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+                return $full
+            }
         } catch { }
     }
     return ''
 }
 
 function Test-InputMethodRegistration {
-    return Test-Path -LiteralPath `
-        'Registry::HKEY_CLASSES_ROOT\CLSID\{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}\InprocServer32' `
-        -PathType Container
+    return [bool](Get-RegisteredComPath Registry64) -or
+        [bool](Get-RegisteredComPath Registry32)
 }
 
 function Remove-PathBestEffort([string]$Path, [string]$Label) {
@@ -721,9 +844,9 @@ function Invoke-Uninstall {
 
         Write-DeployProgress 'unregister' 'running' 35 'Unregistering input method'
         $languageTipRemoved = Remove-InputMethodFromUserLanguageList $DefaultInputMethodTip
-        $installedDll = Resolve-InstalledDll
-        if ($installedDll) {
-            Unregister-Dll $installedDll -Strict
+        $installedDirectory = Resolve-InstalledDirectory
+        if ($installedDirectory) {
+            Unregister-DllPair $installedDirectory -Strict
         } elseif (-not $NoRegister -and (Test-InputMethodRegistration)) {
             Stop-Deployment 42 'registered DLL is missing or outside the install root; run repair before uninstall'
         } else {
@@ -768,6 +891,31 @@ function Invoke-Uninstall {
 function Get-ShortcutPath {
     if ($NoShortcut -or -not $StartMenuRoot) { return '' }
     return Join-Path $StartMenuRoot ($SettingsShortcutName + '.lnk')
+}
+
+function Remove-LegacySettingsStartup {
+    # 旧版便携注册脚本曾将设置中心写入 HKCU 启动项。该启动项属于本产品，
+    # 新版设置中心不再开机启动；升级/修复时清理遗留值，避免用户仍被旧行为打扰。
+    $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
+    try {
+        if (Test-Path -LiteralPath $runKey -PathType Container) {
+            Remove-ItemProperty -LiteralPath $runKey -Name 'CaishenSettings' `
+                -ErrorAction SilentlyContinue
+            Write-DeployLog 'legacy settings startup entry removed'
+        }
+    } catch {
+        Write-DeployLog "legacy settings startup cleanup skipped: $($_.Exception.Message)"
+    }
+}
+
+function Test-DllPair([string]$X64Path, [string]$X86Path, $ReleaseManifest = $null) {
+    Test-Dll $X64Path $X64DllName 0x8664 $ReleaseManifest
+    Test-Dll $X86Path $X86DllName 0x014c $ReleaseManifest
+    $x64Version = (Get-Item -LiteralPath $X64Path).VersionInfo.FileVersion
+    $x86Version = (Get-Item -LiteralPath $X86Path).VersionInfo.FileVersion
+    if ($x64Version -ne $x86Version) {
+        Stop-Deployment 29 "IME DLL version mismatch: x64=$x64Version x86=$x86Version"
+    }
 }
 
 function Release-ComObject($Value) {
@@ -966,8 +1114,17 @@ function Test-CurrentInstallation {
     $dataVersion = Read-Pointer (Join-Path $DataRoot 'current')
     if (-not $installedVersion -or -not $dataVersion) { Stop-Deployment 30 'current pointer missing' }
     $versionDirectory = Join-Path $InstallRoot "versions\$installedVersion"
-    $dll = Join-Path $versionDirectory 'ShuruIme.dll'
-    Test-Dll $dll
+    $dll = Join-Path $versionDirectory $X64DllName
+    $x86Dll = Join-Path $versionDirectory $X86DllName
+    $hasX86Dll = Test-Path -LiteralPath $x86Dll -PathType Leaf
+    if ($hasX86Dll) {
+        Test-DllPair $dll $x86Dll
+    } else {
+        # 历史版本只含 x64 DLL。升级失败或用户主动回滚时应恢复原版本的
+        # 原有能力；新安装入口在进入事务前仍强制 Test-DllPair。
+        Test-Dll $dll
+        Write-DeployLog 'legacy x64-only installation detected'
+    }
     Test-InstalledApplication $versionDirectory
     if (Test-Path -LiteralPath (Join-Path $versionDirectory 'install-components.json')) {
         Test-SettingsShortcut $versionDirectory
@@ -978,6 +1135,16 @@ function Test-CurrentInstallation {
         if (-not $NoRegister) { $arguments += '--registered' }
         & $HealthCheckExe @arguments
         if ($LASTEXITCODE -ne 0) { Stop-Deployment 32 'real health check failed' }
+    }
+    if (-not $NoRegister) {
+        $registrationHealthy = Test-RegisteredDllPath Registry64 $dll
+        if ($hasX86Dll) {
+            $registrationHealthy = $registrationHealthy -and
+                (Test-RegisteredDllPath Registry32 $x86Dll)
+        }
+        if (-not $registrationHealthy) {
+            Stop-Deployment 32 'COM registration health check failed'
+        }
     }
     Invoke-FailureInjection 'HealthCheck'
     Write-DeployLog "healthy dll=$installedVersion lexicon=$dataVersion"
@@ -1002,6 +1169,13 @@ try {
         if (-not $DllPath) { Stop-Deployment 10 'DllPath required' }
         if (-not $PackagePath) { $PackagePath = Join-Path $RepositoryRoot 'data\lexicon' }
         $DllPath = (Resolve-Path -LiteralPath $DllPath).Path
+        if (-not $X86DllPath) {
+            $X86DllPath = Join-Path (Split-Path -Parent $DllPath) $X86DllName
+        }
+        if (-not (Test-Path -LiteralPath $X86DllPath -PathType Leaf)) {
+            Stop-Deployment 10 'X86DllPath required'
+        }
+        $X86DllPath = (Resolve-Path -LiteralPath $X86DllPath).Path
         $PackagePath = (Resolve-Path -LiteralPath $PackagePath).Path
         $SettingsPath = Resolve-SettingsDirectory $SettingsPath $DllPath
         $lexiconManifest = Test-Lexicon $PackagePath
@@ -1013,7 +1187,7 @@ try {
             ([string]$lexiconManifest.version), $lexiconManifestHash.Substring(0, 12).ToLowerInvariant()
 
         $releaseManifest = Read-ReleaseManifest $DllPath
-        Test-Dll $DllPath $releaseManifest
+        Test-DllPair $DllPath $X86DllPath $releaseManifest
         $packageRoot = Split-Path -Parent $DllPath
         Test-SettingsDirectory $SettingsPath $releaseManifest
         $applicationFiles = @(Get-ApplicationPackageFiles `
@@ -1047,7 +1221,7 @@ try {
             Stop-Deployment 33 'lexicon version target is not a directory'
         }
         if ($reuseApplication) {
-            Assert-ReusableApplication $DllPath $applicationFiles $target
+            Assert-ReusableApplication $DllPath $X86DllPath $applicationFiles $target
         }
         if ($reuseLexicon) { Assert-ReusableLexicon $PackagePath $dataTarget }
 
@@ -1060,6 +1234,7 @@ try {
             }
             if (-not $reuseApplication) {
                 Copy-Item -LiteralPath $DllPath -Destination (Join-Path $stage 'ShuruIme.dll')
+                Copy-Item -LiteralPath $X86DllPath -Destination (Join-Path $stage $X86DllName)
                 $applicationManifest = @()
                 foreach ($file in $applicationFiles) {
                     $destination = Join-Path $stage $file.RelativePath.Replace('/', '\')
@@ -1108,7 +1283,7 @@ try {
             Invoke-FailureInjection 'AfterCopy'
 
             if (-not $reuseApplication) {
-                Test-Dll (Join-Path $stage 'ShuruIme.dll')
+                Test-DllPair (Join-Path $stage $X64DllName) (Join-Path $stage $X86DllName)
                 Test-InstalledApplication $stage
             }
             if (-not $reuseLexicon) { [void](Test-Lexicon $dataStage) }
@@ -1118,7 +1293,7 @@ try {
             if (-not $reuseLexicon) { Move-Item -LiteralPath $dataStage -Destination $dataTarget }
 
             Write-DeployProgress 'register' 'running' 58 'Registering input method'
-            Register-Dll (Join-Path $target 'ShuruIme.dll')
+            Register-DllPair $target
             $languageTipAdded = Add-InputMethodToUserLanguageList $DefaultInputMethodTip
             Invoke-FailureInjection 'AfterRegister'
             if ($defaultPlan.Apply) {
@@ -1133,6 +1308,7 @@ try {
             Write-DeployProgress 'health' 'running' 82 'Running installation health check'
             Test-CurrentInstallation
             Commit-DefaultInputMethodState $defaultPlan
+            Remove-LegacySettingsStartup
             $stateCommitted = $true
 
             if ($oldInstallVersion -and $oldInstallVersion -ne $Version) {
@@ -1181,14 +1357,15 @@ try {
             }
             if ($oldInstallVersion) {
                 $oldDirectory = Join-Path $InstallRoot "versions\$oldInstallVersion"
-                Register-Dll (Join-Path $oldDirectory 'ShuruIme.dll')
+                Unregister-DllPair $target
+                Register-CompatibleVersion $oldDirectory
                 Set-Pointer (Join-Path $InstallRoot 'current') $oldInstallVersion
                 Sync-SettingsShortcut $oldDirectory
             } else {
                 if ($languageTipAdded) {
                     [void](Remove-InputMethodFromUserLanguageList $DefaultInputMethodTip)
                 }
-                Unregister-Dll (Join-Path $target 'ShuruIme.dll')
+                Unregister-DllPair $target
                 Remove-Item -LiteralPath (Join-Path $InstallRoot 'current') -Force -ErrorAction SilentlyContinue
                 $shortcutPath = Get-ShortcutPath
                 if ($shortcutPath) {
@@ -1213,7 +1390,15 @@ try {
             Stop-Deployment 50 'previous unavailable'
         }
         $previousDirectory = Join-Path $InstallRoot "versions\$previousInstallVersion"
-        Register-Dll (Join-Path $previousDirectory 'ShuruIme.dll')
+        $currentInstallVersion = Read-Pointer (Join-Path $InstallRoot 'current')
+        if ($currentInstallVersion) {
+            $currentDirectory = Join-Path $InstallRoot "versions\$currentInstallVersion"
+            if ([IO.Path]::GetFullPath($currentDirectory) -ne
+                [IO.Path]::GetFullPath($previousDirectory)) {
+                Unregister-DllPair $currentDirectory
+            }
+        }
+        Register-CompatibleVersion $previousDirectory
         Set-Pointer (Join-Path $InstallRoot 'current') $previousInstallVersion
         Set-Pointer (Join-Path $DataRoot 'current') $previousDataVersion
         Sync-SettingsShortcut $previousDirectory

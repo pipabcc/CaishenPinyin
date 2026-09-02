@@ -9,4 +9,10 @@
 // 注意：此文件被 ShuruIme.rc 包含，不可使用非 ASCII 字符。
 // 中文产品名统一从 RuntimeConfig::display_name 获取（默认 L"财神输入法"）。
 #define SHURU_PRODUCT_NAME_A "Caishen IME"
+#ifdef SHURU_IME_X86
+#define SHURU_IME_FILENAME_A "ShuruIme32.dll"
+#define SHURU_IME_FILENAME_W L"ShuruIme32.dll"
+#else
+#define SHURU_IME_FILENAME_A "ShuruIme.dll"
 #define SHURU_IME_FILENAME_W L"ShuruIme.dll"
+#endif

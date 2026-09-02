@@ -81,6 +81,13 @@ add_library(ShuruIme SHARED
   src/ime/ShuruIme.rc
 )
 
+# TSF 是进程内 COM 服务。64 位 Windows 上的 32 位宿主只能加载 x86 DLL，
+# 因而两种架构使用同一 CLSID/Profile，但必须拥有各自可辨识的二进制文件名。
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  set_target_properties(ShuruIme PROPERTIES OUTPUT_NAME ShuruIme32)
+  target_compile_definitions(ShuruIme PRIVATE SHURU_IME_X86=1)
+endif()
+
 # Windows 资源编译器不会稳定地把 rc 内部 #include 写入 Ninja 依赖图。
 # 显式声明版本头与图标文件，确保修改版本号或图标时也会重编资源并重新链接 DLL。
 set_property(SOURCE src/ime/ShuruIme.rc APPEND PROPERTY OBJECT_DEPENDS
@@ -634,6 +641,7 @@ if(BUILD_TESTING)
               --configuration Release -- -self-test)
     set_tests_properties(settings_ui_smoke PROPERTIES
       TIMEOUT 30
+      LABELS "interactive-tsf"
       ENVIRONMENT "CAISHEN_CLIPBOARD_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-settings-ui/clipboard")
   endif()
 endif()

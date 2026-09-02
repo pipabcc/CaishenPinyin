@@ -11,8 +11,9 @@
 // 设计约束：
 // - 只读映射：Dictionary 进入映射模式后拒绝一切可变操作。引擎本来就只对
 //   用户词典实例做学习写入，系统词典纯查询，因此不需要覆盖层。
-// - 不保存进程指针，全部偏移量；x64 小端，结构体按自然对齐布局并在
-//   加载侧用 static_assert 锁定尺寸。
+// - 不保存进程指针，全部使用固定宽度整数和偏移量；Windows x86/x64 均为
+//   小端，落盘结构显式按 8 字节打包并用 static_assert 锁定尺寸，因此两种
+//   宿主架构可以安全共享同一份缓存。
 // - 完整性校验分两层：头部记录各源文件的 size+mtime+SHA-256（SHA 仅在
 //   生成时计算一次），加载时只 stat 源文件比对 size+mtime，再对映射内容
 //   做一遍 O(n) 结构校验遍，防止损坏文件让宿主进程崩溃。
@@ -105,6 +106,17 @@ struct SnapshotEnglishRecord {
     std::uint32_t reserved;
 };
 #pragma pack(pop)
+
+static_assert(sizeof(SnapshotSourceStamp) == 56,
+              "SnapshotSourceStamp disk layout changed");
+static_assert(sizeof(EngineSnapshotHeader) == 424,
+              "EngineSnapshotHeader disk layout changed");
+static_assert(sizeof(SnapshotKeyIndexEntry) == 24,
+              "SnapshotKeyIndexEntry disk layout changed");
+static_assert(sizeof(SnapshotEntryRecord) == 32,
+              "SnapshotEntryRecord disk layout changed");
+static_assert(sizeof(SnapshotEnglishRecord) == 24,
+              "SnapshotEnglishRecord disk layout changed");
 
 // 快照缓存文件的完整路径（LOCALAPPDATA 下，带源标识 tag）。
 std::wstring EngineSnapshotCachePath(const std::string& source_tag);

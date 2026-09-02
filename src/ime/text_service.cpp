@@ -2938,22 +2938,19 @@ void TextService::ScheduleCandidateWindowUpdate() {
     if (!candidate_position_pending_ || edit_context_ == nullptr || composing_pinyin_.empty()) {
         return;
     }
-    // 已知宿主会发布局通知时，文本改写自带的调度不得早于当前世代的
-    // 布局通知读坐标：Chromium 系宿主渲染器重排滞后于文本提交，过早
-    // 的 GetTextExt 会返回组合起点的旧矩形，候选窗就会左闪再回正。
-    // 从未见过布局通知的宿主保持原时序，避免锚点冻结。
-    if (candidate_layout_sink_seen_ && !candidate_layout_notified_) {
-        return;
-    }
-
-    // 每条布局通知或文本改写都重新开始防抖计时。
+    // 每条布局通知或文本改写都重新开始防抖计时。部分宿主（尤其是开始
+    // 菜单 SearchHost）只在第一轮组合发送布局通知；后续轮次没有通知时，
+    // 不能把候选窗永久冻结。此时使用更长的首轮延迟，等宿主完成排版后
+    // 再读取 GetTextExt；如果读到历史矩形，下面的有界重试会拒绝它。
+    const UINT debounce_ms = CandidateLayoutDebounceMilliseconds(
+        candidate_layout_sink_seen_, candidate_layout_notified_);
     const std::uint64_t generation = candidate_layout_generation_;
     const std::uint64_t layout_serial = candidate_layout_serial_;
     candidate_window_.StartDeferredAction(
         [this, generation, layout_serial]() {
             TryResolveCandidateAnchor(generation, layout_serial);
         },
-        kCandidateLayoutDebounceMs);
+        debounce_ms);
 }
 
 void TextService::TryResolveCandidateAnchor(

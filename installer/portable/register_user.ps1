@@ -5,15 +5,10 @@ $ErrorActionPreference = 'Stop'
 $tip = '0804:{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}{3A8B5C2E-9D1F-4E6A-B7C8-5D2E9F1A3B6C}'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $settings = Join-Path $root 'ShuruSettings.exe'
-$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$runName = 'CaishenSettings'
 $shortcutName = -join @(
     [char]0x8D22, [char]0x795E, [char]0x8F93, [char]0x5165, [char]0x6CD5,
     [char]0x8BBE, [char]0x7F6E)
 $shortcutDescription = $shortcutName + (-join @([char]0x4E2D, [char]0x5FC3))
-$runChanged = $false
-$runPreviouslyPresent = $false
-$runPreviousValue = ''
 $shortcutPath = ''
 $shortcutBackup = ''
 $shortcutTemporary = ''
@@ -57,19 +52,6 @@ function Restore-UserState {
         }
     }
 
-    if ($runChanged) {
-        try {
-            if ($runPreviouslyPresent) {
-                Set-ItemProperty -LiteralPath $runKey -Name $runName `
-                    -Value $runPreviousValue -ErrorAction Stop
-            } else {
-                Remove-ItemProperty -LiteralPath $runKey -Name $runName `
-                    -ErrorAction SilentlyContinue
-            }
-        } catch {
-            Write-Warning "Unable to restore the previous startup entry: $($_.Exception.Message)"
-        }
-    }
 }
 
 try {
@@ -77,18 +59,14 @@ try {
         throw "ShuruSettings.exe not found: $settings"
     }
 
-    if (-not (Test-Path -LiteralPath $runKey -PathType Container)) {
-        New-Item -Path $runKey -Force -ErrorAction Stop | Out-Null
+    # 旧版便携安装会把设置中心写入当前用户启动项。剪贴板监听器现在按需
+    # 启动，因此新版安装必须清理这个产品自有的遗留值，不能再让设置窗口
+    # 在登录后自行弹出。
+    $legacyRunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    if (Test-Path -LiteralPath $legacyRunKey -PathType Container) {
+        Remove-ItemProperty -LiteralPath $legacyRunKey -Name 'CaishenSettings' `
+            -ErrorAction SilentlyContinue
     }
-    $runProperties = Get-ItemProperty -LiteralPath $runKey -ErrorAction Stop
-    $runProperty = $runProperties.PSObject.Properties[$runName]
-    if ($null -ne $runProperty) {
-        $runPreviouslyPresent = $true
-        $runPreviousValue = [string]$runProperty.Value
-    }
-    Set-ItemProperty -LiteralPath $runKey -Name $runName `
-        -Value "`"$settings`" --minimized" -ErrorAction Stop
-    $runChanged = $true
 
     $desktop = [Environment]::GetFolderPath('Desktop')
     if (-not $desktop) { throw 'Desktop directory is unavailable.' }

@@ -740,11 +740,12 @@ static void TestSkinCatalog(string root)
     var imported = firstLoad.Single(item => item.Id == "imported");
     var importedCard = new SkinCardViewModel(imported, isCurrent: false);
     Require(imported.UsesNativeLayout && importedCard.CanDelete &&
-            importedCard.PreviewWidth == 1 && importedCard.PreviewHeight == 1,
-        "原生导入皮肤预览未保持素材原始尺寸");
+            importedCard.PreviewWidth == 1 && importedCard.PreviewHeight == 1 &&
+            !importedCard.IsOverlayVisible,
+        "原生导入皮肤预览未保持素材原始尺寸或出现了内置文字叠加");
     var builtInCard = new SkinCardViewModel(duplicate, isCurrent: true);
     Require(!builtInCard.CanDelete && builtInCard.PreviewWidth == 420 &&
-            builtInCard.PreviewHeight == 82,
+            builtInCard.PreviewHeight == 82 && builtInCard.IsOverlayVisible,
         "内置皮肤删除权限或预览逻辑错误");
     Require(firstLoad.Any(item =>
             item.Id == "broken" && !item.IsAvailable &&

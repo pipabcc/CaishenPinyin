@@ -65,6 +65,8 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $skinSource 'cand_bg.png'), [byte[]](5, 6, 7, 8))
     $dummyDll = Join-Path $packageRoot 'ShuruIme.dll'
     [IO.File]::WriteAllBytes($dummyDll, [byte[]](1, 2, 3, 4))
+    $dummyX86Dll = Join-Path $packageRoot 'ShuruIme32.dll'
+    [IO.File]::WriteAllBytes($dummyX86Dll, [byte[]](4, 3, 2, 1))
 
     $settingsRoot = Join-Path $temporaryRoot 'settings'
     New-Item -ItemType Directory -Force -Path $settingsRoot | Out-Null
@@ -129,6 +131,16 @@ try {
     $installedSettings = Join-Path $installRoot 'versions\test-1\ShuruSettings.exe'
     if (-not (Test-Path -LiteralPath $installedSettings -PathType Leaf)) {
         throw 'settings application was not deployed'
+    }
+    $installedSkinPreview = Join-Path $installRoot 'versions\test-1\data\skins\classic_blue\skin.ini'
+    if (-not (Test-Path -LiteralPath $installedSkinPreview -PathType Leaf)) {
+        throw 'built-in skin resources were not deployed with the application'
+    }
+    $installedX86Dll = Join-Path $installRoot 'versions\test-1\ShuruIme32.dll'
+    if (-not (Test-Path -LiteralPath $installedX86Dll -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $installedX86Dll -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $dummyX86Dll -Algorithm SHA256).Hash) {
+        throw 'x86 IME DLL was not deployed intact'
     }
     if (-not (Test-Path -LiteralPath `
         (Join-Path $installRoot 'versions\test-1\coreclr.dll') -PathType Leaf)) {

@@ -69,7 +69,9 @@ public sealed class SkinCardViewModel
     public bool CanDelete => !Descriptor.IsBuiltIn;
     public string ActionText => !Descriptor.IsAvailable
         ? "不可用" : IsCurrent ? "使用中" : "应用此皮肤";
-    public bool IsOverlayVisible => Descriptor.IsBuiltIn;
+    // 内置皮肤使用统一的候选文字叠加预览；导入皮肤保持其原有素材预览，
+    // 不能附加新的拼音或候选文字。
+    public bool IsOverlayVisible => Descriptor.IsBuiltIn && Descriptor.IsAvailable;
     public Brush PreviewBackground { get; }
     public double PreviewWidth { get; }
     public double PreviewHeight { get; }

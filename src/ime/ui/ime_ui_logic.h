@@ -455,6 +455,15 @@ inline bool IsReliableCandidateRect(const RECT& rect, bool clipped = false) noex
     return !clipped && rect.bottom > rect.top && rect.right >= rect.left;
 }
 
+// 有些宿主只在第一轮组合通知布局，后续轮次复用上下文却不再通知。此时
+// 不能完全放弃候选窗定位，但要比已收到通知的路径多等一小段时间，避免
+// 读取到尚未刷新的历史矩形。
+inline UINT CandidateLayoutDebounceMilliseconds(
+    bool layout_sink_seen,
+    bool layout_notified) noexcept {
+    return layout_sink_seen && !layout_notified ? 72U : 24U;
+}
+
 inline bool IsUsableCandidateHostRect(const RECT& rect) noexcept {
     return rect.right > rect.left && rect.bottom > rect.top;
 }

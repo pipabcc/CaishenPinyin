@@ -338,7 +338,7 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   Call ValidateInstallDirectory
   CreateDirectory "$INSTDIR"
 
-  StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Install -DllPath "$PLUGINSDIR\payload\ShuruIme.dll" -SettingsPath "$PLUGINSDIR\payload" -PackagePath "$PLUGINSDIR\payload\data\lexicon" -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -UserDataRoot "$LOCALAPPDATA\CaishenPinyin" -Version "$DeploymentVersion" -SigningPolicy Off'
+  StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Install -DllPath "$PLUGINSDIR\payload\ShuruIme.dll" -X86DllPath "$PLUGINSDIR\payload\ShuruIme32.dll" -SettingsPath "$PLUGINSDIR\payload" -PackagePath "$PLUGINSDIR\payload\data\lexicon" -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -UserDataRoot "$LOCALAPPDATA\CaishenPinyin" -Version "$DeploymentVersion" -SigningPolicy Off'
   ${If} $DefaultInputState == ${BST_CHECKED}
     StrCpy $2 '$2 -SetDefaultInputMethod'
   ${EndIf}

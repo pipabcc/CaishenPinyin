@@ -30,8 +30,16 @@ if exist "%~dp0unregister_user.ps1" (
 echo [OK] User profiles cleaned.
 
 echo [2/2] Unregistering input method COM/TSF component...
+if exist "%~dp0ShuruIme32.dll" (
+    "%SystemRoot%\SysWOW64\regsvr32.exe" /u /s "%~dp0ShuruIme32.dll"
+    if errorlevel 1 (
+        echo [ERROR] x86 regsvr32 failed to unregister ShuruIme32.dll.
+        pause
+        exit /b 2
+    )
+)
 if exist "%~dp0ShuruIme.dll" (
-    regsvr32.exe /u /s "%~dp0ShuruIme.dll"
+    "%SystemRoot%\System32\regsvr32.exe" /u /s "%~dp0ShuruIme.dll"
     if errorlevel 1 (
         echo [ERROR] regsvr32 failed to unregister ShuruIme.dll.
         pause

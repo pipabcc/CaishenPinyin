@@ -7,12 +7,15 @@
 - `Setup.exe` 只负责界面、提权、释放发布包、调用部署事务和注册 Windows 卸载入口；
 - `scripts\install_ime.ps1` 负责清单校验、side-by-side 复制、注册、健康检查和回滚；
 - `ShuruSettings.exe` 连同 .NET 8 Desktop Runtime 一起部署，目标电脑不需要另装 .NET；
-- 原生 `ShuruIme.dll` 使用静态 MSVC 运行库，目标电脑不需要 VC++ Redistributable；
+- 原生 `ShuruIme.dll`（x64）与 `ShuruIme32.dll`（x86）使用静态 MSVC 运行库，
+  目标电脑不需要 VC++ Redistributable；
 - 默认安装到 `%ProgramFiles%\CaishenPinyin`，安装后由 NSIS 在安装根目录生成
   `Uninstall.exe`。
 
 安装包仅支持 AMD64 Windows 10/11。NSIS 是 32 位进程，因此通过 `Sysnative` 启动
-64 位 Windows PowerShell，保证注册 x64 TSF DLL 时使用的是 64 位 `regsvr32.exe`。
+64 位 Windows PowerShell；部署事务分别使用 `System32\regsvr32.exe` 注册 x64 DLL，
+使用 `SysWOW64\regsvr32.exe` 注册 x86 DLL。两份 DLL 使用相同 CLSID/Profile，Windows
+按宿主进程位数自动选择对应 COM 注册视图，无需维护应用白名单。
 
 ## 构建
 
@@ -38,6 +41,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1 `
 
 便携版输出同名 `Portable.zip` 和 `.sha256`。它不会写入 Windows“已安装的应用”，但仍需
 管理员权限注册或注销 TSF COM DLL；用户必须先完整解压，并保留原目录供卸载脚本使用。
+便携版和 Setup 均不会把设置中心加入 Windows 开机启动；升级或修复时会清理旧版本遗留的
+`CaishenSettings` 启动项。设置中心只在输入法或用户主动打开相关功能时按需运行。
 
 只修改 NSIS 页面时可使用 `-SkipBuild`；该参数只跳过编译和 CTest，不跳过发布包校验。
 

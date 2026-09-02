@@ -376,6 +376,10 @@ int main() {
     CHECK(IsReliableCandidateRect(valid_rect));
     CHECK(!IsReliableCandidateRect(valid_rect, true));
     CHECK(!IsReliableCandidateRect(flat_rect));
+    CHECK(CandidateLayoutDebounceMilliseconds(false, false) == 24);
+    CHECK(CandidateLayoutDebounceMilliseconds(true, true) == 24);
+    // SearchHost 首轮发送布局通知、下一轮未通知时，必须仍安排有界定位。
+    CHECK(CandidateLayoutDebounceMilliseconds(true, false) == 72);
     CHECK(IsUsableCandidateHostRect(host_rect));
     CHECK(!IsUsableCandidateHostRect(point_host_rect));
     CHECK(IsCandidateRectPlausibleForHost(

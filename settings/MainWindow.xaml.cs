@@ -13,7 +13,6 @@ namespace ShuruSettings;
 
 public partial class MainWindow : Window
 {
-    private const string Clsid = "{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}";
     private const int OperationCancelled = 1223;
     private static string UserDictionaryPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -392,9 +391,14 @@ public partial class MainWindow : Window
             var previous = SettingsStore.Load();
             var updated = ReadSettings().Validated();
             var registeredDll = FindRegisteredDll();
+            var displayNameChanged = !string.Equals(
+                previous.DisplayName, updated.DisplayName,
+                StringComparison.Ordinal);
+            var registrationNeedsRepair =
+                ImeRegistrationRepair.NeedsRepair(registeredDll);
             SettingsStore.Save(updated);
             var runtimeNotified = RuntimeSettingsNotifier.NotifyCandidateWindows();
-            if (!string.Equals(previous.DisplayName, updated.DisplayName, StringComparison.Ordinal))
+            if (displayNameChanged || registrationNeedsRepair)
             {
                 try
                 {
@@ -416,7 +420,9 @@ public partial class MainWindow : Window
                         "输入法重新注册失败，设置已恢复。请确认安装文件完整并允许管理员授权。",
                         registrationError);
                 }
-                StatusText.Text = "设置与输入法名称已保存。名称需重新激活输入法后刷新，皮肤等运行时设置已通知当前候选框。";
+                StatusText.Text = displayNameChanged
+                    ? "设置、输入法名称与双架构注册已保存。名称需重新激活输入法后刷新。"
+                    : "设置已保存，并已修复 32 位与 64 位输入法注册。";
             }
             else
             {
@@ -434,24 +440,7 @@ public partial class MainWindow : Window
 
     private static void ReregisterInputMethod(string? dll)
     {
-        if (string.IsNullOrWhiteSpace(dll) || !File.Exists(dll))
-            throw new FileNotFoundException("未找到已注册的 ShuruIme.dll。", dll);
-
-        var executable = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
-        var startInfo = new ProcessStartInfo(executable)
-        {
-            UseShellExecute = true,
-            Verb = "runas",
-            WindowStyle = ProcessWindowStyle.Hidden
-        };
-        startInfo.ArgumentList.Add("/s");
-        startInfo.ArgumentList.Add(dll);
-        using var process = Process.Start(startInfo) ??
-            throw new InvalidOperationException("无法启动输入法注册程序。");
-        process.WaitForExit();
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"输入法注册程序返回错误码 {process.ExitCode}。");
+        ImeRegistrationRepair.RunElevated(dll);
     }
 
     private void FuzzyEnabled_Changed(object sender, RoutedEventArgs e) => UpdateFuzzyChildren();
@@ -639,11 +628,7 @@ public partial class MainWindow : Window
         UserDictionaryText.Text = user.Exists
             ? $"{CountDataLines(UserDictionaryPath):N0} 条自动学习词 · {user.Length:N0} 字节\n{UserDictionaryPath}"
             : $"尚未产生自动学习词\n{UserDictionaryPath}";
-        StatusText.Text = string.IsNullOrWhiteSpace(dll)
-            ? "未检测到已注册的输入法，设置仍会保存到当前用户。"
-            : File.Exists(dll)
-                ? $"输入法已安装：{dll}"
-                : $"注册指向不存在的文件：{dll}";
+        StatusText.Text = ImeRegistrationRepair.RegistrationStatus();
     }
 
     private void StatusText_MouseLeftButtonUp(
@@ -690,8 +675,7 @@ public partial class MainWindow : Window
 
     private static string? FindRegisteredDll()
     {
-        using var key = Registry.ClassesRoot.OpenSubKey($"CLSID\\{Clsid}\\InprocServer32");
-        return key?.GetValue(null) as string;
+        return ImeRegistrationRepair.FindRegisteredX64Dll();
     }
 
     private static string ResolveLexiconDirectory(string? dll)

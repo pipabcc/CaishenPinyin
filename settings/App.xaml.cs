@@ -45,6 +45,15 @@ public partial class App : Application
         TextPasteRequestStore.CleanupExpired();
         DirectTextCommitRequestStore.CleanupExpired();
 
+        var registrationDirectory = ArgumentValue(
+            e.Args, ImeRegistrationRepair.CommandLineSwitch);
+        if (!string.IsNullOrWhiteSpace(registrationDirectory))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(ImeRegistrationRepair.Repair(registrationDirectory));
+            return;
+        }
+
         var normalizeSkin = ArgumentValue(e.Args, "-normalize-skin");
         if (!string.IsNullOrWhiteSpace(normalizeSkin))
         {

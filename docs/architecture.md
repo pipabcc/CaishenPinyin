@@ -127,7 +127,8 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 
 ## 4. 构建产物
 
-- `ShuruIme.dll`：TSF 文本服务
+- `ShuruIme.dll`：x64 TSF 文本服务
+- `ShuruIme32.dll`：WOW64 x86 TSF 文本服务，供 32 位 WPS、Office 等宿主加载
 - `engine_playground.exe`：C++ 引擎演练
 - `ShuruSettings.exe`、`ShuruSettings.dll`、`.deps.json`、`.runtimeconfig.json`：设置程序
 - `EnginePlayground`（C#）：无 MSVC 时的词库验证
@@ -187,6 +188,10 @@ Shift 在按下时进入待定状态，只有未与其他按键组合的抬起�
 4. `GetCaretPos` + DPI 行高
 5. 焦点窗客户区兜底
 6. 多监视器工作区夹取，下方不够则翻到上方
+
+开始菜单 `SearchHost` 可能只在第一轮组合发送 `OnLayoutChange`，后续组合复用
+上下文但不再发送布局通知。此时候选窗在较长防抖后仍会读取当前组合末端，并沿用
+有界重试、旧矩形向左回退检测和宿主区域兜底，不能因缺少第二轮通知而永久隐藏。
 
 ### P1 带权模糊与学习
 - 模糊候选使用确定性代价：精确 0、声母 100、韵母 180、漏元音 320；排序先比较代价，不依赖生成顺序。

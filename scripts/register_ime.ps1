@@ -1,6 +1,7 @@
 ﻿# 注册财神输入法（建议以管理员身份运行）
 param(
-    [string]$DllPath = ""
+    [string]$DllPath = "",
+    [string]$X86DllPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,16 +44,30 @@ function Resolve-TargetDll {
 
 try {
     $DllPath = Resolve-TargetDll -RequestedPath $DllPath
-    Write-Host "注册 DLL: $DllPath"
+    if ([string]::IsNullOrWhiteSpace($X86DllPath)) {
+        $X86DllPath = Join-Path (Split-Path -Parent $DllPath) 'ShuruIme32.dll'
+    }
+    if (-not (Test-Path -LiteralPath $X86DllPath -PathType Leaf)) {
+        throw "找不到 32 位输入法 DLL: $X86DllPath"
+    }
+    $X86DllPath = (Resolve-Path -LiteralPath $X86DllPath).Path
+    Write-Host "注册 DLL: x64=$DllPath；x86=$X86DllPath"
 
     # 这里只负责显式 DLL 注册。版本化词库和 side-by-side 部署请使用 install_ime.ps1；
     # 不再向 DLL 目录复制系统词库或 user_dict.txt，避免升级覆盖用户数据。
     $regsvr = Join-Path $env:SystemRoot "System32\regsvr32.exe"
+    $x86Regsvr = Join-Path $env:SystemRoot "SysWOW64\regsvr32.exe"
     # regsvr32 是 GUI 子系统程序，部分宿主下 $LASTEXITCODE 不会更新（恒为
     # null），会把成功的注册误判为失败。用 Start-Process 显式等待并读取退出码。
+    $x86Registration = Start-Process -FilePath $x86Regsvr `
+        -ArgumentList @('/s', "`"$X86DllPath`"") -Wait -PassThru -WindowStyle Hidden
+    if ($x86Registration.ExitCode -ne 0) {
+        throw "32 位 regsvr32 注册失败，退出码: $($x86Registration.ExitCode)。请确认已使用管理员权限。"
+    }
     $registration = Start-Process -FilePath $regsvr `
-        -ArgumentList @('/s', "`"$DllPath`"") -Wait -PassThru
+        -ArgumentList @('/s', "`"$DllPath`"") -Wait -PassThru -WindowStyle Hidden
     if ($registration.ExitCode -ne 0) {
+        & $x86Regsvr /u /s $X86DllPath
         throw "regsvr32 注册失败，退出码: $($registration.ExitCode)。请确认已使用管理员权限。"
     }
 
@@ -72,16 +87,18 @@ try {
         Set-WinDefaultInputMethodOverride -InputTip $tip
         Write-Host "已设置默认输入法: Caishen IME / 财神输入法"
     } catch {
+        & $x86Regsvr /u /s $X86DllPath
         & $regsvr /u /s $DllPath
-        throw "语言列表/profile 激活失败，已撤销 DLL 注册: $($_.Exception.Message)"
+        throw "语言列表/profile 激活失败，已撤销双架构 DLL 注册: $($_.Exception.Message)"
     }
 
     $health = Join-Path (Split-Path $DllPath) 'release_health_check.exe'
     if (Test-Path -LiteralPath $health) {
         & $health $DllPath (Join-Path $Root 'data\lexicon') --registered
         if ($LASTEXITCODE -ne 0) {
+            & $x86Regsvr /u /s $X86DllPath
             & $regsvr /u /s $DllPath
-            throw "注册后健康检查失败，已撤销 DLL 注册"
+            throw "注册后健康检查失败，已撤销双架构 DLL 注册"
         }
     }
 
