@@ -1047,13 +1047,33 @@ int wmain(int argc, wchar_t** argv) {
     GetModuleFileNameW(nullptr, module_path, ARRAYSIZE(module_path));
     std::wstring module_directory(module_path);
     module_directory.resize(module_directory.find_last_of(L"\\/"));
-    const std::wstring source_frame =
+    // Ninja 将运行时资源放在可执行文件同级目录；Visual Studio Generator
+    // 则把可执行文件放进 Release 子目录，资源仍在构建目录根部。
+    std::wstring source_frame =
         module_directory + L"\\data\\skins\\classic_blue\\cand_bg.png";
-    CopyFileW(source_frame.c_str(), (skin_root + L"\\background.png").c_str(), FALSE);
-    CopyFileW(source_frame.c_str(),
+    if (GetFileAttributesW(source_frame.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const size_t separator = module_directory.find_last_of(L"\\/");
+        if (separator != std::wstring::npos) {
+            source_frame = module_directory.substr(0, separator) +
+                L"\\data\\skins\\classic_blue\\cand_bg.png";
+        }
+    }
+    const bool source_available =
+        GetFileAttributesW(source_frame.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool copied_background = source_available && CopyFileW(
+        source_frame.c_str(), (skin_root + L"\\background.png").c_str(), FALSE);
+    const bool copied_overlay_0 = source_available && CopyFileW(
+        source_frame.c_str(),
         (overlay_frames_root + L"\\frame_000.png").c_str(), FALSE);
-    CopyFileW(source_frame.c_str(),
+    const bool copied_overlay_1 = source_available && CopyFileW(
+        source_frame.c_str(),
         (overlay_frames_root + L"\\frame_001.png").c_str(), FALSE);
+    if (!source_available || !copied_background ||
+        !copied_overlay_0 || !copied_overlay_1) {
+        std::fwprintf(stderr, L"candidate skin fixture resource is missing: %ls\n",
+            source_frame.c_str());
+        return 26;
+    }
     {
         std::ofstream ini(skin_root + L"\\skin.ini", std::ios::binary);
         ini << "[Display]\nfont_family=Microsoft YaHei UI\nfont_size=18\n"

@@ -539,6 +539,7 @@ if(BUILD_TESTING)
   target_include_directories(candidate_window_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(candidate_window_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(candidate_window_test PRIVATE user32 gdi32 gdiplus dwrite ole32 shell32 dwmapi)
+  add_dependencies(candidate_window_test copy_runtime_skins)
   add_test(NAME candidate_window COMMAND candidate_window_test)
   set_tests_properties(candidate_window PROPERTIES TIMEOUT 30)
 
