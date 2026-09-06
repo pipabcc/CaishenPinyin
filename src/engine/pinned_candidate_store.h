@@ -65,6 +65,8 @@ private:
     mutable EntryMap entries_;
     mutable FileStamp stamp_;
     mutable bool loaded_ = false;
+    mutable ULONGLONG last_check_tick_ = 0;
+    mutable std::uint64_t change_generation_ = 0;
 
     static std::optional<std::string> NormalizeCode(
         PinnedCandidateSchema schema,

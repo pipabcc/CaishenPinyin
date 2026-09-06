@@ -7,6 +7,7 @@
 #include "ui/shared_status_ui.h"
 #include "../common/guid_def.h"
 #include "../common/logger.h"
+#include "../common/typing_stats.h"
 
 #include <new>
 
@@ -39,6 +40,7 @@ STDAPI DllCanUnloadNow() {
         SharedEngine::RefCount() != 0 || SharedStatusUi::RefCount() != 0) {
         return S_FALSE;
     }
+    if (!TryShutdownAsyncTypingStats()) return S_FALSE;
     ShutdownLogger();
     return g_dll_ref.load() == 0 && !SharedEngine::IsLoading() &&
                    SharedEngine::RefCount() == 0 && SharedStatusUi::RefCount() == 0

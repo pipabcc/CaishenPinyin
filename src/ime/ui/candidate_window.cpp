@@ -942,6 +942,10 @@ void CandidateWindow::SetSelectedIndex(size_t selected_index) {
 }
 
 bool CandidateWindow::SetExpanded(bool expanded) {
+    if (expanded && !expanded_ && on_expand_) {
+        const auto expand = on_expand_;
+        expand();
+    }
     const bool next = expanded && !vertical_utility_mode_ &&
         candidates_.size() > page_size_;
     if (expanded_ == next) return false;
@@ -1003,7 +1007,7 @@ void CandidateWindow::RefreshTypingStats() {
         now - typing_stats_last_refresh_tick_ < kTypingStatsRefreshIntervalMs) {
         return;
     }
-    const TypingStatsSnapshot snapshot = TypingStatsStore().Load();
+    const TypingStatsSnapshot snapshot = LoadTypingStatsAsync();
     typing_stats_last_refresh_tick_ = now;
     SetTypingStats(snapshot);
 }
@@ -2035,6 +2039,14 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
 
     if (self == nullptr) {
         return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+
+    RuntimeConfigScope config_scope;
+
+    static const UINT user_data_changed = RegisterWindowMessageW(L"CaishenPinyin.UserDictionaryChanged.v1");
+    if (user_data_changed != 0 && msg == user_data_changed) {
+        if (self->on_user_data_changed_) self->on_user_data_changed_();
+        return 0;
     }
 
     const UINT runtime_settings_changed = RuntimeSettingsChangedMessage();

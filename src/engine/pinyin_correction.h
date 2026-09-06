@@ -5,6 +5,7 @@
 #include <vector>
 
 namespace shuru {
+class QueryWorkBudget;
 
 struct PinyinCorrectionLimits {
     std::size_t max_input_length = 32;
@@ -25,6 +26,6 @@ struct PinyinCorrection {
 
 std::vector<PinyinCorrection> GeneratePinyinCorrections(
     const std::string& input,
-    const PinyinCorrectionLimits& limits = {});
+    const PinyinCorrectionLimits& limits = {}, QueryWorkBudget* budget = nullptr);
 
 }  // namespace shuru

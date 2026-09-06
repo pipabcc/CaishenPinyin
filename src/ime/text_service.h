@@ -7,6 +7,7 @@
 #include "ui/ime_ui_logic.h"
 #include "ui/shared_status_ui.h"
 #include "activation_state.h"
+#include "candidate_readiness.h"
 #include "input_policy.h"
 #include "langbar_item.h"
 #include "punctuation_state.h"
@@ -97,6 +98,11 @@ private:
     std::string composing_pinyin_;
     CandidatePageState candidate_state_;
     EngineQueryResult current_result_;
+    std::string candidate_query_input_;
+    QueryOptions candidate_query_options_;
+    size_t candidate_query_limit_ = 0;
+    bool candidate_query_has_more_ = false;
+    CandidateReadiness candidate_readiness_;
     std::wstring candidate_display_;
     std::wstring candidate_display_fallback_;
     bool composition_edit_in_progress_ = false;
@@ -127,7 +133,6 @@ private:
 
     PinyinEngine* engine_ = nullptr;  // 进程内共享
     CandidateWindow candidate_window_;
-    TypingStatsStore typing_stats_;
     LangBarItemButton* langbar_item_ = nullptr;
     ITfLangBarItemMgr* langbar_item_mgr_ = nullptr;
     bool status_ui_acquired_ = false;
@@ -182,6 +187,8 @@ private:
 
     bool HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam, bool* eaten);
     void RefreshCandidates();
+    void StartEngineReadyPolling();
+    void EnsureCandidateCapacity(size_t minimum);
     void LearnCandidate(ITfContext* context, const Candidate& candidate,
                         const std::string& learned_pinyin, const std::string& learned_input);
     void ShowAssociation(ITfContext* context);

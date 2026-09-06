@@ -64,6 +64,16 @@ int wmain() {
               shuru::EnglishCandidatePosition::Middle);
     CHECK(shuru::ResolveCandidateFontSize(shuru::CandidateFontSizeMode::Small, 32) == 16);
     CHECK(shuru::ResolveCandidateFontSize(shuru::CandidateFontSizeMode::Standard, 14) == 19);
+    {
+        shuru::RuntimeConfigScope outer;
+        CHECK(shuru::GetRuntimeConfig().candidate_count == 9);
+        { std::ofstream file(dir / L"settings.ini"); file << "CandidateCount=6\n"; }
+        shuru::RuntimeConfigScope inner;
+        CHECK(shuru::GetRuntimeConfig().candidate_count == 9);
+        shuru::ReloadRuntimeConfig();
+        CHECK(shuru::GetRuntimeConfig().candidate_count == 6);
+    }
+    CHECK(shuru::GetRuntimeConfig().candidate_count == 6);
     fs::remove_all(dir);
     std::cout << "runtime_config: OK\n";
     return 0;

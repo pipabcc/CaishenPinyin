@@ -38,8 +38,8 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // 沙箱宿主（开始菜单搜索框）自己改不了用户数据目录的 DACL，由这里
-        // 与 IME 宿主共同兜底，确保皮肤、设置与统计在沙箱中同样可读。
+        // 沙箱宿主自己无法修复 DACL；由设置程序保障公共皮肤、设置可读，
+        // 同时收紧个人学习、统计与剪贴板数据的权限。
         AppContainerAccess.EnsureUserData();
 
         TextPasteRequestStore.CleanupExpired();

@@ -3,6 +3,7 @@
 #include "ime/ui/ime_ui_logic.h"
 #include "ime/ui/skin_manager.h"
 #include "common/runtime_config.h"
+#include "ime/candidate_readiness.h"
 
 #include <Windows.h>
 
@@ -568,6 +569,38 @@ int wmain(int argc, wchar_t** argv) {
         return 48;
     }
 
+    shuru::CandidateReadiness readiness;
+    int context_a = 1, context_b = 2;
+    bool engine_ready = false;
+    int ready_refreshes = 0;
+    auto token = readiness.BeginWait(&context_a, "ni");
+    window.StartReadyPolling([&] {
+        return readiness.Poll(token, &context_a, "ni", engine_ready, !engine_ready,
+            [&] { ++ready_refreshes; });
+    });
+    const auto pump_until = [&](ULONGLONG deadline) {
+        while (GetTickCount64() < deadline) {
+            MSG message{};
+            while (PeekMessageW(&message, window.GetHwnd(), 0, 0, PM_REMOVE))
+                DispatchMessageW(&message);
+            Sleep(2);
+        }
+    };
+    pump_until(GetTickCount64() + 350);
+    if (ready_refreshes != 0) return 71;
+    engine_ready = true;
+    pump_until(GetTickCount64() + 500);
+    if (ready_refreshes != 1) return 72;
+    token = readiness.BeginWait(&context_a, "ni");
+    window.StartReadyPolling([&] {
+        return readiness.Poll(token, &context_b, "hao", true, false,
+            [&] { ++ready_refreshes; });
+    });
+    readiness.Invalidate();
+    pump_until(GetTickCount64() + 500);
+    if (ready_refreshes != 1) return 73;
+    window.StopReadyPolling();
+
     int shift_poll_calls = 0;
     window.StartShiftReleasePolling([&shift_poll_calls]() {
         ++shift_poll_calls;
@@ -615,6 +648,19 @@ int wmain(int argc, wchar_t** argv) {
     for (size_t i = 0; i < candidates.size(); ++i) {
         candidates[i].text = L"候选" + std::to_wstring(i + 1);
     }
+    const std::vector<shuru::Candidate> first_page(candidates.begin(), candidates.begin() + 10);
+    window.SetContent(L"bao", first_page, 0, 0, 9);
+    int expansion_requests = 0;
+    window.SetExpandHandler([&]() {
+        ++expansion_requests;
+        window.SetContent(L"bao", candidates, 0, 0, 9);
+    });
+    if (!window.SetExpanded(true) || !window.IsExpanded() || expansion_requests != 1) {
+        std::fwprintf(stderr, L"候选展开没有先完成数据扩展\n");
+        return 70;
+    }
+    window.SetExpandHandler({});
+    window.SetExpanded(false);
     window.SetContent(L"bao", candidates, 0, 0, 9);
     window.SetPinningEnabled(true);
     window.SetTypingStats(shuru::TypingStatsSnapshot {1286, true});

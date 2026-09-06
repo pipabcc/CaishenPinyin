@@ -14,17 +14,18 @@ namespace shuru {
 // SearchHost.exe）。沙箱进程既无权修改文件 DACL，也无法启动包外进程，
 // 两类操作都必须由普通宿主代劳。
 inline bool IsCurrentProcessAppContainer() {
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-        return false;
-    }
-    DWORD is_app_container = 0;
-    DWORD size = 0;
-    const BOOL ok = GetTokenInformation(
-        token, TokenIsAppContainer, &is_app_container,
-        sizeof(is_app_container), &size);
-    CloseHandle(token);
-    return ok != FALSE && is_app_container != 0;
+    static const bool restricted = [] {
+        HANDLE token = nullptr;
+        // 无法确认进程身份时也关闭私有数据访问。
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return true;
+        DWORD is_app_container = 0;
+        DWORD size = 0;
+        const BOOL ok = GetTokenInformation(token, TokenIsAppContainer, &is_app_container,
+            sizeof(is_app_container), &size);
+        CloseHandle(token);
+        return ok == FALSE || is_app_container != 0;
+    }();
+    return restricted;
 }
 
 inline std::wstring ReadUserDataEnvironmentValue(const wchar_t* name) {

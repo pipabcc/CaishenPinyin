@@ -10,8 +10,14 @@ internal static class RuntimeSettingsNotifier
     private const uint SendMessageAbortIfHung = 0x0002;
 
     internal static int NotifyCandidateWindows()
+        => NotifyCandidateWindows(MessageName);
+
+    internal static int NotifyUserDictionaryChanged()
+        => NotifyCandidateWindows("CaishenPinyin.UserDictionaryChanged.v1");
+
+    private static int NotifyCandidateWindows(string messageName)
     {
-        var message = RegisterWindowMessage(MessageName);
+        var message = RegisterWindowMessage(messageName);
         if (message == 0) return 0;
         var notified = 0;
         UIntPtr messageResult;

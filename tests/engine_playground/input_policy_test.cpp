@@ -423,6 +423,25 @@ int main() {
     CHECK(CandidateCommitText(clipboard_candidate) ==
           clipboard_candidate.full_content);
 
+    EngineQueryResult first_page;
+    Candidate first_choice;
+    first_choice.text = L"固定首选";
+    first_choice.pinned = true;
+    first_page.candidates.push_back(first_choice);
+    Candidate second_choice;
+    second_choice.text = L"自定义短语";
+    second_choice.source = CandidateSource::CustomPhrase;
+    first_page.candidates.push_back(second_choice);
+    EngineQueryResult expansion;
+    Candidate later_choice;
+    later_choice.text = L"后续候选";
+    expansion.candidates = {later_choice, second_choice, first_choice};
+    AppendCandidateExpansion(&first_page, std::move(expansion), 9);
+    CHECK(first_page.candidates.size() == 3);
+    CHECK(first_page.candidates[0].text == first_choice.text && first_page.candidates[0].pinned);
+    CHECK(first_page.candidates[1].source == CandidateSource::CustomPhrase);
+    CHECK(first_page.candidates[2].text == later_choice.text);
+
     const std::vector<int> row_widths(9, 48);
     const auto row = BuildCandidateRowLayout(
         row_widths, row_widths, 0, 13, 4, 18, 12);

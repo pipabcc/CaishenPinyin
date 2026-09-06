@@ -7,6 +7,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -18,6 +20,11 @@ using WinForms = System.Windows.Forms;
 
 if (args.Contains("--corrupt-migration"))
     return RunCorruptMigrationTest();
+if (args.Length == 2 && args[0] == "--user-dictionary-clear")
+{
+    UserDictionaryStore.Clear(args[1]);
+    return 0;
+}
 if (args.Length == 2 && args[0] == "--installed-image-paste")
     return RunInstalledImagePasteTestOnStaThread(args[1]);
 
@@ -35,10 +42,12 @@ static int RunMainTests()
     try
     {
         TestSettingsAndCustomPhrases(root);
+        TestUserDictionaryProtocol(root);
         PrepareLegacyClipboardHistory(clipboardDirectory);
         TestClipboardMigrationAndCrud(clipboardDirectory);
         TestClipboardConcurrencyAndPerformance();
         TestClipboardImageNormalizationAndCapture();
+        TestClipboardCaptureWorker();
         TestSkinCatalog(root);
         TestSsfConversion(root);
         TestTextPasteRequests(root);
@@ -693,6 +702,133 @@ static void TestClipboardImageNormalizationAndCapture()
     var storedPixels = DecodeBgra(File.ReadAllBytes(imageRecord!.ImagePath));
     Require(storedPixels[3] == 255 && storedPixels[7] == 255,
         "监听器保存的 PNG 仍然全透明");
+}
+
+static void TestUserDictionaryProtocol(string root)
+{
+    var dataRoot = Path.Combine(root, "private-user-data");
+    var directory = Path.Combine(dataRoot, "data", "lexicon");
+    Directory.CreateDirectory(directory);
+    var target = Path.Combine(directory, "user_dict.txt");
+    File.WriteAllText(target, "ni\t你\t100\t7\t1700000000\n", new UTF8Encoding(false));
+    var original = UserDictionaryStore.Read(target);
+    var source = Path.Combine(root, "import-user.txt");
+    File.WriteAllText(source, "ni\t你\t90\t10\t1700000100\nhao\t好\t20\n", new UTF8Encoding(false));
+    UserDictionaryStore.Import(source, target);
+    var imported = UserDictionaryStore.Read(target);
+    Require(imported.Generation != original.Generation &&
+            imported.BigramGeneration == original.BigramGeneration && imported.Words.Count == 2,
+        "导入没有切换用户词代次或错误重置了搭配代次");
+    var learned = imported.Words.Single(item => item.Word == "你");
+    Require(learned.Frequency == 100 && learned.Count == 10 && learned.LastUsed == 1700000100,
+        "导入合并丢失了学习元数据");
+    File.WriteAllText(Path.Combine(directory, "user_bigram.txt"), "旧搭配");
+    UserDictionaryStore.Clear(target);
+    var cleared = UserDictionaryStore.Read(target);
+    Require(cleared.Words.Count == 0 && cleared.Generation != imported.Generation &&
+            cleared.BigramGeneration != imported.BigramGeneration &&
+            !File.Exists(Path.Combine(directory, "user_bigram.txt")), "清空没有重置全部学习数据");
+
+    var file = new FileInfo(target);
+    var oldAcl = file.GetAccessControl();
+    oldAcl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-15-2-1"),
+        FileSystemRights.Modify, AccessControlType.Allow));
+    file.SetAccessControl(oldAcl);
+    AppContainerAccess.EnsureUserData(dataRoot);
+    var rules = file.GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier));
+    Require(!rules.Cast<FileSystemAccessRule>().Any(rule => rule.AccessControlType == AccessControlType.Allow &&
+        rule.IdentityReference.Value.StartsWith("S-1-15-", StringComparison.Ordinal)),
+        "设置程序仍向应用包开放个人学习文件");
+}
+
+static void TestClipboardCaptureWorker()
+{
+    var uiReady = new TaskCompletionSource<System.Windows.Threading.Dispatcher>(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    var uiThread = new Thread(() =>
+    {
+        uiReady.SetResult(System.Windows.Threading.Dispatcher.CurrentDispatcher);
+        System.Windows.Threading.Dispatcher.Run();
+    }) { IsBackground = true };
+    uiThread.SetApartmentState(ApartmentState.STA);
+    uiThread.Start();
+    Require(uiReady.Task.Wait(2000), "测试界面线程未启动");
+    var ui = uiReady.Task.Result;
+    using var reading = new ManualResetEventSlim();
+    using var releaseRead = new ManualResetEventSlim();
+    using var worker = new ClipboardCaptureWorker(() => { }, listenToSystemClipboard: false);
+    try
+    {
+        Require(worker.Start(), "剪贴板工作线程启动失败");
+        var dispatch = ui.InvokeAsync(() => worker.CaptureAsync(() =>
+        {
+            Require(Thread.CurrentThread.GetApartmentState() == ApartmentState.STA,
+                "剪贴板采集没有运行在 STA");
+            Require(Thread.CurrentThread.ManagedThreadId != uiThread.ManagedThreadId,
+                "剪贴板采集仍在界面线程");
+            reading.Set();
+            Require(releaseRead.Wait(5000), "采集测试释放超时");
+            var data = new DataObject();
+            data.SetData(DataFormats.UnicodeText, "独立线程监听" + new string('甲', 180000));
+            return data;
+        })).Task;
+        Require(dispatch.Wait(2000) && reading.Wait(2000), "后台采集未开始");
+        var heartbeat = ui.InvokeAsync(() => 1).Task;
+        Require(heartbeat.Wait(1000) && heartbeat.Result == 1,
+            "后台采集阻塞了界面 Dispatcher");
+        releaseRead.Set();
+        Require(dispatch.Result.Wait(10000) && dispatch.Result.Result,
+            "后台文本采集失败");
+        var savedText = ClipboardStore.QueryHistory("独立线程监听", 1).Single();
+        Require(savedText.Content.Length == 180006,
+            "后台采集的长文本没有完整入库");
+
+        var pixels = new byte[1920 * 1080 * 4];
+        for (var index = 0; index < pixels.Length; index += 4)
+        {
+            pixels[index] = (byte)(index % 251);
+            pixels[index + 1] = (byte)(index / 1920 % 239);
+            pixels[index + 2] = 120;
+            pixels[index + 3] = 255;
+        }
+        var png = EncodePng(pixels, 1920, 1080);
+        var imageCapture = worker.CaptureAsync(() =>
+        {
+            var data = new DataObject();
+            data.SetData(ClipboardImageService.NativePngFormat,
+                new MemoryStream(png, writable: false));
+            return data;
+        });
+        Require(imageCapture.Wait(10000) && imageCapture.Result, "后台图片采集失败");
+        var savedImage = ClipboardStore.QueryHistory("[图片]", 1).Single();
+        Require(savedImage.IsImage && File.ReadAllBytes(savedImage.ImagePath).SequenceEqual(png),
+            "后台采集的图片没有完整保存");
+        Console.WriteLine($"剪贴板 STA 原生 PNG 采集 1920x1080：{worker.LastCaptureDuration.TotalMilliseconds:F2} ms；界面响应测试通过");
+        var bitmapCapture = worker.CaptureAsync(() =>
+        {
+            Require(Thread.CurrentThread.ManagedThreadId == worker.CaptureThreadId,
+                "位图没有在采集线程创建");
+            var bitmap = BitmapSource.Create(1920, 1080, 96, 96,
+                PixelFormats.Bgra32, null, pixels, 1920 * 4);
+            var data = new DataObject();
+            data.SetData(DataFormats.Bitmap, bitmap);
+            return data;
+        });
+        Require(ui.InvokeAsync(() => 1).Task.Wait(1000), "位图编码阻塞界面线程");
+        Require(bitmapCapture.Wait(10000) && bitmapCapture.Result, "位图编码与保存失败");
+        var encodedImage = ClipboardStore.QueryHistory("[图片]", 1).Single();
+        Require(DecodeBgra(File.ReadAllBytes(encodedImage.ImagePath)).SequenceEqual(pixels),
+            "后台位图编码改变了像素内容");
+        Console.WriteLine($"剪贴板 STA 位图采集含 PNG 编码 1920x1080：{worker.LastCaptureDuration.TotalMilliseconds:F2} ms");
+    }
+    finally
+    {
+        releaseRead.Set();
+        worker.Dispose();
+        ui.BeginInvokeShutdown(System.Windows.Threading.DispatcherPriority.Send);
+        Require(uiThread.Join(2000), "测试界面线程未退出");
+    }
+    Require(!worker.IsRunning, "剪贴板线程退出后仍在运行");
 }
 
 static void TestSkinCatalog(string root)

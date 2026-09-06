@@ -244,6 +244,20 @@ struct CandidatePageState {
     }
 };
 
+// 扩展查询可能重新排序；已经显示的候选必须保持位置，避免翻页后数字选错词。
+inline void AppendCandidateExpansion(
+    EngineQueryResult* current, EngineQueryResult expanded, std::size_t maximum) {
+    if (current == nullptr) return;
+    for (auto& candidate : expanded.candidates) {
+        if (current->candidates.size() >= maximum) break;
+        const bool exists = std::any_of(current->candidates.begin(), current->candidates.end(),
+            [&](const Candidate& existing) { return existing.text == candidate.text; });
+        if (!exists) current->candidates.push_back(std::move(candidate));
+    }
+    current->matched_pinyin_len = (std::max)(
+        current->matched_pinyin_len, expanded.matched_pinyin_len);
+}
+
 inline std::wstring CandidateComposingDisplay(
     const std::vector<Candidate>& candidates,
     std::size_t selected,

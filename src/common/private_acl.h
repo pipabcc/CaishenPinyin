@@ -31,20 +31,14 @@ bool EnsureAppContainerAccess(
 // 继承链漏进来。剪贴板历史可能含密码，必须硬性拒绝。
 bool EnsureAppContainerDenied(const std::wstring& path);
 
-// 按分级表为用户数据目录授权，使沙箱宿主能读到皮肤、设置与统计，并写回
-// 学习数据。clipboard 目录刻意排除——剪贴板历史敏感且沙箱场景用不到。
+// 沙箱可读取公共皮肤、设置和系统词库快照；个人数据目录收敛为当前用户私有。
 // 进程内只实际执行一次；在 AppContainer 中调用是空操作。
 void EnsureUserDataAppContainerAccess();
 
-// Applies a protected DACL granting full control only to the current user,
-// while keeping AppContainer hosts able to read and write the same path.
-// Existing parent directories are hardened as well. Returns false without
-// blocking input when security APIs or the filesystem reject the operation.
+// 当前用户独占的受保护 DACL；不授予任何应用包访问权限，沙箱调用返回 false。
 bool EnsureCurrentUserOnlyPath(const std::wstring& path, bool is_directory);
 
-// Applies a protected DACL granting full control only to the current user.
-// Unlike EnsureCurrentUserOnlyPath, this never adds AppContainer allow ACEs;
-// use it for clipboard-derived or similarly sensitive exchange directories.
+// 与 EnsureCurrentUserOnlyPath 相同，保留名称供现有私有交换目录调用。
 bool EnsureCurrentUserPrivatePath(
     const std::wstring& path, bool is_directory);
 

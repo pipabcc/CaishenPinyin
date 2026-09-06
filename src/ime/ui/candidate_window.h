@@ -80,6 +80,8 @@ public:
     void SetPinningEnabled(bool enabled);
     void SetSelectionHandler(std::function<void(size_t)> handler) { on_select_ = std::move(handler); }
     void SetPinHandler(std::function<void(size_t)> handler) { on_pin_ = std::move(handler); }
+    void SetExpandHandler(std::function<void()> handler) { on_expand_ = std::move(handler); }
+    void SetUserDataChangedHandler(std::function<void()> handler) { on_user_data_changed_ = std::move(handler); }
     void SetDragHandler(std::function<void(POINT)> handler) { on_drag_ = std::move(handler); }
     void SetSearchHandler(std::function<void()> handler) { on_search_clicked_ = std::move(handler); }
     void SetClearSearchHandler(std::function<void()> handler) { on_search_cleared_ = std::move(handler); }
@@ -212,6 +214,8 @@ private:
     bool paint_dirty_ = true;
     std::function<void(size_t)> on_select_;
     std::function<void(size_t)> on_pin_;
+    std::function<void()> on_expand_;
+    std::function<void()> on_user_data_changed_;
     std::function<void(POINT)> on_drag_;
     std::function<void()> on_search_clicked_;
     std::function<void()> on_search_cleared_;

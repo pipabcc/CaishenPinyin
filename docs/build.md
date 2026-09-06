@@ -75,6 +75,11 @@ dotnet run --project tests\settings_logic
 GitHub Actions 在无桌面的托管环境运行可自动化的测试。需要真实前台焦点、候选窗观察或多
 DPI/多显示器的场景仍需 Windows 真机验收，不能用 CI 结果替代。
 
+性能排查可在构建后运行 `query_benchmark <词库目录> <隔离用户目录> [候选数量]`，
+分别以 10 项首屏和 90 项多页比较查询耗时。工具还报告分阶段工作量、预算是否用尽
+和统计入队耗时；隔离目录用于快照及统计，不应传入真实用户数据目录。设计与实测
+结果见 [输入热路径优化实施记录](performance-optimization.md)。
+
 ## 词库和完整模型
 
 构建前会运行 `scripts/lexicon_manifest.py validate`，检查 `data/lexicon/manifest.json` 中

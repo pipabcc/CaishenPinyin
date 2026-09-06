@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Install', 'HealthCheck', 'Rollback', 'Cleanup', 'Uninstall')]
     [string]$Action = 'Install',
@@ -978,10 +978,9 @@ function Sync-SettingsShortcut([string]$VersionDirectory) {
 
 # The Start menu search host (SearchHost.exe) runs inside an AppContainer, where
 # file access must additionally match an S-1-15-2-* ACE or it is denied outright.
-# This table mirrors kUserDataGrants in src/common/private_acl.cpp: the clipboard
-# directory is deliberately absent because its history may hold passwords and the
-# sandboxed host has no use for the v-mode panel.
-# NOTE: this script is parsed as ANSI when it has no BOM, so keep it ASCII-only.
+# Public resources mirror kUserDataGrants in src/common/private_acl.cpp.
+# Personal learning data and clipboard payloads never receive package access.
+# Windows PowerShell 5.1 需要 UTF-8 BOM，否则中文注释可能吞掉下一行代码。
 $AppContainerSids = @('S-1-15-2-1', 'S-1-15-2-2')
 $AppContainerReadRights =
     [System.Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize'
@@ -1043,6 +1042,11 @@ function Deny-PathToAppContainers {
     # sensitive paths need an explicit deny on top.
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return }
     try {
+        $item = Get-Item -LiteralPath $Path -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+        $inheritance = if ($item.PSIsContainer) {
+            $AppContainerFullInherit
+        } else { [System.Security.AccessControl.InheritanceFlags]::None }
         $security = Get-Acl -LiteralPath $Path
         $changed = $false
         $full = [System.Security.AccessControl.FileSystemRights]'FullControl'
@@ -1052,13 +1056,13 @@ function Deny-PathToAppContainers {
             $matched = $rules | Where-Object {
                 $_.AccessControlType -eq 'Deny' -and
                 $_.IdentityReference.Value -eq $sid -and
-                $_.InheritanceFlags -eq $AppContainerFullInherit -and
+                $_.InheritanceFlags -eq $inheritance -and
                 ($_.FileSystemRights -band $full) -eq $full
             }
             if ($matched) { continue }
             $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
             $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-                $identity, $full, $AppContainerFullInherit,
+                $identity, $full, $inheritance,
                 $AppContainerPropagate, 'Deny')
             $security.AddAccessRule($rule)
             $changed = $true
@@ -1072,6 +1076,28 @@ function Deny-PathToAppContainers {
     }
 }
 
+function Deny-PrivateTreeToAppContainers {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $pending = New-Object 'System.Collections.Generic.Queue[string]'
+    $pending.Enqueue($Path)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Dequeue()
+        try {
+            $item = Get-Item -LiteralPath $current -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+            Deny-PathToAppContainers $current
+            if ($item.PSIsContainer) {
+                foreach ($child in Get-ChildItem -LiteralPath $current -Force) {
+                    $pending.Enqueue($child.FullName)
+                }
+            }
+        } catch {
+            Write-DeployLog "private appcontainer migration failed: $current : $($_.Exception.Message)"
+        }
+    }
+}
+
 function Grant-AppContainerAccess {
     # The root only inherits down to direct child files, so settings.ini keeps read
     # access across atomic replacement while the clipboard subdirectory stays closed.
@@ -1079,13 +1105,15 @@ function Grant-AppContainerAccess {
         $AppContainerFileInherit $AppContainerNoPropagate $AppContainerReadRights
     Grant-PathToAppContainers (Join-Path $UserDataRoot 'skins') `
         $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
-    # data\lexicon carries a protected DACL from EnsureCurrentUserOnlyPath, which
-    # breaks inheritance, so it has to be listed explicitly.
-    foreach ($name in @('data', 'data\lexicon', 'logs', 'paste_requests', 'ui_requests')) {
+    Grant-PathToAppContainers (Join-Path $UserDataRoot 'snapshot') `
+        $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
+    foreach ($name in @('logs', 'ui_requests')) {
         Grant-PathToAppContainers (Join-Path $UserDataRoot $name) `
             $AppContainerFullInherit $AppContainerPropagate $AppContainerWriteRights
     }
-    Deny-PathToAppContainers (Join-Path $UserDataRoot 'clipboard')
+    foreach ($name in @('data', 'clipboard', 'paste_requests', 'direct_commit_requests')) {
+        Deny-PrivateTreeToAppContainers (Join-Path $UserDataRoot $name)
+    }
     # Lexicon and program directories only need read access. Both carried this ACE
     # from a manual icacls run that was never committed, so reinstalling dropped it;
     # pin it down here.

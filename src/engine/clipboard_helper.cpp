@@ -741,6 +741,7 @@ bool DeleteTextPasteRequest(const std::wstring& request_token) noexcept {
 std::vector<Candidate> GetClipboardCandidates(
     const std::string& query,
     size_t limit) {
+    if (IsCurrentProcessAppContainer()) return {};
     if (limit == 0) return {};
     ScopedSrwExclusiveLock process_lock(&g_clipboard_lock);
 
@@ -833,6 +834,7 @@ bool DeleteClipboardCandidate(
 std::vector<Candidate> GetCustomPhraseCandidates(
     const std::string& query,
     size_t limit) {
+    if (IsCurrentProcessAppContainer()) return {};
     std::vector<Candidate> candidates;
     if (limit == 0) return candidates;
 

@@ -1,4 +1,5 @@
 #include "pinyin_correction.h"
+#include "query_work_budget.h"
 
 #include "pinyin_lattice.h"
 #include "pinyin_syllables.h"
@@ -286,7 +287,7 @@ void AddShortDoubleEditCorrections(
 
 std::vector<PinyinCorrection> GeneratePinyinCorrections(
     const std::string& input,
-    const PinyinCorrectionLimits& limits) {
+    const PinyinCorrectionLimits& limits, QueryWorkBudget* budget) {
     if (input.empty() || input.size() > limits.max_input_length ||
         limits.max_total_cost < 1 || limits.max_states_per_position == 0 ||
         limits.max_results == 0) {
@@ -312,6 +313,7 @@ std::vector<PinyinCorrection> GeneratePinyinCorrections(
             };
             std::vector<Transition> transitions;
             for (const auto& syllable : pinyin_data::Syllables()) {
+                if (budget != nullptr && !budget->Consume()) return {};
                 if (std::abs(static_cast<int>(piece.size()) -
                              static_cast<int>(syllable.size())) > 1) {
                     continue;
@@ -329,6 +331,7 @@ std::vector<PinyinCorrection> GeneratePinyinCorrections(
             auto& destination = states[begin + length];
             for (const auto& state : states[begin]) {
                 for (const auto& transition : transitions) {
+                    if (budget != nullptr && !budget->Consume()) return {};
                     if (state.cost + transition.edit.distance > limits.max_total_cost) continue;
                     std::string input_segmentation = state.input_segmentation;
                     if (!input_segmentation.empty()) input_segmentation.push_back('\'');

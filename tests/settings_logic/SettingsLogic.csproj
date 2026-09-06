@@ -7,11 +7,15 @@
   <ItemGroup>
     <Compile Include="..\..\settings\SettingsStore.cs" Link="SettingsStore.cs" />
     <Compile Include="..\..\settings\CustomPhraseStore.cs" Link="CustomPhraseStore.cs" />
+    <Compile Include="..\..\settings\UserDictionaryStore.cs" Link="UserDictionaryStore.cs" />
+    <Compile Include="..\..\settings\UserDataPrivacy.cs" Link="UserDataPrivacy.cs" />
+    <Compile Include="..\..\settings\AppContainerAccess.cs" Link="AppContainerAccess.cs" />
     <Compile Include="..\..\settings\ClipboardStore.cs" Link="ClipboardStore.cs" />
     <Compile Include="..\..\settings\ClipboardDatabase.cs" Link="ClipboardDatabase.cs" />
     <Compile Include="..\..\settings\ClipboardImageService.cs" Link="ClipboardImageService.cs" />
     <Compile Include="..\..\settings\ClipboardPasteInputProtocol.cs" Link="ClipboardPasteInputProtocol.cs" />
     <Compile Include="..\..\settings\ClipboardMonitor.cs" Link="ClipboardMonitor.cs" />
+    <Compile Include="..\..\settings\ClipboardCaptureWorker.cs" Link="ClipboardCaptureWorker.cs" />
     <Compile Include="..\..\settings\TextPasteRequestStore.cs" Link="TextPasteRequestStore.cs" />
     <Compile Include="..\..\settings\DirectTextCommitRequestStore.cs" Link="DirectTextCommitRequestStore.cs" />
     <Compile Include="..\..\settings\CrashLogger.cs" Link="CrashLogger.cs" />

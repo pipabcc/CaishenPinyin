@@ -17,6 +17,8 @@ namespace {
 SRWLOCK g_lock = SRWLOCK_INIT;
 RuntimeConfig g_config;
 bool g_loaded = false;
+ULONGLONG g_next_config_check = 0;
+thread_local RuntimeConfig* g_scoped_config = nullptr;
 
 std::wstring SettingsPath();
 
@@ -179,9 +181,10 @@ RuntimeConfig ReadConfig() {
 }  // namespace
 
 RuntimeConfig GetRuntimeConfig() {
-    const ConfigFileStamp observed_stamp = ReadConfigFileStamp();
+    if (g_scoped_config != nullptr) return *g_scoped_config;
+    const ULONGLONG now = GetTickCount64();
     AcquireSRWLockShared(&g_lock);
-    if (g_loaded && SameConfigFileStamp(g_config_stamp, observed_stamp)) {
+    if (g_loaded && now < g_next_config_check) {
         const RuntimeConfig value = g_config;
         ReleaseSRWLockShared(&g_lock);
         return value;
@@ -189,10 +192,14 @@ RuntimeConfig GetRuntimeConfig() {
     ReleaseSRWLockShared(&g_lock);
 
     AcquireSRWLockExclusive(&g_lock);
-    if (!g_loaded || !SameConfigFileStamp(g_config_stamp, observed_stamp)) {
-        g_config = ReadConfig();
-        g_config_stamp = ReadConfigFileStamp();
-        g_loaded = true;
+    if (!g_loaded || now >= g_next_config_check) {
+        const ConfigFileStamp observed_stamp = ReadConfigFileStamp();
+        if (!g_loaded || !SameConfigFileStamp(g_config_stamp, observed_stamp)) {
+            g_config = ReadConfig();
+            g_config_stamp = observed_stamp;
+            g_loaded = true;
+        }
+        g_next_config_check = now + 100;
     }
     const RuntimeConfig value = g_config;
     ReleaseSRWLockExclusive(&g_lock);
@@ -206,7 +213,20 @@ void ReloadRuntimeConfig() {
     g_config = value;
     g_config_stamp = stamp;
     g_loaded = true;
+    g_next_config_check = GetTickCount64() + 100;
     ReleaseSRWLockExclusive(&g_lock);
+    if (g_scoped_config != nullptr) *g_scoped_config = value;
+}
+
+RuntimeConfigScope::RuntimeConfigScope() : previous_(g_scoped_config) {
+    if (previous_ == nullptr) {
+        value_ = GetRuntimeConfig();
+        g_scoped_config = &value_;
+    }
+}
+
+RuntimeConfigScope::~RuntimeConfigScope() {
+    g_scoped_config = previous_;
 }
 
 bool IsValidDisplayName(const std::wstring& value) noexcept {

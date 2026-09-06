@@ -6,6 +6,7 @@
 #include "../common/private_acl.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <utility>
@@ -17,6 +18,7 @@ constexpr wchar_t kPinnedCandidateMutexName[] =
     L"Local\\CaishenPinyin.PinnedCandidates";
 constexpr std::size_t kMaximumCodeLength = 64;
 constexpr std::size_t kMaximumCandidateLength = 128;
+std::atomic<std::uint64_t> g_change_generation {0};
 
 class MutexGuard {
 public:
@@ -168,7 +170,7 @@ bool PinnedCandidateStore::WriteEntries(
     if (directory.empty()) return false;
     std::filesystem::create_directories(directory, error);
     if (error) return false;
-    EnsureCurrentUserOnlyPath(directory.wstring(), true);
+    if (!EnsureCurrentUserOnlyPath(path, false)) return false;
 
     const std::wstring temporary = path + L".tmp-" +
         std::to_wstring(GetCurrentProcessId()) + L"-" +
@@ -195,16 +197,28 @@ bool PinnedCandidateStore::WriteEntries(
         DeleteFileW(temporary.c_str());
         return false;
     }
-    EnsureCurrentUserOnlyPath(path, false);
     return true;
 }
 
 void PinnedCandidateStore::ReloadIfChanged() const {
+    const auto now = GetTickCount64();
+    const auto generation = g_change_generation.load(std::memory_order_acquire);
+    AcquireSRWLockShared(&lock_);
+    const bool recently_checked = loaded_ && last_check_tick_ != 0 &&
+        now - last_check_tick_ < 100 && change_generation_ == generation;
+    ReleaseSRWLockShared(&lock_);
+    if (recently_checked) return;
     const FileStamp observed = ReadFileStamp(path_);
     AcquireSRWLockShared(&lock_);
     const bool current = loaded_ && observed.observed && observed == stamp_;
     ReleaseSRWLockShared(&lock_);
-    if (current || !observed.observed) return;
+    if (current || !observed.observed) {
+        AcquireSRWLockExclusive(&lock_);
+        last_check_tick_ = now;
+        change_generation_ = generation;
+        ReleaseSRWLockExclusive(&lock_);
+        return;
+    }
 
     EntryMap entries = observed.exists ? ReadEntries(path_) : EntryMap {};
     const FileStamp confirmed = ReadFileStamp(path_);
@@ -214,12 +228,16 @@ void PinnedCandidateStore::ReloadIfChanged() const {
     entries_ = std::move(entries);
     stamp_ = confirmed;
     loaded_ = true;
+    last_check_tick_ = now;
+    change_generation_ = generation;
     ReleaseSRWLockExclusive(&lock_);
 }
 
 std::optional<std::wstring> PinnedCandidateStore::Lookup(
     PinnedCandidateSchema schema,
     const std::string& raw_code) const {
+    static const bool sandbox = IsCurrentProcessAppContainer();
+    if (sandbox) return std::nullopt;
     const auto code = NormalizeCode(schema, raw_code);
     if (!code || path_.empty()) return std::nullopt;
     ReloadIfChanged();
@@ -235,6 +253,7 @@ PinnedCandidateToggleResult PinnedCandidateStore::Toggle(
     PinnedCandidateSchema schema,
     const std::string& raw_code,
     const std::wstring& candidate_text) {
+    if (IsCurrentProcessAppContainer()) return PinnedCandidateToggleResult::Failed;
     const auto code = NormalizeCode(schema, raw_code);
     if (!code || !IsValidCandidateText(candidate_text) || path_.empty()) {
         return PinnedCandidateToggleResult::Failed;
@@ -261,6 +280,8 @@ PinnedCandidateToggleResult PinnedCandidateStore::Toggle(
     entries_ = std::move(entries);
     stamp_ = updated_stamp;
     loaded_ = updated_stamp.observed;
+    change_generation_ = g_change_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    last_check_tick_ = GetTickCount64();
     ReleaseSRWLockExclusive(&lock_);
     return unpin ? PinnedCandidateToggleResult::Unpinned
                  : PinnedCandidateToggleResult::Pinned;

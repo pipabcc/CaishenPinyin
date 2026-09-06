@@ -5,10 +5,17 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
+#include <mutex>
+#include <new>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace shuru {
 namespace {
@@ -157,19 +164,25 @@ TypingStatsSnapshot TypingStatsStore::Load(std::time_t now) const {
 TypingStatsSnapshot TypingStatsStore::Record(
     const std::wstring& committed_text,
     std::time_t now) const {
+    return RecordCount(CountCharacters(committed_text), now);
+}
+
+TypingStatsSnapshot TypingStatsStore::RecordCount(
+    std::uint64_t counted, std::time_t now) const {
     if (path_.empty()) return {};
     MutexGuard guard(1000);
     if (!guard.owns()) return {};
 
     StatsState state = ReadState(path_);
+    // 跨午夜的延迟批次不能把其他进程已经保存的新一天计数覆盖回昨天。
+    if (state.local_date > LocalDate(now)) return {0, true};
     NormalizeState(&state, now);
-    const std::size_t counted = CountCharacters(committed_text);
     if (counted != 0) {
         const auto available = (std::numeric_limits<std::uint64_t>::max)() -
             state.daily_count;
         state.daily_count += (std::min)(
             static_cast<std::uint64_t>(counted), available);
-        WriteState(path_, state);
+        if (!WriteState(path_, state)) return {};
     }
     return ToSnapshot(state);
 }
@@ -195,6 +208,268 @@ std::size_t TypingStatsStore::CountCharacters(const std::wstring& text) noexcept
 
 std::wstring TypingStatsStore::DefaultPath() {
     return CaishenUserDataPath(L"data\\typing_stats.txt");
+}
+
+struct AsyncTypingStatsRecorder::State {
+    struct Day {
+        std::time_t time = 0;
+        std::uint64_t pending = 0;
+        std::uint64_t visible = 0;
+        bool available = false;
+    };
+    struct Batch {
+        std::string date;
+        std::time_t time;
+        std::uint64_t count;
+    };
+
+    explicit State(std::wstring path) : store(std::move(path)) {
+        worker = std::thread([this] { Run(); });
+    }
+
+    ~State() {
+        {
+            std::lock_guard<std::mutex> guard(mutex);
+            stopping = true;
+        }
+        wake.notify_one();
+        worker.join();
+    }
+
+    static std::uint64_t Add(std::uint64_t left, std::uint64_t right) {
+        return left + (std::min)(right,
+            (std::numeric_limits<std::uint64_t>::max)() - left);
+    }
+
+    bool HasPending() const {
+        return std::any_of(days.begin(), days.end(), [](const auto& entry) {
+            return entry.second.pending != 0;
+        });
+    }
+
+    void Publish(const std::string& date, const TypingStatsSnapshot& saved) {
+        if (!saved.available) return;
+        auto& day = days[date];
+        day.visible = Add(saved.daily_count, day.pending);
+        day.available = true;
+    }
+
+    void Run() noexcept {
+        try {
+            for (;;) {
+                std::vector<Batch> batches;
+                std::uint64_t revision = 0;
+                std::time_t observed_time = 0;
+                bool should_stop = false;
+                {
+                    std::unique_lock<std::mutex> guard(mutex);
+                    wake.wait(guard, [this] {
+                        return stopping || refresh_requested || HasPending();
+                    });
+                    if (HasPending() && !flush_requested && !stopping) {
+                        wake.wait_for(guard, std::chrono::milliseconds(150), [this] {
+                            return flush_requested || stopping;
+                        });
+                    }
+                    batches.reserve(days.size());
+                    for (auto& entry : days) {
+                        auto& day = entry.second;
+                        if (day.pending == 0) continue;
+                        batches.push_back({entry.first, day.time, day.pending});
+                        day.pending = 0;
+                    }
+                    revision = requested_revision;
+                    observed_time = refresh_time;
+                    refresh_requested = false;
+                    flush_requested = false;
+                    should_stop = stopping;
+                }
+
+                bool succeeded = true;
+                if (batches.empty() && should_stop) return;
+                if (batches.empty()) {
+                    const auto loaded = store.Load(observed_time);
+                    std::lock_guard<std::mutex> guard(mutex);
+                    Publish(LocalDate(observed_time), loaded);
+                }
+                for (const auto& batch : batches) {
+                    const auto saved = store.RecordCount(batch.count, batch.time);
+                    std::lock_guard<std::mutex> guard(mutex);
+                    if (saved.available) {
+                        Publish(batch.date, saved);
+                    } else {
+                        auto& day = days[batch.date];
+                        day.pending = Add(day.pending, batch.count);
+                        succeeded = false;
+                    }
+                }
+                {
+                    std::lock_guard<std::mutex> guard(mutex);
+                    if (succeeded) completed_revision = revision;
+                    // 只保留近期日期；未落盘的旧批次必须留下以便重试。
+                    while (days.size() > 2 && days.begin()->second.pending == 0)
+                        days.erase(days.begin());
+                }
+                settled.notify_all();
+                if (should_stop) {
+                    if (!succeeded)
+                        OutputDebugStringW(L"Caishen typing statistics final save failed\n");
+                    return;
+                }
+                if (!succeeded) {
+                    std::unique_lock<std::mutex> guard(mutex);
+                    wake.wait_for(guard, std::chrono::milliseconds(250), [this] {
+                        return stopping;
+                    });
+                }
+            }
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> guard(mutex);
+                worker_failed = true;
+            }
+            settled.notify_all();
+            OutputDebugStringW(L"Caishen typing statistics worker failed\n");
+        }
+    }
+
+    TypingStatsStore store;
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::condition_variable settled;
+    std::map<std::string, Day> days;
+    std::uint64_t requested_revision = 0;
+    std::uint64_t completed_revision = 0;
+    ULONGLONG last_refresh_tick = 0;
+    std::time_t refresh_time = std::time(nullptr);
+    bool refresh_requested = true;
+    bool flush_requested = false;
+    bool stopping = false;
+    bool worker_failed = false;
+    std::thread worker;
+};
+
+AsyncTypingStatsRecorder::AsyncTypingStatsRecorder(std::wstring path)
+    : state_(std::make_unique<State>(std::move(path))) {}
+
+AsyncTypingStatsRecorder::~AsyncTypingStatsRecorder() = default;
+
+TypingStatsSnapshot AsyncTypingStatsRecorder::Record(
+    const std::wstring& text, std::time_t now) {
+    const auto count = TypingStatsStore::CountCharacters(text);
+    if (count == 0) return Snapshot(now);
+    const auto date = LocalDate(now);
+    if (date.empty()) return {};
+    std::lock_guard<std::mutex> guard(state_->mutex);
+    if (state_->worker_failed || state_->stopping) return {};
+    auto& day = state_->days[date];
+    day.time = now;
+    day.pending = State::Add(day.pending, count);
+    day.visible = State::Add(day.visible, count);
+    day.available = true;
+    ++state_->requested_revision;
+    state_->wake.notify_one();
+    return {day.visible, day.available};
+}
+
+TypingStatsSnapshot AsyncTypingStatsRecorder::Snapshot(std::time_t now) {
+    const auto date = LocalDate(now);
+    std::lock_guard<std::mutex> guard(state_->mutex);
+    const auto tick = GetTickCount64();
+    if (state_->last_refresh_tick == 0 ||
+        tick - state_->last_refresh_tick >= 1000) {
+        state_->last_refresh_tick = tick;
+        state_->refresh_time = now;
+        state_->refresh_requested = true;
+        state_->wake.notify_one();
+    }
+    const auto found = state_->days.find(date);
+    return found == state_->days.end() ? TypingStatsSnapshot{}
+        : TypingStatsSnapshot{found->second.visible, found->second.available};
+}
+
+bool AsyncTypingStatsRecorder::Flush(unsigned long timeout_ms) {
+    std::unique_lock<std::mutex> guard(state_->mutex);
+    const auto revision = state_->requested_revision;
+    state_->flush_requested = true;
+    state_->wake.notify_one();
+    const bool completed = state_->settled.wait_for(
+        guard, std::chrono::milliseconds(timeout_ms), [&] {
+            return state_->completed_revision >= revision || state_->worker_failed;
+        });
+    return completed && !state_->worker_failed &&
+        state_->completed_revision >= revision;
+}
+
+namespace {
+struct RecorderCache {
+    SRWLOCK lock = SRWLOCK_INIT;
+    std::shared_ptr<AsyncTypingStatsRecorder> recorder;
+};
+alignas(RecorderCache) unsigned char g_recorder_storage[sizeof(RecorderCache)];
+
+RecorderCache& SharedRecorderCache() {
+    // 进程退出不执行包含线程的静态析构；正常 DLL 卸载由显式收尾路径回收。
+    static auto* cache = new (g_recorder_storage) RecorderCache;
+    return *cache;
+}
+
+std::shared_ptr<AsyncTypingStatsRecorder> GetAsyncRecorder() {
+    auto& cache = SharedRecorderCache();
+    AcquireSRWLockShared(&cache.lock);
+    auto recorder = cache.recorder;
+    ReleaseSRWLockShared(&cache.lock);
+    if (recorder) return recorder;
+    AcquireSRWLockExclusive(&cache.lock);
+    try {
+        if (!cache.recorder) cache.recorder = std::make_shared<AsyncTypingStatsRecorder>();
+        recorder = cache.recorder;
+    } catch (...) {
+        OutputDebugStringW(L"Caishen typing statistics worker unavailable\n");
+    }
+    ReleaseSRWLockExclusive(&cache.lock);
+    return recorder;
+}
+}  // namespace
+
+TypingStatsSnapshot RecordTypingStatsAsync(const std::wstring& text) {
+    static const bool sandbox = IsCurrentProcessAppContainer();
+    if (sandbox) return {};
+    try {
+        auto recorder = GetAsyncRecorder();
+        return recorder ? recorder->Record(text) : TypingStatsSnapshot{};
+    } catch (...) {
+        OutputDebugStringW(L"Caishen typing statistics enqueue failed\n");
+        return {};
+    }
+}
+
+TypingStatsSnapshot LoadTypingStatsAsync() {
+    static const bool sandbox = IsCurrentProcessAppContainer();
+    if (sandbox) return {};
+    try {
+        auto recorder = GetAsyncRecorder();
+        return recorder ? recorder->Snapshot() : TypingStatsSnapshot{};
+    } catch (...) {
+        OutputDebugStringW(L"Caishen typing statistics snapshot failed\n");
+        return {};
+    }
+}
+
+bool TryShutdownAsyncTypingStats() {
+    auto& cache = SharedRecorderCache();
+    AcquireSRWLockShared(&cache.lock);
+    auto recorder = cache.recorder;
+    ReleaseSRWLockShared(&cache.lock);
+    if (!recorder) return true;
+    // 等待文件操作时不持有缓存锁，新激活的 TSF 线程仍可立即入队。
+    if (!recorder->Flush()) return false;
+    AcquireSRWLockExclusive(&cache.lock);
+    if (cache.recorder == recorder && recorder.use_count() == 2 && recorder->Flush(0))
+        cache.recorder.reset();
+    const bool stopped = !cache.recorder;
+    ReleaseSRWLockExclusive(&cache.lock);
+    return stopped;
 }
 
 }  // namespace shuru

@@ -10,6 +10,7 @@
 #include "system_language_model.h"
 #include "system_lexeme_prior.h"
 #include "user_bigram.h"
+#include "user_dictionary_store.h"
 
 #include <Windows.h>
 
@@ -37,6 +38,9 @@ struct QueryOptions {
     size_t candidate_page_size = 9;
     // 最近一次上屏的候选文本（会话上下文）；用于 bigram 加权与整句转换。
     std::wstring context;
+    // 下列限制与测量字段只用于显式传入 options 的本次 Query，不保存为全局配置。
+    std::size_t max_work_units = 300000;
+    QueryDiagnostics* diagnostics = nullptr;
 };
 
 class PinyinEngine {
@@ -82,6 +86,7 @@ public:
     bool ImportUserDictionary(const std::wstring& path);
     bool ClearUserDictionary();
     bool ReloadCustomPhrases();
+    bool ReloadUserDictionary(bool force = false);
 
     static bool IsPinyinLetter(wchar_t ch);
     static std::string NormalizeInput(const std::string& input);
@@ -90,6 +95,8 @@ public:
     std::wstring custom_phrase_path() const;
 
 private:
+    EngineQueryResult QueryWithBudget(const std::string& raw_input, size_t limit,
+        const QueryOptions& options, QueryWorkBudget& budget) const;
     struct LexiconSnapshot {
         Dictionary dictionary;
         EnglishDictionary english_dictionary;
@@ -103,14 +110,15 @@ private:
 
     struct UserDictSnapshot {
         std::wstring path;
-        std::vector<UserDictionaryEntry> entries;
+        std::string generation;
+        std::vector<UserDictionaryChange> changes;
         std::uint64_t revision = 0;
     };
 
     std::shared_ptr<LexiconSnapshot> lexicon_;
     std::shared_ptr<UserLexiconSnapshot> user_lexicon_;
     std::shared_ptr<CustomPhraseDictionary> custom_phrases_;
-    std::shared_ptr<const UserBigramModel> bigram_;
+    std::shared_ptr<UserBigramModel> bigram_;
     bool ready_ = false;
     bool fuzzy_enabled_ = true;
     FuzzyConfig fuzzy_config_ {};
@@ -131,7 +139,12 @@ private:
     std::wstring custom_phrase_path_;
     mutable PinnedCandidateStore pinned_candidates_;
     std::wstring bigram_path_;
-    bool bigram_dirty_ = false;
+    std::string user_generation_;
+    UserDataFileStamp user_file_stamp_;
+    UserDataFileStamp bigram_file_stamp_;
+    std::vector<UserDictionaryChange> pending_user_changes_;
+    std::uint64_t user_cache_revision_ = 0;
+    bool user_data_save_active_ = false;
     std::wstring lexicon_dir_;
     HANDLE save_event_ = nullptr;
     HANDLE save_thread_ = nullptr;
@@ -142,11 +155,7 @@ private:
     bool CaptureUserDictSnapshot(UserDictSnapshot* snapshot);
     void CompleteUserDictSave(
         const UserDictSnapshot& snapshot,
-        const std::vector<UserDictionaryEntry>& external_entries,
-        bool succeeded);
-    static bool PersistUserDictSnapshot(
-        const UserDictSnapshot& snapshot,
-        std::vector<UserDictionaryEntry>* external_entries);
+        UserDictionaryState saved);
     bool ScheduleUserDictSave();
     static DWORD WINAPI SaveThreadProc(LPVOID param);
     static bool LooksLikeJianpin(const std::string& pinyin);

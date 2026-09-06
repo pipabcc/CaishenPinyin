@@ -44,6 +44,18 @@ struct RuntimeConfig {
 // %LOCALAPPDATA%\CaishenPinyin\settings.ini; missing/invalid values use safe defaults.
 RuntimeConfig GetRuntimeConfig();
 void ReloadRuntimeConfig();
+// 同一按键/绘制调用中的嵌套访问复用一个快照；主动重载仍立即生效。
+class RuntimeConfigScope {
+public:
+    RuntimeConfigScope();
+    ~RuntimeConfigScope();
+    RuntimeConfigScope(const RuntimeConfigScope&) = delete;
+    RuntimeConfigScope& operator=(const RuntimeConfigScope&) = delete;
+
+private:
+    RuntimeConfig value_;
+    RuntimeConfig* previous_ = nullptr;
+};
 bool IsValidDisplayName(const std::wstring& value) noexcept;
 std::wstring NormalizeDisplayName(std::wstring value);
 // 托盘指示字符：1-2 个可见字符（如「财」「中」）。

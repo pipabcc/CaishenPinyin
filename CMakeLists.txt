@@ -205,7 +205,7 @@ if(BUILD_TESTING)
   )
   target_include_directories(appcontainer_acl_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(appcontainer_acl_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-  target_link_libraries(appcontainer_acl_test PRIVATE advapi32)
+  target_link_libraries(appcontainer_acl_test PRIVATE advapi32 userenv)
   add_test(NAME appcontainer_acl COMMAND appcontainer_acl_test)
   set_tests_properties(appcontainer_acl PROPERTIES TIMEOUT 30)
 
@@ -411,6 +411,33 @@ if(BUILD_TESTING)
   target_include_directories(load_timing_tool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(load_timing_tool PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_link_libraries(load_timing_tool PRIVATE bcrypt user32)
+  # 查询基准复用加载基准的引擎源文件，手动运行，不加入常规 CTest 耗时。
+  get_target_property(SHURU_QUERY_BENCHMARK_SOURCES load_timing_tool SOURCES)
+  list(REMOVE_ITEM SHURU_QUERY_BENCHMARK_SOURCES tests/engine_playground/load_timing_tool.cpp)
+  add_executable(query_benchmark
+    tests/engine_playground/query_benchmark.cpp
+    src/common/typing_stats.cpp
+    ${SHURU_QUERY_BENCHMARK_SOURCES}
+  )
+  target_include_directories(query_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(query_benchmark PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(query_benchmark PRIVATE bcrypt user32)
+  add_executable(learning_persistence_test
+    tests/engine_playground/learning_persistence_test.cpp
+    src/engine/shared_engine.cpp
+    ${SHURU_QUERY_BENCHMARK_SOURCES}
+  )
+  target_include_directories(learning_persistence_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(learning_persistence_test PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_link_libraries(learning_persistence_test PRIVATE bcrypt user32)
+  find_program(DOTNET_EXECUTABLE dotnet)
+  if(DOTNET_EXECUTABLE)
+    add_test(NAME learning_persistence COMMAND learning_persistence_test
+      ${DOTNET_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_logic/SettingsLogic.csproj)
+  else()
+    add_test(NAME learning_persistence COMMAND learning_persistence_test)
+  endif()
+  set_tests_properties(learning_persistence PROPERTIES TIMEOUT 120)
   add_test(NAME engine_snapshot COMMAND engine_snapshot_test
     $<TARGET_FILE:engine_snapshot_build_tool>)
   set_tests_properties(engine_snapshot PROPERTIES

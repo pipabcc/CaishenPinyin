@@ -750,13 +750,10 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) != true) return;
         try
         {
-            var lines = File.ReadAllLines(dialog.FileName);
-            if (lines.Any(line => !string.IsNullOrWhiteSpace(line) &&
-                !line.TrimStart().StartsWith('#') && line.Split('\t').Length is < 3 or > 5))
-                throw new InvalidDataException("文件含有格式错误的用户词行。");
-            AtomicWrite(File.ReadAllBytes(dialog.FileName), UserDictionaryPath);
+            UserDictionaryStore.Import(dialog.FileName, UserDictionaryPath);
+            RuntimeSettingsNotifier.NotifyUserDictionaryChanged();
             RefreshStatus();
-            StatusText.Text = "自动学习词已导入。切换输入法后生效。";
+            StatusText.Text = "自动学习词已合并导入。";
         }
         catch (Exception ex) { ShowOperationError(ex); }
     }
@@ -771,32 +768,12 @@ public partial class MainWindow : Window
             return;
         try
         {
-            AtomicWrite(Array.Empty<byte>(), UserDictionaryPath);
+            UserDictionaryStore.Clear(UserDictionaryPath);
+            RuntimeSettingsNotifier.NotifyUserDictionaryChanged();
             RefreshStatus();
-            StatusText.Text = "自动学习词已清空。切换输入法后生效。";
+            StatusText.Text = "自动学习词及搭配记录已清空。";
         }
         catch (Exception ex) { ShowOperationError(ex); }
-    }
-
-    private static void AtomicWrite(byte[] content, string target)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        var temporary = target + ".tmp-" + Guid.NewGuid().ToString("N");
-        try
-        {
-            using (var stream = new FileStream(
-                       temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                       4096, FileOptions.WriteThrough))
-            {
-                stream.Write(content);
-                stream.Flush(true);
-            }
-            File.Move(temporary, target, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-        }
     }
 
     private static void OpenFolder(string path)

@@ -100,36 +100,20 @@ bool HasExplicitAce(
     return false;
 }
 
-bool ApplyAcl(
+bool ApplyPrivateAcl(
     const std::wstring& path,
     PSID sid,
-    bool directory,
-    bool allow_app_containers) {
-    const LocalSid all_packages(L"S-1-15-2-1");
-    const LocalSid restricted_packages(L"S-1-15-2-2");
+    bool directory) {
     const DWORD inheritance = directory
         ? InheritanceFlags(AclInheritance::Full)
         : InheritanceFlags(AclInheritance::None);
 
-    // 受保护 DACL 会切断继承，因此沙箱宿主所需的 ACE 必须在同一批里写入，
-    // 否则开始菜单等 AppContainer 场景读不到学习数据与固定候选。
-    EXPLICIT_ACCESSW entries[3] {};
-    ULONG count = 0;
-    FillAccess(
-        &entries[count++], sid, GENERIC_ALL, inheritance, TRUSTEE_IS_USER);
-    if (allow_app_containers && all_packages.valid()) {
-        FillAccess(
-            &entries[count++], all_packages.get(), kAppContainerWriteMask,
-            inheritance, TRUSTEE_IS_WELL_KNOWN_GROUP);
-    }
-    if (allow_app_containers && restricted_packages.valid()) {
-        FillAccess(
-            &entries[count++], restricted_packages.get(),
-            kAppContainerWriteMask, inheritance, TRUSTEE_IS_WELL_KNOWN_GROUP);
-    }
+    // 阻断上级目录的宽权限，只为当前用户保留允许项。
+    EXPLICIT_ACCESSW entry{};
+    FillAccess(&entry, sid, GENERIC_ALL, inheritance, TRUSTEE_IS_USER);
 
     PACL acl = nullptr;
-    if (SetEntriesInAclW(count, entries, nullptr, &acl) != ERROR_SUCCESS) {
+    if (SetEntriesInAclW(1, &entry, nullptr, &acl) != ERROR_SUCCESS) {
         return false;
     }
     const DWORD result = SetNamedSecurityInfoW(
@@ -152,12 +136,8 @@ struct UserDataGrant {
 constexpr UserDataGrant kUserDataGrants[] = {
     {L"",                AclInheritance::DirectFilesOnly, false},
     {L"skins",           AclInheritance::Full,            false},
-    {L"data",            AclInheritance::Full,            true},
-    // 用户词库目录被 EnsureCurrentUserOnlyPath 设成受保护 DACL，继承在此断开，
-    // 必须显式列出——否则沙箱里打字既读不到已学词条也写不回学习结果。
-    {L"data\\lexicon",   AclInheritance::Full,            true},
+    {L"snapshot",        AclInheritance::Full,            false},
     {L"logs",            AclInheritance::Full,            true},
-    {L"paste_requests",  AclInheritance::Full,            true},
     {L"ui_requests",     AclInheritance::Full,            true},
 };
 
@@ -165,6 +145,8 @@ constexpr UserDataGrant kUserDataGrants[] = {
 // ACE（部分机器的 Temp、LOCALAPPDATA 就是如此），权限仍会漏下来，因此这些
 // 路径还要显式 Deny。
 constexpr const wchar_t* kUserDataDenied[] = {
+    L"data",
+    L"paste_requests",
     L"clipboard",
     // 独立搜索窗口只在普通桌面宿主启用直接上屏。请求正文可能来自剪贴板
     // 历史，绝不能因为上级目录的继承条目暴露给任意 AppContainer。
@@ -231,6 +213,7 @@ bool EnsureAppContainerAccess(
 
 bool EnsureAppContainerDenied(const std::wstring& path) {
     if (path.empty()) return false;
+    if ((GetFileAttributesW(path.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0) return false;
     const LocalSid all_packages(L"S-1-15-2-1");
     if (!all_packages.valid()) return false;
     const LocalSid restricted_packages(L"S-1-15-2-2");
@@ -316,31 +299,32 @@ void EnsureUserDataAppContainerAccess() {
         if (error) continue;
         EnsureAppContainerDenied(path);
     }
+
+    const std::filesystem::path private_data = std::filesystem::path(base) / L"data";
+    if (!EnsureCurrentUserOnlyPath(private_data.wstring(), true)) return;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(private_data, error), end;
+         !error && it != end; it.increment(error)) {
+        const auto path = it->path().wstring();
+        const auto attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) continue;
+        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        // 旧文件可能有受保护的显式放行条目，必须逐项移除，不能只改父目录。
+        EnsureCurrentUserOnlyPath(path, (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    }
+    EnsureAppContainerDenied(private_data.wstring());
 }
 
 bool EnsureCurrentUserOnlyPath(const std::wstring& path, bool is_directory) {
-    if (path.empty()) return false;
-    std::vector<BYTE> sid_storage;
-    PSID sid = nullptr;
-    if (!CurrentUserSid(&sid_storage, &sid)) return false;
-    try {
-        const std::filesystem::path target(path);
-        const std::filesystem::path directory = is_directory ? target : target.parent_path();
-        if (directory.empty()) return false;
-        std::filesystem::create_directories(directory);
-        if (!ApplyAcl(directory.wstring(), sid, true, true)) return false;
-        if (!is_directory && std::filesystem::exists(target)) {
-            return ApplyAcl(target.wstring(), sid, false, true);
-        }
-        return true;
-    } catch (...) {
-        return false;
-    }
+    return EnsureCurrentUserPrivatePath(path, is_directory);
 }
 
 bool EnsureCurrentUserPrivatePath(
     const std::wstring& path, bool is_directory) {
-    if (path.empty()) return false;
+    if (path.empty() || IsCurrentProcessAppContainer()) return false;
     std::vector<BYTE> sid_storage;
     PSID sid = nullptr;
     if (!CurrentUserSid(&sid_storage, &sid)) return false;
@@ -350,9 +334,13 @@ bool EnsureCurrentUserPrivatePath(
             ? target : target.parent_path();
         if (directory.empty()) return false;
         std::filesystem::create_directories(directory);
-        if (!ApplyAcl(directory.wstring(), sid, true, false)) return false;
+        if ((GetFileAttributesW(directory.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+            return false;
+        if (!ApplyPrivateAcl(directory.wstring(), sid, true)) return false;
         if (!is_directory && std::filesystem::exists(target)) {
-            return ApplyAcl(target.wstring(), sid, false, false);
+            if ((GetFileAttributesW(target.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                return false;
+            return ApplyPrivateAcl(target.wstring(), sid, false);
         }
         return true;
     } catch (...) {

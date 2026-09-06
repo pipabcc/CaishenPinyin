@@ -58,6 +58,17 @@ try {
     $dataRoot = Join-Path $temporaryRoot 'data'
     $startMenuRoot = Join-Path $temporaryRoot 'start-menu'
     $userDataRoot = Join-Path $temporaryRoot 'user-data'
+    $privateLearningDirectory = Join-Path $userDataRoot 'data\lexicon'
+    New-Item -ItemType Directory -Force -Path $privateLearningDirectory | Out-Null
+    $privateLearningFile = Join-Path $privateLearningDirectory 'user_dict.txt'
+    Set-Content -LiteralPath $privateLearningFile -Value 'private-learning-sentinel'
+    $legacySecurity = Get-Acl -LiteralPath $privateLearningFile
+    $legacySecurity.SetAccessRuleProtection($true, $true)
+    $legacySecurity.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+        [System.Security.Principal.SecurityIdentifier]::new('S-1-15-2-1'),
+        [System.Security.AccessControl.FileSystemRights]::Modify,
+        [System.Security.AccessControl.AccessControlType]::Allow))
+    Set-Acl -LiteralPath $privateLearningFile -AclObject $legacySecurity
     $packageRoot = Join-Path $temporaryRoot 'package'
     $skinSource = Join-Path $packageRoot 'data\skins\classic_blue'
     New-Item -ItemType Directory -Force -Path $skinSource | Out-Null
@@ -102,6 +113,16 @@ try {
     Set-Content -LiteralPath (Join-Path $legacyLexicon 'incomplete.txt') -Value 'keep-incomplete'
     & (Join-Path $root 'scripts\install_ime.ps1') -Action Install -Version test-1 @commonArguments
     if ($LASTEXITCODE -ne 0) { throw 'non-admin install failed' }
+    $privateRules = (Get-Acl -LiteralPath $privateLearningFile).GetAccessRules(
+        $true, $true, [System.Security.Principal.SecurityIdentifier])
+    foreach ($sid in @('S-1-15-2-1', 'S-1-15-2-2')) {
+        if (-not ($privateRules | Where-Object {
+            $_.IdentityReference.Value -eq $sid -and $_.AccessControlType -eq 'Deny'
+        })) { throw 'installer retained AppContainer access to private learning data' }
+    }
+    if ((Get-Content -LiteralPath $privateLearningFile -Raw).Trim() -ne 'private-learning-sentinel') {
+        throw 'ACL migration changed private learning content'
+    }
 
     & (Join-Path $root 'scripts\install_ime.ps1') -Action HealthCheck `
         -InstallRoot $installRoot -DataRoot $dataRoot -StartMenuRoot $startMenuRoot `

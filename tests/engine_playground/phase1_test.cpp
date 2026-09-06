@@ -310,6 +310,23 @@ int wmain(int argc, wchar_t** argv) {
             std::wcerr << L"引擎初始化失败: " << lexicon << L"\n";
             return 1;
         }
+        {
+            QueryDiagnostics diagnostics;
+            QueryOptions limited;
+            limited.max_work_units = 0;
+            limited.diagnostics = &diagnostics;
+            const auto exact = engine.Query("nihao", 10, limited);
+            if (exact.candidates.empty() || exact.candidates.front().text != L"你好" ||
+                diagnostics.work_used != 0) return 91;
+            limited.max_work_units = 2048;
+            const std::string ambiguous(48, 'z');
+            const auto bounded = engine.Query(ambiguous, 10, limited);
+            if (bounded.candidates.empty() || diagnostics.work_used > limited.max_work_units ||
+                !diagnostics.budget_exhausted ||
+                bounded.candidates.front().covered_input_len != ambiguous.size()) return 92;
+            const auto repeated = engine.Query(ambiguous, 10, limited);
+            if (repeated.candidates.front().text != bounded.candidates.front().text) return 93;
+        }
         if (!engine.IsReady() ||
             !VerifyCandidate(engine, "nihao", L"你好") ||
             !VerifyCandidate(engine, "nh", L"你好") ||

@@ -9,8 +9,7 @@ namespace ShuruSettings;
 // 除常规用户/组检查外还必须命中 S-1-15-2-* 的 ACE，否则一律拒绝。沙箱进程
 // 自己改不了 DACL，只能由普通宿主代为授权。
 //
-// 分级表与 src/common/private_acl.cpp 的 kUserDataGrants 保持一致：clipboard
-// 目录刻意排除——剪贴板历史可能含密码等敏感内容，沙箱场景也用不到 v 模式面板。
+// 公共皮肤、设置和系统快照可读；个人词库、统计、置顶和剪贴板交换数据保持私有。
 internal static class AppContainerAccess
 {
     private const FileSystemRights ReadRights =
@@ -33,18 +32,16 @@ internal static class AppContainerAccess
         new(string.Empty, InheritanceFlags.ObjectInherit,
             PropagationFlags.NoPropagateInherit, ReadRights),
         new("skins", FullInheritance, PropagationFlags.None, ReadRights),
-        new("data", FullInheritance, PropagationFlags.None, WriteRights),
-        // 用户词库目录被 EnsureCurrentUserOnlyPath 设成受保护 DACL，继承在此
-        // 断开，必须显式列出——否则沙箱里打字读不到已学词条也写不回结果。
-        new(@"data\lexicon", FullInheritance, PropagationFlags.None, WriteRights),
+        new("snapshot", FullInheritance, PropagationFlags.None, ReadRights),
         new("logs", FullInheritance, PropagationFlags.None, WriteRights),
-        new("paste_requests", FullInheritance, PropagationFlags.None, WriteRights),
         new("ui_requests", FullInheritance, PropagationFlags.None, WriteRights),
     };
 
     // 剪贴板历史可能含密码等敏感内容，沙箱场景也用不到 v 模式面板。
     private static readonly string[] Denied =
     {
+        "data",
+        "paste_requests",
         "clipboard",
         // 直接上屏请求包含用户选择的正文，只供同一桌面用户下的设置程序
         // 与目标宿主交换；AppContainer 入口保持旧剪贴板回退，不开放此目录。
@@ -55,13 +52,22 @@ internal static class AppContainerAccess
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CaishenPinyin");
 
-    internal static void EnsureUserData()
+    internal static void EnsureUserData(string? dataRoot = null)
     {
+        var root = dataRoot ?? UserDataRoot;
+        try
+        {
+            UserDataPrivacy.ProtectDirectory(Path.Combine(root, "data"), recursive: true);
+        }
+        catch (Exception error)
+        {
+            CrashLogger.Log("AppContainerAccess.PrivateData", error);
+        }
         foreach (var grant in Grants)
         {
             try
             {
-                Apply(grant);
+                Apply(grant, root);
             }
             catch (Exception ex)
             {
@@ -75,7 +81,7 @@ internal static class AppContainerAccess
         {
             try
             {
-                Deny(denied);
+                Deny(denied, root);
             }
             catch (Exception ex)
             {
@@ -84,10 +90,12 @@ internal static class AppContainerAccess
         }
     }
 
-    private static void Deny(string relative)
+    private static void Deny(string relative, string root)
     {
         var info = Directory.CreateDirectory(
-            Path.Combine(UserDataRoot, relative));
+            Path.Combine(root, relative));
+        if (info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            throw new IOException("私有数据目录不能是重解析点。");
         var security = info.GetAccessControl(AccessControlSections.Access);
 
         var changed = false;
@@ -122,11 +130,11 @@ internal static class AppContainerAccess
         return false;
     }
 
-    private static void Apply(Grant grant)
+    private static void Apply(Grant grant, string root)
     {
         var path = grant.Relative.Length == 0
-            ? UserDataRoot
-            : Path.Combine(UserDataRoot, grant.Relative);
+            ? root
+            : Path.Combine(root, grant.Relative);
         var info = Directory.CreateDirectory(path);
         var security = info.GetAccessControl(AccessControlSections.Access);
 

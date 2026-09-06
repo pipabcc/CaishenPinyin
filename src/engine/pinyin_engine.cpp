@@ -17,6 +17,7 @@
 #include "../common/user_data_paths.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <iterator>
 #include <limits>
@@ -34,10 +35,8 @@ bool FileExists(const std::wstring& path) {
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
-std::wstring GetWritableUserDictPath(const std::wstring& lexicon_dir) {
-    const std::wstring path = CaishenUserDataPath(
-        L"data\\lexicon\\user_dict.txt");
-    return path.empty() ? lexicon_dir + L"\\user_dict.txt" : path;
+std::wstring GetWritableUserDictPath(const std::wstring& /*lexicon_dir*/) {
+    return CaishenUserDataPath(L"data\\lexicon\\user_dict.txt");
 }
 
 struct CsGuard {
@@ -46,36 +45,6 @@ struct CsGuard {
     ~CsGuard() { LeaveCriticalSection(cs); }
     CsGuard(const CsGuard&) = delete;
     CsGuard& operator=(const CsGuard&) = delete;
-};
-
-class NamedMutexLock {
-public:
-    NamedMutexLock(const wchar_t* name, DWORD timeout) {
-        mutex_ = CreateMutexW(nullptr, FALSE, name);
-        if (mutex_ == nullptr) {
-            return;
-        }
-        const DWORD wait = WaitForSingleObject(mutex_, timeout);
-        owns_mutex_ = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
-    }
-
-    ~NamedMutexLock() {
-        if (owns_mutex_) {
-            ReleaseMutex(mutex_);
-        }
-        if (mutex_ != nullptr) {
-            CloseHandle(mutex_);
-        }
-    }
-
-    bool owns_mutex() const { return owns_mutex_; }
-
-    NamedMutexLock(const NamedMutexLock&) = delete;
-    NamedMutexLock& operator=(const NamedMutexLock&) = delete;
-
-private:
-    HANDLE mutex_ = nullptr;
-    bool owns_mutex_ = false;
 };
 
 bool IsBmpChineseWord(const std::wstring& text) {
@@ -247,7 +216,7 @@ double CorrectionQuality(const Candidate& candidate) {
 PinyinEngine::PinyinEngine() {
     InitializeCriticalSection(&lock_);
     lock_ready_ = true;
-    save_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    save_event_ = IsCurrentProcessAppContainer() ? nullptr : CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (save_event_ != nullptr) {
         save_thread_ = CreateThread(nullptr, 0, &PinyinEngine::SaveThreadProc, this, 0, nullptr);
         if (save_thread_ == nullptr) {
@@ -337,48 +306,67 @@ std::wstring PinyinEngine::custom_phrase_path() const {
 
 DWORD WINAPI PinyinEngine::SaveThreadProc(LPVOID param) {
     auto* self = static_cast<PinyinEngine*>(param);
-    if (self == nullptr || self->save_event_ == nullptr) {
-        return 1;
-    }
-
+    if (self == nullptr || self->save_event_ == nullptr) return 1;
+    DWORD retry_delay = 1000;
     for (;;) {
-        if (WaitForSingleObject(self->save_event_, INFINITE) != WAIT_OBJECT_0) {
-            return 1;
-        }
-        // 合并短时间内连续上屏，避免每个字都触发一次完整词典写盘。
-        if (InterlockedCompareExchange(&self->save_stop_, 0, 0) == 0) {
+        const auto wait = WaitForSingleObject(self->save_event_, retry_delay);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) return 1;
+        if (wait == WAIT_OBJECT_0 && InterlockedCompareExchange(&self->save_stop_, 0, 0) == 0)
             WaitForSingleObject(self->save_event_, 250);
-        }
-
         const bool stopping = InterlockedCompareExchange(&self->save_stop_, 0, 0) != 0;
-        UserDictSnapshot snapshot;
-        if (self->CaptureUserDictSnapshot(&snapshot)) {
-            std::vector<UserDictionaryEntry> external_entries;
-            const bool succeeded = PersistUserDictSnapshot(snapshot, &external_entries);
-            self->CompleteUserDictSave(snapshot, external_entries, succeeded);
-            if (!succeeded) {
-                SHURU_LOG_WARN("async user dictionary save failed");
+        bool failed = false;
+        try {
+            self->ReloadUserDictionary();
+            {
+                CsGuard guard(&self->lock_);
+                self->user_data_save_active_ = true;
             }
-        }
+            UserDictSnapshot snapshot;
+            if (self->CaptureUserDictSnapshot(&snapshot)) {
+                UserDictionaryState saved;
+                if (PersistUserDictionaryChanges(snapshot.path, snapshot.generation, snapshot.changes, &saved))
+                    self->CompleteUserDictSave(snapshot, std::move(saved));
+                else failed = true;
+            }
 
-        // 用户 bigram 借同一保存线程与去抖节奏落盘；快照不可变，写盘在锁外。
-        std::shared_ptr<const UserBigramModel> bigram_to_save;
-        std::wstring bigram_path;
+            std::shared_ptr<UserBigramModel> captured;
+            std::wstring path;
+            {
+                CsGuard guard(&self->lock_);
+                if (self->ready_ && self->user_dict_writable_ && self->bigram_ &&
+                    self->bigram_->dirty() && !self->bigram_path_.empty()) {
+                    captured = self->bigram_;
+                    path = self->bigram_path_;
+                }
+            }
+            if (captured) {
+                // 保存的是独立副本，查询仍可安全读取原模型。
+                auto saved = std::make_shared<UserBigramModel>(*captured);
+                if (saved->SaveToFile(path)) {
+                    CsGuard guard(&self->lock_);
+                    if (self->bigram_ && self->bigram_->generation() == captured->generation()) {
+                        // 先确认已写增量；之后重建可见模型失败也不能重复累加。
+                        self->bigram_->Acknowledge(*captured);
+                        saved->ApplyPendingFrom(*self->bigram_);
+                        self->bigram_ = std::move(saved);
+                        self->bigram_file_stamp_ = self->bigram_->file_stamp();
+                        ++self->user_cache_revision_;
+                    }
+                } else if (saved->stale_generation()) {
+                    self->ReloadUserDictionary(true);
+                } else failed = true;
+            }
+        } catch (...) {
+            failed = true;
+            SHURU_LOG_WARN("user learning save/reload failed");
+        }
         {
             CsGuard guard(&self->lock_);
-            if (self->bigram_dirty_ && self->bigram_ && !self->bigram_path_.empty()) {
-                bigram_to_save = self->bigram_;
-                bigram_path = self->bigram_path_;
-                self->bigram_dirty_ = false;
-            }
+            self->user_data_save_active_ = false;
         }
-        if (bigram_to_save && !bigram_to_save->SaveToFile(bigram_path)) {
-            SHURU_LOG_WARN("user bigram save failed");
-        }
-
-        if (stopping) {
-            return 0;
-        }
+        if (failed && retry_delay == 1000) SHURU_LOG_WARN("user learning persistence will retry");
+        if (stopping) return 0;
+        retry_delay = failed ? (std::min)(DWORD{4000}, retry_delay * 2) : 1000;
     }
 }
 
@@ -405,7 +393,8 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     const std::wstring legacy_user_dict_path = lexicon_dir + L"\\user_dict.txt";
     const std::wstring loaded_user_dict_path = GetWritableUserDictPath(lexicon_dir);
     const std::wstring loaded_custom_phrase_path = GetCustomPhrasePath(lexicon_dir);
-    const bool user_path_private = EnsureCurrentUserOnlyPath(loaded_user_dict_path, false);
+    const bool sandbox = IsCurrentProcessAppContainer();
+    bool user_path_private = !sandbox && EnsureCurrentUserOnlyPath(loaded_user_dict_path, false);
     if (!user_path_private) {
         SHURU_LOG_WARN("user dictionary ACL hardening unavailable; learning writes disabled");
     }
@@ -508,17 +497,18 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
             "system_lexeme_prior.bin missing, short candidate ranking degraded");
     }
 
-    if (FileExists(loaded_user_dict_path)) {
-        loaded_user_dictionary.LoadFromFile(loaded_user_dict_path, true);
-    } else if (legacy_user_dict_path != loaded_user_dict_path && FileExists(legacy_user_dict_path)) {
-        // 兼容旧版本安装目录词典，首次学习时迁移到用户可写目录。
-        loaded_user_dictionary.LoadFromFile(legacy_user_dict_path, true);
-        SHURU_LOG_INFO("legacy user dictionary loaded for migration");
-    } else {
-        SHURU_LOG_INFO("user dict not found, will create on learn");
+    UserDictionaryState loaded_user_state;
+    if (user_path_private) {
+        if (InitializeUserDictionaryState(loaded_user_dict_path, legacy_user_dict_path, &loaded_user_state))
+            loaded_user_dictionary = std::move(loaded_user_state.dictionary);
+        else {
+            user_path_private = false;
+            SHURU_LOG_WARN("user dictionary state unavailable; learning disabled");
+        }
     }
 
-    if (!loaded_custom_phrases->LoadFromFile(loaded_custom_phrase_path)) {
+    if (user_path_private && EnsureCurrentUserOnlyPath(loaded_custom_phrase_path, false) &&
+        !loaded_custom_phrases->LoadFromFile(loaded_custom_phrase_path)) {
         SHURU_LOG_WARN("custom phrase file could not be read; using empty snapshot");
         loaded_custom_phrases = std::make_shared<CustomPhraseDictionary>();
     }
@@ -526,13 +516,19 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     // 用户 bigram 与用户词典同目录；缺失/损坏时从空模型开始。
     std::shared_ptr<UserBigramModel> loaded_bigram;
     std::wstring loaded_bigram_path;
+    UserDataFileStamp loaded_bigram_stamp;
     try {
         loaded_bigram = std::make_shared<UserBigramModel>();
         const std::filesystem::path user_dict_file(loaded_user_dict_path);
-        loaded_bigram_path = (user_dict_file.parent_path() / L"user_bigram.txt").wstring();
-        if (FileExists(loaded_bigram_path)) {
-            loaded_bigram->LoadFromFile(loaded_bigram_path);
+        if (!loaded_user_dict_path.empty())
+            loaded_bigram_path = (user_dict_file.parent_path() / L"user_bigram.txt").wstring();
+        if (!sandbox) loaded_bigram_stamp = ReadUserDataFileStamp(loaded_bigram_path);
+        if (user_path_private && EnsureCurrentUserOnlyPath(loaded_bigram_path, false) &&
+            FileExists(loaded_bigram_path)) {
+            if (loaded_bigram->LoadFromFile(loaded_bigram_path))
+                loaded_bigram_stamp = loaded_bigram->file_stamp();
         }
+        loaded_bigram->BindGeneration(loaded_user_state.bigram_generation, loaded_user_state.legacy);
     } catch (...) {
         loaded_bigram = std::make_shared<UserBigramModel>();
     }
@@ -552,12 +548,27 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
         // 发布基础词库快照；Query 只在锁内复制 shared_ptr，检索、模糊音和排序
         // 均在锁外执行，因此多个 TextService 查询不会彼此串行等待。
         lexicon_ = std::move(loaded_lexicon);
-        user_lexicon_ = std::move(loaded_user_lexicon);
         custom_phrases_ = std::move(loaded_custom_phrases);
-        bigram_ = std::move(loaded_bigram);
+        const bool same_user_state = ready_ && user_dict_path_ == loaded_user_dict_path &&
+            user_generation_ == loaded_user_state.generation;
+        if (!same_user_state) {
+            user_lexicon_ = std::move(loaded_user_lexicon);
+            user_generation_ = loaded_user_state.generation;
+            user_file_stamp_ = loaded_user_state.stamp;
+            pending_user_changes_.clear();
+            last_learned_pinyin_.clear();
+            last_learned_word_.clear();
+            repeat_selection_pinyin_.clear();
+            repeat_selection_text_.clear();
+            repeat_selection_count_ = 0;
+        }
+        if (!ready_ || !bigram_ || bigram_path_ != loaded_bigram_path ||
+            bigram_->generation() != loaded_bigram->generation()) {
+            bigram_ = std::move(loaded_bigram);
+            bigram_file_stamp_ = loaded_bigram_stamp;
+        }
         bigram_path_ = loaded_bigram_path;
-        bigram_dirty_ = false;
-        user_dict_revision_ = 0;
+        ++user_cache_revision_;
         lexicon_dir_ = lexicon_dir;
         user_dict_path_ = loaded_user_dict_path;
         custom_phrase_path_ = loaded_custom_phrase_path;
@@ -567,6 +578,7 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
     }
     SHURU_LOG_INFO("PinyinEngine ready, dict_size=%zu jianpin=%zu fuzzy=%d",
                    dictionary_size, jianpin_size, fuzzy_enabled ? 1 : 0);
+    ScheduleUserDictSave();
 
     // 快照再生：仅传统装载后执行一次，串行在本加载线程上、ready 已发布，
     // 不影响首键延迟。生成失败（磁盘只读/AppContainer 等）静默放弃，下次
@@ -599,6 +611,8 @@ bool PinyinEngine::Initialize(const std::wstring& lexicon_dir) {
 }
 
 bool PinyinEngine::ReloadCustomPhrases() {
+    if (IsCurrentProcessAppContainer() || CaishenUserDataPath(L"data\\lexicon\\custom_phrases.txt").empty())
+        return false;
     std::wstring path;
     {
         CsGuard guard(&lock_);
@@ -713,6 +727,37 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
 
 EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit,
                                       const QueryOptions& options) const {
+    RuntimeConfigScope config_scope;
+    QueryWorkBudget budget((std::min)(options.max_work_units, size_t{1000000}),
+                           options.diagnostics);
+    size_t search_limit = limit;
+    const auto pinned_schema = options.schema == InputSchema::ShuangpinXiaohe
+        ? PinnedCandidateSchema::ShuangpinXiaohe : PinnedCandidateSchema::Quanpin;
+    if (limit != 0 && pinned_candidates_.Lookup(pinned_schema, raw_input)) {
+        // 固定项可能来自后续页，首屏收窄不能把它从召回池中删掉。
+        search_limit = (std::max)(limit, options.candidate_page_size * 10);
+    }
+    auto result = QueryWithBudget(raw_input, search_limit, options, budget);
+    if (result.candidates.empty() && budget.empty() && !raw_input.empty() && limit != 0) {
+        Candidate raw;
+        raw.text.assign(raw_input.begin(), raw_input.end());
+        raw.pinyin = NormalizeInput(raw_input);
+        raw.covered_input_len = raw_input.size();
+        raw.learnable = false;
+        raw.source = CandidateSource::Raw;
+        result.candidates.push_back(std::move(raw));
+    }
+    if (result.candidates.size() > limit) result.candidates.resize(limit);
+    result.matched_pinyin_len = 0;
+    for (const auto& candidate : result.candidates)
+        result.matched_pinyin_len = (std::max)(result.matched_pinyin_len, candidate.covered_input_len);
+    return result;
+}
+
+EngineQueryResult PinyinEngine::QueryWithBudget(
+    const std::string& raw_input, size_t limit, const QueryOptions& options,
+    QueryWorkBudget& budget) const {
+    QueryStageScope query_stage(budget, QueryStage::Indexed);
     EngineQueryResult result;
     if (limit == 0) return result;
     std::shared_ptr<LexiconSnapshot> lexicon;
@@ -777,7 +822,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     path.text.append(segment.text.begin(), segment.text.end());
                 continue;
             }
-            const auto segment_result = Query(segment.text, (std::min)(size_t{4}, limit), options);
+            const auto segment_result = QueryWithBudget(
+                segment.text, (std::min)(size_t{4}, limit), options, budget);
             std::vector<const Candidate*> choices;
             for (const auto& candidate : segment_result.candidates) {
                 if (candidate.covered_input_len == segment.text.size() &&
@@ -1018,16 +1064,19 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     };
 
     // Exact/prefix candidates consume what the user typed, never the dictionary suffix.
+    // 短声母的首屏依赖较宽的同音召回；减少返回页数不能改变常用字竞争池。
+    const size_t indexed_limit = compact.size() <= 3
+        ? (std::max)(limit, options.candidate_page_size * 10) : limit;
     add(user_lexicon->dictionary.LookupExact(compact), query.size(), 0);
     add(lexicon->dictionary.LookupExact(compact), query.size(), 0);
-    add(user_lexicon->dictionary.LookupPrefix(compact, limit), query.size(), 25, 1, true, CandidateSource::Prefix);
-    add(lexicon->dictionary.LookupPrefix(compact, limit), query.size(), 25, 1, true, CandidateSource::Prefix);
+    add(user_lexicon->dictionary.LookupPrefix(compact, indexed_limit, &budget), query.size(), 25, 1, true, CandidateSource::Prefix);
+    add(lexicon->dictionary.LookupPrefix(compact, indexed_limit, &budget), query.size(), 25, 1, true, CandidateSource::Prefix);
     // 全拼/声母混合恢复需要扫描更多词典状态。已有字面精确或前缀结果时，
     // 普通输入应留在索引路径，例如输入 renzhen 过程中的 renz。
     const bool has_literal_candidate = !pool.empty();
     if (schema == InputSchema::Quanpin) {
-        add(user_lexicon->dictionary.LookupJianpin(compact, limit), query.size(), 70, 1, true, CandidateSource::Jianpin);
-        add(lexicon->dictionary.LookupJianpin(compact, limit), query.size(), 70, 1, true, CandidateSource::Jianpin);
+        add(user_lexicon->dictionary.LookupJianpin(compact, indexed_limit, &budget), query.size(), 70, 1, true, CandidateSource::Jianpin);
+        add(lexicon->dictionary.LookupJianpin(compact, indexed_limit, &budget), query.size(), 70, 1, true, CandidateSource::Jianpin);
         // Mixed full/initial matching is an abbreviation feature, not fuzzy recovery.
         // Disable it for incomplete syllable spellings (for example mhu), otherwise
         // strict snapshots still admit mohu and the broad mixed pool can crowd out
@@ -1042,8 +1091,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         const bool mixed_abbreviation = !has_literal_candidate &&
             !complete_spelling && compact.size() >= 4;
         if (mixed_abbreviation) {
-            add(user_lexicon->dictionary.LookupMixed(compact, limit), query.size(), 45, 1, true, CandidateSource::Mixed);
-            add(lexicon->dictionary.LookupMixed(compact, limit), query.size(), 45, 1, true, CandidateSource::Mixed);
+            add(user_lexicon->dictionary.LookupMixed(compact, limit, &budget), query.size(), 45, 1, true, CandidateSource::Mixed);
+            add(lexicon->dictionary.LookupMixed(compact, limit, &budget), query.size(), 45, 1, true, CandidateSource::Mixed);
         }
     }
 
@@ -1074,6 +1123,9 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                               int full_cost,
                               bool enforce_boundaries,
                               size_t beam_width_override = 0) {
+        QueryStageScope graph_stage(budget, source == CandidateSource::Correction
+            ? QueryStage::Correction : QueryStage::WordGraph);
+        if (budget.empty()) return false;
         const size_t path_beam_width = beam_width_override != 0
             ? beam_width_override
             : (source == CandidateSource::Correction ? size_t {32}
@@ -1094,6 +1146,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         }
         std::sort(legal_ends.begin(), legal_ends.end());
         for (size_t begin = 0; begin < graph_query.size(); ++begin) {
+            if (budget.empty()) break;
             if (graph_query[begin] == '\'' && !paths[begin].empty()) {
                 paths[begin + 1] = paths[begin];
                 continue;
@@ -1101,6 +1154,7 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             if (paths[begin].empty()) continue;
             for (const size_t endpos : legal_ends) {
                 if (endpos <= begin) continue;
+                if (!budget.Consume(8)) break;
                 const size_t quote = graph_query.find('\'', begin);
                 if (quote != std::string::npos && quote < endpos) continue;
                 const std::string edge_pinyin = pinyin_data::RemoveSyllableSeparators(
@@ -1127,7 +1181,9 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 });
                 if (edges.size() > 8) edges.resize(8);
                 for (const auto& prefix : paths[begin]) {
+                    if (budget.empty()) break;
                     for (const auto& edge : edges) {
+                        if (!budget.Consume()) break;
                         // 用户搭配折算进对数频率：一次计数约等于频率 ×12，
                         // 「发财→暴富」学习一次即可在同段数路径内胜出。
                         const int pair_count = bigram_count(prefix.last_word, edge.text);
@@ -1307,13 +1363,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     bool has_long_transposition_pattern = false;
     if (schema == InputSchema::Quanpin && !has_authoritative_exact &&
         query.find('\'') == std::string::npos && compact.size() >= 4) {
+        QueryStageScope correction_stage(budget, QueryStage::Correction);
         PinyinCorrectionLimits limits;
         limits.max_total_cost = compact.size() <= 5 ? 2 : 4;
         limits.max_states_per_position = 32;
         // 短输入的双编辑候选需要交给词典证据二次筛选；保留较宽的拼写
         // 结果集不会扩大最终候选或词图束，只增加有界的哈希精确查询。
         limits.max_results = compact.size() <= 5 ? 512 : 16;
-        for (auto correction : GeneratePinyinCorrections(compact, limits)) {
+        for (auto correction : GeneratePinyinCorrections(compact, limits, &budget)) {
             // 尾部仍是合法音节前缀时，不把“补几个字母”当纠错，否则输入
             // zhengc 的过程中会被直接改成 zhengce。等长替换仍可恢复
             // gongzup -> gongzuo 这类明确的末键手滑。
@@ -1377,12 +1434,13 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         !has_long_transposition_pattern &&
         query.find('\'') == std::string::npos && compact.size() >= 4 &&
         compact.size() <= 48) {
+        QueryStageScope mixed_stage(budget, QueryStage::MixedGraph);
+        struct MixedTrace {
+            size_t previous = 0;
+            const MixedPrefixMatch* edge = nullptr;
+        };
         struct MixedPath {
-            std::wstring text;
-            std::wstring last_word;
-            std::string full_pinyin;
-            std::string segmented_input;
-            std::vector<std::pair<std::string, std::wstring>> learn_segments;
+            size_t trace = 0;
             double log_frequency = 0.0;
             int learning = 0;
             size_t words = 0;
@@ -1396,8 +1454,47 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             bool complete = false;
         };
         constexpr size_t kMixedBeamWidth = 64;
+        // 词边按输入位置保存且发布后不再修改，回溯节点可以安全引用它们。
+        std::vector<std::vector<MixedPrefixMatch>> edges_by_position(compact.size());
+        std::vector<MixedTrace> traces(1);
+        traces.reserve(8192);
         std::vector<std::vector<MixedPath>> mixed_paths(compact.size() + 1);
-        mixed_paths[0].push_back({std::wstring(), context});
+        mixed_paths[0].push_back({});
+
+        const auto trace_edges = [&](size_t trace,
+                                     std::array<const MixedPrefixMatch*, 48>* edges) {
+            size_t count = 0;
+            while (trace != 0 && count < edges->size()) {
+                const auto& node = traces[trace];
+                (*edges)[count++] = node.edge;
+                trace = node.previous;
+            }
+            std::reverse(edges->begin(), edges->begin() + count);
+            return count;
+        };
+        const auto trace_text_less = [&](size_t left, size_t right) {
+            std::array<const MixedPrefixMatch*, 48> left_edges{}, right_edges{};
+            const size_t left_count = trace_edges(left, &left_edges);
+            const size_t right_count = trace_edges(right, &right_edges);
+            size_t left_edge = 0, right_edge = 0, left_char = 0, right_char = 0;
+            for (;;) {
+                while (left_edge < left_count &&
+                       left_char == left_edges[left_edge]->candidate.text.size()) {
+                    ++left_edge;
+                    left_char = 0;
+                }
+                while (right_edge < right_count &&
+                       right_char == right_edges[right_edge]->candidate.text.size()) {
+                    ++right_edge;
+                    right_char = 0;
+                }
+                if (left_edge == left_count || right_edge == right_count)
+                    return left_edge == left_count && right_edge != right_count;
+                const auto a = left_edges[left_edge]->candidate.text[left_char++];
+                const auto b = right_edges[right_edge]->candidate.text[right_char++];
+                if (a != b) return a < b;
+            }
+        };
 
         constexpr double kOmittedLetterCost = 0.50;
         constexpr double kTrailingOmittedLetterCost = 0.65;
@@ -1422,21 +1519,31 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             if (left.words != right.words) return left.words < right.words;
             if (left.abbreviated != right.abbreviated)
                 return left.abbreviated < right.abbreviated;
-            return left.text < right.text;
+            return trace_text_less(left.trace, right.trace);
+        };
+        const auto prune_mixed_paths = [&](std::vector<MixedPath>& paths) {
+            if (paths.size() > kMixedBeamWidth) {
+                std::partial_sort(paths.begin(), paths.begin() + kMixedBeamWidth,
+                                  paths.end(), mixed_path_better);
+                paths.resize(kMixedBeamWidth);
+            } else {
+                std::sort(paths.begin(), paths.end(), mixed_path_better);
+            }
         };
 
         for (size_t begin = 0; begin < compact.size(); ++begin) {
+            if (budget.empty()) break;
             auto& prefixes = mixed_paths[begin];
             if (prefixes.empty()) continue;
-            std::sort(prefixes.begin(), prefixes.end(), mixed_path_better);
-            if (prefixes.size() > kMixedBeamWidth) prefixes.resize(kMixedBeamWidth);
+            prune_mixed_paths(prefixes);
 
             const std::string remaining = compact.substr(begin);
             constexpr size_t kMixedEdgeLimit = 128;
-            auto matches = user_lexicon->dictionary.LookupMixedPrefixes(
-                remaining, kMixedEdgeLimit);
+            auto& matches = edges_by_position[begin];
+            matches = user_lexicon->dictionary.LookupMixedPrefixes(
+                remaining, kMixedEdgeLimit, &budget);
             auto base_matches = lexicon->dictionary.LookupMixedPrefixes(
-                remaining, kMixedEdgeLimit);
+                remaining, kMixedEdgeLimit, &budget);
             matches.insert(matches.end(),
                            std::make_move_iterator(base_matches.begin()),
                            std::make_move_iterator(base_matches.end()));
@@ -1469,33 +1576,28 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                     continue;
                 }
                 const size_t end = begin + match.consumed_input;
+                const double mixed_frequency = match.candidate.text.size() == 1
+                    ? static_cast<double>((std::max)(0, match.candidate.frequency))
+                    : ranking_frequency(match.candidate);
+                const double edge_log_frequency = std::log1p(
+                    (std::max)(0.0, mixed_frequency));
                 for (const auto& prefix : prefixes) {
+                    if (!budget.Consume()) break;
                     MixedPath next = prefix;
                     const int pair_count = bigram_count(
-                        prefix.last_word, match.candidate.text);
+                        prefix.trace == 0 ? context
+                            : traces[prefix.trace].edge->candidate.text,
+                        match.candidate.text);
                     const double learned_pair_boost = pair_count > 0
                         ? 2.5 * double((std::min)(3, pair_count))
                         : 0.0;
-                    next.text += match.candidate.text;
-                    next.last_word = match.candidate.text;
-                    next.full_pinyin += match.candidate.pinyin;
-                    if (!next.segmented_input.empty() &&
-                        !match.segmented_input.empty()) {
-                        next.segmented_input.push_back('\'');
-                    }
-                    next.segmented_input += match.segmented_input;
-                    next.learn_segments.push_back({
-                        match.candidate.pinyin, match.candidate.text});
+                    next.trace = traces.size();
+                    traces.push_back({prefix.trace, &match});
                     // 短词先验会把一个字在所有长词中的上下文频次汇总起来，适合
                     // 单字候选排序，却会让大量常见字在长句词图中同时触顶。长句
                     // 的单字边使用 8105 单字表的独立字频，保留“去/其/七”等差异；
                     // 多字词仍使用融合先验。
-                    const double mixed_frequency = match.candidate.text.size() == 1
-                        ? static_cast<double>((std::max)(0, match.candidate.frequency))
-                        : ranking_frequency(match.candidate);
-                    next.log_frequency += std::log1p(
-                        (std::max)(0.0, mixed_frequency)) +
-                        learned_pair_boost;
+                    next.log_frequency += edge_log_frequency + learned_pair_boost;
                     next.learning += match.candidate.learning_score;
                     ++next.words;
                     next.syllables += match.syllable_count;
@@ -1510,34 +1612,41 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
                 }
                 auto& destination = mixed_paths[end];
                 if (destination.size() > kMixedBeamWidth * 4) {
-                    std::sort(destination.begin(), destination.end(), mixed_path_better);
-                    destination.resize(kMixedBeamWidth);
+                    prune_mixed_paths(destination);
                 }
             }
         }
 
         auto& complete_paths = mixed_paths.back();
         for (auto& path : complete_paths) {
-            path.language_score = sequence_language_score(
-                path.learn_segments,
-                [](const auto& segment) -> const std::wstring& {
-                    return segment.second;
-                },
-                true);
+            std::array<const MixedPrefixMatch*, 48> edges{};
+            const auto count = trace_edges(path.trace, &edges);
+            std::wstring prefix = context;
+            for (size_t index = 0; index < count; ++index) {
+                const auto& text = edges[index]->candidate.text;
+                path.language_score += append_language_score(prefix, text, index + 1 == count);
+                prefix += text;
+            }
         }
-        std::sort(complete_paths.begin(), complete_paths.end(), mixed_path_better);
-        if (complete_paths.size() > kMixedBeamWidth)
-            complete_paths.resize(kMixedBeamWidth);
-        const size_t mixed_candidate_quota = (std::min)(
-            size_t {32}, (std::max)(size_t {12}, limit));
+        prune_mixed_paths(complete_paths);
+        // 输出页数不影响参与全局排序的混拼配额，保持首屏与扩展查询一致。
+        constexpr size_t mixed_candidate_quota = 32;
         size_t added_mixed_candidates = 0;
         for (const auto& path : complete_paths) {
-            if (path.text.empty() || path.abbreviated == 0) continue;
+            if (path.trace == 0 || path.abbreviated == 0) continue;
             Candidate candidate;
-            candidate.text = path.text;
-            candidate.pinyin = path.full_pinyin;
-            candidate.input_segmentation = path.segmented_input;
-            candidate.learn_segments = path.learn_segments;
+            std::array<const MixedPrefixMatch*, 48> edges{};
+            const auto count = trace_edges(path.trace, &edges);
+            candidate.learn_segments.reserve(count);
+            for (size_t index = 0; index < count; ++index) {
+                const auto& edge = *edges[index];
+                candidate.text += edge.candidate.text;
+                candidate.pinyin += edge.candidate.pinyin;
+                if (!candidate.input_segmentation.empty() && !edge.segmented_input.empty())
+                    candidate.input_segmentation.push_back('\'');
+                candidate.input_segmentation += edge.segmented_input;
+                candidate.learn_segments.emplace_back(edge.candidate.pinyin, edge.candidate.text);
+            }
             candidate.frequency = joint_frequency(path.log_frequency, path.words);
             constexpr double kFinalTrailingOmittedLetterCost = 1.05;
             candidate.path_log_frequency = path.words <= 1
@@ -1684,7 +1793,8 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
     }
 
     // Fuzzy variants are generated from each retained segmentation, with bounded cost/work.
-    if (fuzzy_enabled && query.find('\'')==std::string::npos) {
+    if (fuzzy_enabled && !budget.empty() && query.find('\'')==std::string::npos) {
+        QueryStageScope fuzzy_stage(budget, QueryStage::Fuzzy);
         // Missing-vowel recovery must not be starved by the general variant ranking cap.
         // Probe its small, deterministic space directly (<= 6 * (n + 1)), then run the
         // weighted initial/final expansion. This restores e.g. mhu -> mohu while bounded.
@@ -1713,13 +1823,14 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
             if(pool.size()>limit*16)break;
         }
     }
+    budget.SetStage(QueryStage::Finalize);
     // Longest valid prefix is candidate-local partial coverage.
     for(size_t n=query.size(); n>0; --n) {
         if(query[n-1]=='\'')continue; std::string prefix=pinyin_data::RemoveSyllableSeparators(query.substr(0,n));
         auto u=user_lexicon->dictionary.LookupExact(prefix); auto b=lexicon->dictionary.LookupExact(prefix);
         if (u.empty() && b.empty() && fuzzy_enabled && schema == InputSchema::Quanpin && compact.size() == 4 && n == 3) {
-            u = user_lexicon->dictionary.LookupMixed(prefix, limit);
-            b = lexicon->dictionary.LookupMixed(prefix, limit);
+            u = user_lexicon->dictionary.LookupMixed(prefix, limit, &budget);
+            b = lexicon->dictionary.LookupMixed(prefix, limit, &budget);
         }
         if(!u.empty()||!b.empty()){add(std::move(u),n,40,1,true,CandidateSource::Prefix);add(std::move(b),n,40,1,true,CandidateSource::Prefix);break;}
     }
@@ -1731,7 +1842,13 @@ EngineQueryResult PinyinEngine::Query(const std::string& raw_input, size_t limit
         add(std::move(english_exact),query.size(),0,1,true,CandidateSource::English);
         add(std::move(english_prefix),query.size(),30,1,true,CandidateSource::English);
     }
-    if(pool.empty()){Candidate raw;raw.text=std::wstring(preview.begin(),preview.end());raw.pinyin=compact;add({raw},0,1000,1,true,CandidateSource::Raw);}
+    if (pool.empty()) {
+        Candidate raw;
+        raw.text = std::wstring(preview.begin(), preview.end());
+        raw.pinyin = compact;
+        raw.learnable = false;
+        add({raw}, query.size(), 1000, 1, false, CandidateSource::Raw);
+    }
     std::sort(pool.begin(),pool.end(),better);
     // 纠错结果优先于部分匹配，但不能占满候选集合。输入尾部暂时无效时
     // 仍需保留最长合法前缀，供用户先提交已有中文再继续输入。
@@ -1909,119 +2026,132 @@ PinnedCandidateToggleResult PinyinEngine::TogglePinnedCandidate(
         candidate_text);
 }
 
+bool PinyinEngine::ReloadUserDictionary(bool force) try {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        std::wstring path, bigram_path;
+        UserDataFileStamp old_stamp, old_bigram_stamp;
+        std::uint64_t cache_revision = 0;
+        {
+            CsGuard guard(&lock_);
+            if (!ready_ || !user_dict_writable_ || user_dict_path_.empty()) return false;
+            path = user_dict_path_;
+            bigram_path = bigram_path_;
+            old_stamp = user_file_stamp_;
+            old_bigram_stamp = bigram_file_stamp_;
+            cache_revision = user_cache_revision_;
+        }
+        const auto stamp = ReadUserDataFileStamp(path);
+        const auto bigram_stamp = ReadUserDataFileStamp(bigram_path);
+        if (!stamp.valid) return false;
+        if (!force && stamp == old_stamp && bigram_stamp == old_bigram_stamp) return true;
+        UserDictionaryState loaded;
+        if (!LoadUserDictionaryState(path, &loaded)) return false;
+        auto users = std::make_shared<UserLexiconSnapshot>();
+        users->dictionary = std::move(loaded.dictionary);
+        auto bigram = std::make_shared<UserBigramModel>();
+        const bool bigram_loaded = !bigram_stamp.present || bigram->LoadFromFile(bigram_path);
+        bigram->BindGeneration(loaded.bigram_generation, loaded.legacy);
+        {
+            CsGuard guard(&lock_);
+            if (cache_revision != user_cache_revision_ || path != user_dict_path_) continue;
+            const bool changed_generation = user_generation_ != loaded.generation;
+            // 文件可能已经提交而本进程尚未确认，不能把正在保存的增量再加一遍。
+            if (!changed_generation && user_data_save_active_) return true;
+            if (!changed_generation) {
+                for (const auto& change : pending_user_changes_)
+                    ApplyUserDictionaryChange(&users->dictionary, change);
+            } else {
+                pending_user_changes_.clear();
+                last_learned_pinyin_.clear();
+                last_learned_word_.clear();
+                repeat_selection_pinyin_.clear();
+                repeat_selection_text_.clear();
+                repeat_selection_count_ = 0;
+            }
+            if (bigram_loaded && bigram_ && bigram_->generation() == loaded.bigram_generation)
+                bigram->ApplyPendingFrom(*bigram_);
+            user_lexicon_ = std::move(users);
+            user_generation_ = loaded.generation;
+            user_file_stamp_ = loaded.stamp;
+            if (bigram_loaded || changed_generation) {
+                bigram_ = std::move(bigram);
+                bigram_file_stamp_ = bigram_stamp.present && bigram_loaded
+                    ? bigram_->file_stamp() : bigram_stamp;
+            }
+            ++user_cache_revision_;
+        }
+        return true;
+    }
+    return false;
+} catch (...) {
+    SHURU_LOG_WARN("user dictionary reload failed");
+    return false;
+}
+
 bool PinyinEngine::CaptureUserDictSnapshot(UserDictSnapshot* snapshot) {
-    if (snapshot == nullptr) {
-        return false;
-    }
+    if (snapshot == nullptr) return false;
     CsGuard guard(&lock_);
-    if (!user_lexicon_ || !user_lexicon_->dictionary.dirty() || user_dict_path_.empty()) {
-        return false;
-    }
+    if (!user_dict_writable_ || pending_user_changes_.empty() || user_dict_path_.empty()) return false;
     snapshot->path = user_dict_path_;
-    snapshot->entries = user_lexicon_->dictionary.SnapshotUserEntries();
+    snapshot->generation = user_generation_;
+    snapshot->changes = pending_user_changes_;
     snapshot->revision = user_dict_revision_;
     return true;
 }
 
-void PinyinEngine::CompleteUserDictSave(
-    const UserDictSnapshot& snapshot,
-    const std::vector<UserDictionaryEntry>& external_entries,
-    bool succeeded) {
-    if (!succeeded) {
-        return;
-    }
+void PinyinEngine::CompleteUserDictSave(const UserDictSnapshot& snapshot, UserDictionaryState saved) {
     CsGuard guard(&lock_);
-    if (!user_lexicon_) {
-        return;
-    }
-    if (user_lexicon_.use_count() != 1) {
-        try {
-            user_lexicon_ = std::make_shared<UserLexiconSnapshot>(*user_lexicon_);
-        } catch (...) {
-            SHURU_LOG_WARN("user dictionary merge allocation failed");
-            return;
+    if (snapshot.path != user_dict_path_ || snapshot.generation != user_generation_) return;
+    const bool changed_generation = saved.generation != user_generation_;
+    // 确认先于模型重建，避免保存成功后分配失败导致重复提交。
+    pending_user_changes_.erase(std::remove_if(pending_user_changes_.begin(), pending_user_changes_.end(),
+        [&](const UserDictionaryChange& change) {
+            return changed_generation || change.sequence <= snapshot.revision;
+        }), pending_user_changes_.end());
+    auto users = std::make_shared<UserLexiconSnapshot>();
+    users->dictionary = std::move(saved.dictionary);
+    for (const auto& change : pending_user_changes_)
+        ApplyUserDictionaryChange(&users->dictionary, change);
+    if (changed_generation) {
+        last_learned_pinyin_.clear();
+        last_learned_word_.clear();
+        repeat_selection_pinyin_.clear();
+        repeat_selection_text_.clear();
+        repeat_selection_count_ = 0;
+        if (!bigram_ || bigram_->generation() != saved.bigram_generation) {
+            bigram_ = std::make_shared<UserBigramModel>();
+            bigram_->BindGeneration(saved.bigram_generation, false);
+            bigram_file_stamp_ = {};
         }
     }
-    user_lexicon_->dictionary.ImportUserEntries(external_entries);
-    if (snapshot.revision == user_dict_revision_) {
-        user_lexicon_->dictionary.clear_dirty();
-    }
-}
-
-bool PinyinEngine::PersistUserDictSnapshot(
-    const UserDictSnapshot& snapshot,
-    std::vector<UserDictionaryEntry>* external_entries) {
-    if (snapshot.path.empty() || external_entries == nullptr) {
-        return false;
-    }
-
-    NamedMutexLock dictionary_mutex(L"Local\\CaishenPinyin.UserDictionary", 5000);
-    if (!dictionary_mutex.owns_mutex()) {
-        return false;
-    }
-
-    Dictionary merged_dictionary;
-    merged_dictionary.ImportUserEntries(snapshot.entries);
-
-    std::vector<UserDictionaryEntry> disk_entries;
-    if (FileExists(snapshot.path)) {
-        Dictionary disk_dictionary;
-        if (disk_dictionary.LoadFromFile(snapshot.path, true)) {
-            disk_entries = disk_dictionary.SnapshotUserEntries();
-            merged_dictionary.ImportUserEntries(disk_entries);
-        }
-    }
-
-    std::map<std::pair<std::string, std::wstring>, UserDictionaryEntry> local_frequencies;
-    for (const auto& entry : snapshot.entries) {
-        local_frequencies[{entry.pinyin, entry.word}] = entry;
-    }
-    external_entries->clear();
-    for (const auto& entry : disk_entries) {
-        const auto local = local_frequencies.find({entry.pinyin, entry.word});
-        if (local == local_frequencies.end() || entry.frequency > local->second.frequency || entry.selection_count > local->second.selection_count || entry.last_used_unix > local->second.last_used_unix) {
-            external_entries->push_back(entry);
-        }
-    }
-
-    return merged_dictionary.SaveUserToFile(snapshot.path);
+    user_lexicon_ = std::move(users);
+    user_generation_ = saved.generation;
+    user_file_stamp_ = saved.stamp;
+    ++user_cache_revision_;
 }
 
 bool PinyinEngine::ScheduleUserDictSave() {
-    if (save_thread_ != nullptr && save_event_ != nullptr) {
-        if (SetEvent(save_event_)) {
-            return true;
-        }
-    }
-    return false;
+    return save_thread_ != nullptr && save_event_ != nullptr && SetEvent(save_event_) != FALSE;
 }
 
 void PinyinEngine::ObserveBigram(const std::wstring& previous, const std::wstring& next) {
-    if (previous.empty() || next.empty()) return;
-    bool scheduled = false;
-    {
+    if (previous.empty() || next.empty() || !GetRuntimeConfig().learning_enabled) return;
+    try {
+        if (!ReloadUserDictionary()) return;
         CsGuard guard(&lock_);
-        const RuntimeConfig config = GetRuntimeConfig();
-        if (!config.learning_enabled || !ready_ || !bigram_) return;
-        const std::int64_t now_unix = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        // 快照写时复制：查询线程继续读旧模型，锁内只做小模型拷贝与发布。
-        std::shared_ptr<UserBigramModel> updated;
-        try {
-            updated = std::make_shared<UserBigramModel>(*bigram_);
-        } catch (...) {
-            return;
-        }
-        updated->Observe(previous, next, now_unix);
-        bigram_ = std::move(updated);
-        bigram_dirty_ = true;
-        scheduled = ScheduleUserDictSave();
+        if (!ready_ || !user_dict_writable_ || !bigram_ || save_thread_ == nullptr) return;
+        if (!bigram_->CanObserve(previous, next)) return;
+        if (bigram_.use_count() != 1) bigram_ = std::make_shared<UserBigramModel>(*bigram_);
+        if (bigram_->Observe(previous, next,
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count()))
+            ScheduleUserDictSave();
+    } catch (...) {
+        SHURU_LOG_WARN("user bigram learning failed");
     }
-    (void)scheduled;
 }
 
-std::vector<Candidate> PinyinEngine::PredictNext(
-    const std::wstring& context, size_t limit) const {
+std::vector<Candidate> PinyinEngine::PredictNext(const std::wstring& context, size_t limit) const {
     std::vector<Candidate> out;
     if (context.empty() || limit == 0) return out;
     std::shared_ptr<const UserBigramModel> bigram;
@@ -2035,86 +2165,69 @@ std::vector<Candidate> PinyinEngine::PredictNext(
         candidate.text = successor.text;
         candidate.frequency = successor.count;
         candidate.source = CandidateSource::Dynamic;
-        candidate.learnable = false;  // 联想选择经 ObserveBigram 强化，不入用户词库
+        candidate.learnable = false;
         out.push_back(std::move(candidate));
     }
     return out;
 }
 
 void PinyinEngine::Learn(const std::string& pinyin, const std::wstring& word) {
-    bool scheduled = false;
-    {
+    if (pinyin.empty() || word.empty() || !GetRuntimeConfig().learning_enabled) return;
+    try {
+        if (!ReloadUserDictionary()) return;
         CsGuard guard(&lock_);
-        const RuntimeConfig config = GetRuntimeConfig();
-        if (!config.learning_enabled || !user_dict_writable_ ||
-            !ready_ || !user_lexicon_ || pinyin.empty() || word.empty()) {
-            return;
-        }
-        // 基础词库永久只读；学习只复制通常很小的用户覆盖层，避免复制完整索引。
-        if (user_lexicon_.use_count() != 1) {
-            try {
-                user_lexicon_ = std::make_shared<UserLexiconSnapshot>(*user_lexicon_);
-            } catch (...) {
-                SHURU_LOG_WARN("user dictionary learn allocation failed");
-                return;
-            }
-        }
-        const std::string normalized_pinyin = NormalizeInput(pinyin);
-        const int base_frequency = lexicon_
-            ? lexicon_->dictionary.LookupFrequency(normalized_pinyin, word)
-            : 0;
-        user_lexicon_->dictionary.IncreaseUserWord(
-            normalized_pinyin, word, 20, base_frequency);
-        last_learned_pinyin_ = normalized_pinyin;
+        if (!user_dict_writable_ || !ready_ || !user_lexicon_ || save_thread_ == nullptr ||
+            pending_user_changes_.size() >= 65536) return;
+        if (user_lexicon_.use_count() != 1)
+            user_lexicon_ = std::make_shared<UserLexiconSnapshot>(*user_lexicon_);
+        const auto normalized = NormalizeInput(pinyin);
+        if (normalized.empty()) return;
+        const int minimum = lexicon_ ? lexicon_->dictionary.LookupFrequency(normalized, word) : 0;
+        UserDictionaryChange change {++user_dict_revision_, normalized, word, minimum,
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count(), false};
+        pending_user_changes_.push_back(std::move(change));
+        ApplyUserDictionaryChange(&user_lexicon_->dictionary, pending_user_changes_.back());
+        last_learned_pinyin_ = normalized;
         last_learned_word_ = word;
-        if (repeat_selection_pinyin_ == normalized_pinyin &&
-            repeat_selection_text_ == word) {
-            ++repeat_selection_count_;
-        } else {
-            repeat_selection_pinyin_ = normalized_pinyin;
+        if (repeat_selection_pinyin_ == normalized && repeat_selection_text_ == word)
+            repeat_selection_count_ = (std::min)(repeat_selection_count_ + 1, 2);
+        else {
+            repeat_selection_pinyin_ = normalized;
             repeat_selection_text_ = word;
             repeat_selection_count_ = 1;
         }
-        if (user_lexicon_->dictionary.dirty()) {
-            ++user_dict_revision_;
-            scheduled = ScheduleUserDictSave();
-        }
-    }
-    if (scheduled) {
-        return;
-    }
-
-    // 后台线程不可用时仍保证学习数据落盘，但文件操作不占用查询锁。
-    UserDictSnapshot snapshot;
-    if (CaptureUserDictSnapshot(&snapshot)) {
-        std::vector<UserDictionaryEntry> external_entries;
-        const bool succeeded = PersistUserDictSnapshot(snapshot, &external_entries);
-        CompleteUserDictSave(snapshot, external_entries, succeeded);
-        if (!succeeded) {
-            SHURU_LOG_WARN("PersistUserDict fallback failed");
-        }
+        ScheduleUserDictSave();
+    } catch (...) {
+        SHURU_LOG_WARN("user word learning failed");
     }
 }
 
 bool PinyinEngine::UndoLastLearning() {
-    bool changed = false;
-    {
+    try {
+        if (!ReloadUserDictionary()) return false;
         CsGuard guard(&lock_);
-        if (!user_lexicon_ || last_learned_pinyin_.empty() || last_learned_word_.empty()) return false;
-        if (user_lexicon_.use_count() != 1) {
-            try { user_lexicon_ = std::make_shared<UserLexiconSnapshot>(*user_lexicon_); }
-            catch (...) { return false; }
-        }
-        changed = user_lexicon_->dictionary.DecreaseUserWord(
+        if (!user_dict_writable_ || !user_lexicon_ || last_learned_pinyin_.empty() ||
+            last_learned_word_.empty() || pending_user_changes_.size() >= 65536) return false;
+        if (user_lexicon_.use_count() != 1)
+            user_lexicon_ = std::make_shared<UserLexiconSnapshot>(*user_lexicon_);
+        UserDictionaryChange change {++user_dict_revision_, last_learned_pinyin_,
+                                      last_learned_word_, 0, 0, true};
+        pending_user_changes_.push_back(std::move(change));
+        const bool changed = user_lexicon_->dictionary.DecreaseUserWord(
             last_learned_pinyin_, last_learned_word_, 20);
-        if (changed) {
-            ++user_dict_revision_;
-            ScheduleUserDictSave();
-        }
+        if (!changed) pending_user_changes_.pop_back();
         last_learned_pinyin_.clear();
         last_learned_word_.clear();
+        repeat_selection_pinyin_.clear();
+        repeat_selection_text_.clear();
+        repeat_selection_count_ = 0;
+        if (changed) ScheduleUserDictSave();
+        return changed;
+    } catch (...) {
+        SHURU_LOG_WARN("user word undo failed");
+        return false;
     }
-    return changed;
 }
 
 bool PinyinEngine::ExportUserDictionary(const std::wstring& path) const {
@@ -2128,37 +2241,31 @@ bool PinyinEngine::ExportUserDictionary(const std::wstring& path) const {
 }
 
 bool PinyinEngine::ImportUserDictionary(const std::wstring& path) {
-    Dictionary imported;
-    if (!imported.LoadFromFile(path, true)) return false;
-    {
-        CsGuard guard(&lock_);
-        if (!user_lexicon_ || !user_dict_writable_) return false;
-        if (user_lexicon_.use_count() != 1) {
-            try { user_lexicon_ = std::make_shared<UserLexiconSnapshot>(*user_lexicon_); }
-            catch (...) { return false; }
-        }
-        user_lexicon_->dictionary.ImportUserEntries(imported.SnapshotUserEntries());
-        // ImportUserEntries represents persisted state; force this merged state to disk.
-        for (const auto& entry : imported.SnapshotUserEntries())
-            user_lexicon_->dictionary.IncreaseUserWord(entry.pinyin, entry.word, 1, entry.frequency - 1);
-        ++user_dict_revision_;
-        ScheduleUserDictSave();
+    try {
+        UserDictionaryState imported, saved;
+        if (!LoadUserDictionaryState(path, &imported) || !imported.stamp.present) return false;
+        const auto target = user_dict_path();
+        if (target.empty() || !ReplaceUserDictionary(target,
+                imported.dictionary.SnapshotUserEntries(), true, &saved)) return false;
+        return ReloadUserDictionary(true);
+    } catch (...) {
+        SHURU_LOG_WARN("user dictionary import failed");
+        return false;
     }
-    return true;
 }
 
 bool PinyinEngine::ClearUserDictionary() {
-    {
-        CsGuard guard(&lock_);
-        if (!user_lexicon_ || !user_dict_writable_) return false;
-        user_lexicon_ = std::make_shared<UserLexiconSnapshot>();
-        user_lexicon_->dictionary.ClearUserEntries();
-        ++user_dict_revision_;
-        last_learned_pinyin_.clear();
-        last_learned_word_.clear();
-        ScheduleUserDictSave();
+    try {
+        const auto path = user_dict_path();
+        if (path.empty()) return false;
+        UserDictionaryState saved;
+        const bool cleared = ReplaceUserDictionary(path, {}, false, &saved);
+        const bool reloaded = ReloadUserDictionary(true);
+        return cleared && reloaded;
+    } catch (...) {
+        SHURU_LOG_WARN("user dictionary clear failed");
+        return false;
     }
-    return true;
 }
 
 }  // namespace shuru

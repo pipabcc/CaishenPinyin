@@ -131,6 +131,7 @@ PinyinEngine* SharedEngine::Acquire(const std::wstring& lexicon_dir) {
     const long loading = static_cast<long>(InterlockedCompareExchange(&g_loading, 0, 0));
     LeaveCriticalSection(&g_shared_cs);
     SHURU_LOG_INFO("SharedEngine acquire ref=%ld ready=%d loading=%ld", refs, ready, loading);
+    if (ready != 0) out->ReloadUserDictionary();
     return out;
 }
 

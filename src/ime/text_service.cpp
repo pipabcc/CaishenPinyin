@@ -363,6 +363,8 @@ TextService::~TextService() {
     ClearCompositionState();
     candidate_window_.SetSelectionHandler({});
     candidate_window_.SetPinHandler({});
+    candidate_window_.SetExpandHandler({});
+    candidate_window_.SetUserDataChangedHandler({});
     candidate_window_.Destroy();
     SharedStatusUi::Unbind(this);
     if (status_ui_acquired_) {
@@ -441,6 +443,7 @@ STDMETHODIMP_(ULONG) TextService::Release() {
 HRESULT TextService::InitEngine() {
     // 已拿到共享引擎指针即可；词库可能仍在后台加载，不阻塞 Activate
     if (engine_ != nullptr) {
+        engine_->ReloadUserDictionary();
         return S_OK;
     }
     // 候选窗/状态栏延后到首次焦点或组字，Activate 只拿引擎指针
@@ -470,6 +473,7 @@ HRESULT TextService::InitEngine() {
     if (!engine_->IsReady()) {
         SHURU_LOG_INFO("shared engine loading in background");
     } else {
+        engine_->ReloadUserDictionary();
         if (!engine_->ReloadCustomPhrases()) {
             SHURU_LOG_WARN("custom phrase reload failed; retaining previous snapshot");
         }
@@ -491,6 +495,18 @@ void TextService::EnsureUiWindows() {
     } else {
         candidate_window_.SetSelectionHandler([this](size_t index) {
             OnCandidateSelected(index);
+        });
+        candidate_window_.SetExpandHandler([this]() {
+            EnsureCandidateCapacity(candidate_state_.PageSize() * 5 + 1);
+            SyncCandidateWindowCandidates();
+        });
+        candidate_window_.SetUserDataChangedHandler([this]() {
+            if (engine_ != nullptr) engine_->ReloadUserDictionary(true);
+            last_committed_word_.clear();
+            if (!composing_pinyin_.empty() && edit_context_ != nullptr && !IsPasswordContext(edit_context_)) {
+                RefreshCandidates();
+                UpdateCandidateWindow(edit_context_);
+            }
         });
         candidate_window_.SetPinHandler([this](size_t index) {
             OnCandidatePinToggled(index);
@@ -559,9 +575,8 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD /
     if (!activation_state_.Empty()) return TF_E_ALREADY_EXISTS;
 
     owner_thread_id_ = GetCurrentThreadId();
-    // 开始菜单搜索框等 AppContainer 宿主读不到默认 ACL 下的用户数据目录，
-    // 会退回内置皮肤并丢失统计与学习结果。沙箱内改不了 DACL，只能由普通
-    // 宿主在这里代为授权；进程内只实际执行一次。
+    // 普通宿主为公共资源补齐沙箱只读权限，同时收敛旧的个人数据宽权限。
+    // 沙箱不读写个人学习数据；迁移在每个普通进程中只执行一次。
     EnsureUserDataAppContainerAccess();
     // Settings are process-cached; re-read on every TSF activation so switching away/back
     // applies an atomically replaced settings file without restarting the host process.
@@ -891,6 +906,7 @@ STDMETHODIMP TextService::OnPopContext(ITfContext* pic) {
 
 STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     if (fForeground) {
+        if (engine_ != nullptr) engine_->ReloadUserDictionary();
         if (edit_context_ != nullptr) ArmFirstKeyRecoveryFocus();
         StopShortcutReleasePolling();
         shortcut_modifier_state_.ResetFromPhysical(
@@ -901,7 +917,19 @@ STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
         SharedStatusUi::Bind(this);
         SyncStatusUi();
         SharedStatusUi::Hide();
+        if (!composing_pinyin_.empty() && edit_context_ != nullptr) {
+            if (IsPasswordContext(edit_context_)) {
+                EndComposition();
+                ClearCompositionState();
+                candidate_window_.Hide();
+            } else {
+                RefreshCandidates();
+                UpdateCandidateWindow(edit_context_);
+            }
+        }
     } else {
+        candidate_readiness_.Invalidate();
+        candidate_window_.StopReadyPolling();
         CancelFirstKeyRecovery(false);
         shift_tap_.Reset();
         StopShiftReleasePolling();
@@ -1260,6 +1288,8 @@ void TextService::CancelDirectTextCommit() noexcept {
 }
 
 void TextService::OnCandidateSelected(size_t index) {
+    candidate_readiness_.BeforeSelection(engine_ != nullptr && engine_->IsReady(),
+        [this] { RefreshCandidates(); });
     if (edit_context_ == nullptr || index >= current_result_.candidates.size()) return;
     if (!CommitCandidate(edit_context_, current_result_.candidates[index]))
         SHURU_LOG_WARN("mouse candidate commit failed or zero coverage");
@@ -1966,6 +1996,7 @@ bool TextService::IsKeyEaten(
         if (wparam >= '1' && wparam <= '9') {
             const int number = static_cast<int>(wparam - '1');
             return engine_ == nullptr || !engine_->IsReady() ||
+                   candidate_readiness_.waiting() ||
                    candidate_state_.IsSelectableSlot(static_cast<size_t>(number));
         }
         if (IsNumpadDigit(wparam) || wparam == VK_DECIMAL || wparam == VK_DIVIDE ||
@@ -1982,6 +2013,7 @@ bool TextService::IsKeyEaten(
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+    RuntimeConfigScope config_scope;
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -2067,6 +2099,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
 }
 
 STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+    RuntimeConfigScope config_scope;
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -2089,6 +2122,7 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lPa
 }
 
 STDMETHODIMP TextService::OnKeyUp(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+    RuntimeConfigScope config_scope;
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -2126,6 +2160,7 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* /*pic*/, REFGUID /*rguid*/,
 }
 
 STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+    RuntimeConfigScope config_scope;
     if (pfEaten == nullptr) {
         return E_INVALIDARG;
     }
@@ -2324,6 +2359,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     // 行导航，不能再进入分页分支。
     const CandidatePagingDirection paging = GetCandidatePagingDirection(wparam, shift_down);
     if (!composing_pinyin_.empty() && paging != CandidatePagingDirection::None) {
+        if (paging == CandidatePagingDirection::Next)
+            EnsureCandidateCapacity((candidate_state_.page + 2) * candidate_state_.PageSize() + 1);
         if (paging == CandidatePagingDirection::Previous)
             candidate_state_.PreviousPage();
         else
@@ -2344,6 +2381,8 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
                 UpdateCandidateWindow(context);
             }
         } else if (!current_result_.candidates.empty()) {
+            if (row_direction == CandidateRowDirection::Down)
+                EnsureCandidateCapacity(candidate_state_.selected + candidate_state_.PageSize() * 2 + 1);
             if (row_direction == CandidateRowDirection::Up)
                 candidate_state_.MoveRowUp();
             else
@@ -2498,6 +2537,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             }
             return true;
         }
+        candidate_readiness_.BeforeSelection(engine_->IsReady(), [this] { RefreshCandidates(); });
         const size_t global_index = candidate_state_.GlobalIndex(static_cast<size_t>(number));
         if (candidate_state_.IsSelectableSlot(static_cast<size_t>(number)) &&
             global_index < current_result_.candidates.size()) {
@@ -2538,6 +2578,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             }
             return true;
         }
+        candidate_readiness_.BeforeSelection(engine_->IsReady(), [this] { RefreshCandidates(); });
         HRESULT hr = E_FAIL;
         if (!current_result_.candidates.empty()) {
             const auto& cand = current_result_.candidates[
@@ -2587,8 +2628,13 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
             const bool vertical_utility = IsVerticalUtilityMode(composing_pinyin_);
             if (vertical_utility || wparam == VK_LEFT || wparam == VK_RIGHT) {
                 if (wparam == VK_LEFT || wparam == VK_UP) {
+                    if (candidate_state_.selected == 0)
+                        EnsureCandidateCapacity(candidate_state_.PageSize() * 10);
                     candidate_state_.MovePrevious();
                 } else {
+                    EnsureCandidateCapacity(
+                        ((candidate_state_.selected + 1) / candidate_state_.PageSize() + 1) *
+                        candidate_state_.PageSize() + 1);
                     candidate_state_.MoveNext();
                 }
                 // 同步完整候选内容和当前页，跨页选择时窗口立即滚动。
@@ -2657,10 +2703,15 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
 
 void TextService::RefreshCandidates() {
     EnsureUiWindows();
+    candidate_readiness_.Invalidate();
+    candidate_window_.StopReadyPolling();
 
     current_result_ = {};
     candidate_state_.selected = 0;
     candidate_state_.page = 0;
+    candidate_query_input_.clear();
+    candidate_query_limit_ = 0;
+    candidate_query_has_more_ = false;
 
     std::wstring comp = PinyinToWide(composing_pinyin_);
     candidate_display_fallback_ = comp;
@@ -2724,6 +2775,7 @@ void TextService::RefreshCandidates() {
             current_result_.candidates.clear();
             candidate_state_ = {};
             SyncCandidateWindowCandidates();
+            StartEngineReadyPolling();
             return;
         }
         // 异常保底（仅加载失败）：提供当前输入拼音作为回退候选，避免
@@ -2739,13 +2791,7 @@ void TextService::RefreshCandidates() {
         candidate_state_.selected = 0;
         candidate_state_.page = 0;
         SyncCandidateWindowCandidates();
-        candidate_window_.StartReadyPolling([this]() {
-            if (composing_pinyin_.empty()) return false;
-            if (engine_ == nullptr || !engine_->IsReady()) return true;
-            RefreshCandidates();
-            UpdateCandidateWindow(edit_context_);
-            return false;
-        });
+        StartEngineReadyPolling();
         return;
     }
     candidate_window_.StopReadyPolling();
@@ -2768,13 +2814,49 @@ void TextService::RefreshCandidates() {
     options.context = last_committed_word_;
     engine_->SetQueryOptions(options);
     shuangpin_mode_ = (options.schema == InputSchema::ShuangpinXiaohe);
-    current_result_ = engine_->Query(composing_pinyin_, candidate_count * 10, options);
+    candidate_query_input_ = composing_pinyin_;
+    candidate_query_options_ = options;
+    candidate_query_limit_ = candidate_count * (candidate_window_.IsExpanded() ? 5 : 1) + 1;
+    current_result_ = engine_->Query(composing_pinyin_, candidate_query_limit_, options);
+    candidate_query_has_more_ = current_result_.candidates.size() == candidate_query_limit_;
     candidate_state_.total = current_result_.candidates.size();
     candidate_state_.page_size = candidate_count;
     candidate_state_.Clamp();
     candidate_display_fallback_ = engine_->FormatComposingDisplay(composing_pinyin_);
     if (candidate_display_fallback_.empty()) candidate_display_fallback_ = comp;
     SyncCandidateWindowCandidates();
+}
+
+void TextService::StartEngineReadyPolling() {
+    const auto generation = candidate_readiness_.BeginWait(edit_context_, composing_pinyin_);
+    ITfContext* const context = edit_context_;
+    candidate_window_.StartReadyPolling([this, generation, context] {
+        if (!IsOwnerThread() || context == nullptr || context != edit_context_) return false;
+        const bool ready = engine_ != nullptr && engine_->IsReady();
+        return candidate_readiness_.Poll(generation, context, composing_pinyin_, ready,
+            SharedEngine::IsLoading(), [this, context] {
+                if (!IsCurrentTopContext(context) || IsPasswordContext(context)) return;
+                RefreshCandidates();
+                UpdateCandidateWindow(context);
+            });
+    });
+}
+
+void TextService::EnsureCandidateCapacity(size_t minimum) {
+    if (!candidate_query_has_more_ || engine_ == nullptr || !engine_->IsReady() ||
+        candidate_query_input_ != composing_pinyin_ ||
+        minimum <= current_result_.candidates.size() ||
+        IsVerticalUtilityMode(composing_pinyin_)) return;
+    const size_t maximum = candidate_query_options_.candidate_page_size * 10;
+    const size_t requested = (std::min)(maximum,
+        (std::max)(minimum, candidate_query_limit_ + candidate_query_options_.candidate_page_size));
+    if (requested <= candidate_query_limit_) return;
+    auto expanded = engine_->Query(candidate_query_input_, requested, candidate_query_options_);
+    candidate_query_has_more_ = expanded.candidates.size() == requested && requested < maximum;
+    candidate_query_limit_ = requested;
+    AppendCandidateExpansion(&current_result_, std::move(expanded), maximum);
+    candidate_state_.total = current_result_.candidates.size();
+    candidate_state_.Clamp();
 }
 
 void TextService::SyncCandidateWindowCandidates() {
@@ -2793,7 +2875,7 @@ void TextService::SyncCandidateWindowCandidates() {
         IsUtilityMode(composing_pinyin_),
         IsVerticalUtilityMode(composing_pinyin_));
     candidate_window_.SetPinningEnabled(
-        engine_ != nullptr && engine_->IsReady() &&
+        !IsCurrentProcessAppContainer() && engine_ != nullptr && engine_->IsReady() &&
         !association_active_ && !composing_pinyin_.empty() &&
         !IsUtilityMode(composing_pinyin_));
 }
@@ -3114,6 +3196,7 @@ void TextService::AbortRejectedComposition(
 }
 
 void TextService::ClearCompositionState() {
+    candidate_readiness_.Invalidate();
     candidate_window_.StopVModeTimer();
     candidate_window_.StopDeferredAction();
     composing_pinyin_.clear();
@@ -3191,7 +3274,7 @@ HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text, b
             recent_committed_text_.erase(0, recent_committed_text_.size() - 128);
         }
         if (count_typing_stats) {
-            candidate_window_.SetTypingStats(typing_stats_.Record(text));
+            candidate_window_.SetTypingStats(RecordTypingStatsAsync(text));
         }
     }
     return final_hr;

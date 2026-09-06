@@ -2,10 +2,12 @@
 
 #include "candidate.h"
 #include "engine_snapshot.h"
+#include "query_work_budget.h"
 
 #include <array>
 #include <cstdint>
 #include <map>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -63,18 +65,22 @@ public:
     static int ComputeLearningScore(int selection_count, std::int64_t last_used_unix, std::int64_t now_unix = 0);
     void ClearUserEntries();
 
-    bool SaveUserToFile(const std::wstring& path) const;
+    bool SaveUserToFile(const std::wstring& path, const std::string& generation = {},
+                        const std::string& bigram_generation = {}) const;
     std::vector<UserDictionaryEntry> SnapshotUserEntries() const;
     void ImportUserEntries(const std::vector<UserDictionaryEntry>& entries);
     bool dirty() const { return dirty_; }
     void clear_dirty() const { dirty_ = false; }
 
     std::vector<Candidate> LookupExact(const std::string& pinyin) const;
-    std::vector<Candidate> LookupPrefix(const std::string& pinyin_prefix, size_t limit = 64) const;
-    std::vector<Candidate> LookupJianpin(const std::string& jianpin, size_t limit = 64) const;
-    std::vector<Candidate> LookupMixed(const std::string& input, size_t limit = 64) const;
+    std::vector<Candidate> LookupPrefix(const std::string& pinyin_prefix, size_t limit = 64,
+        QueryWorkBudget* budget = nullptr) const;
+    std::vector<Candidate> LookupJianpin(const std::string& jianpin, size_t limit = 64,
+        QueryWorkBudget* budget = nullptr) const;
+    std::vector<Candidate> LookupMixed(const std::string& input, size_t limit = 64,
+        QueryWorkBudget* budget = nullptr) const;
     std::vector<MixedPrefixMatch> LookupMixedPrefixes(
-        const std::string& input, size_t limit = 64) const;
+        const std::string& input, size_t limit = 64, QueryWorkBudget* budget = nullptr) const;
 
     size_t Size() const;
     size_t JianpinSize() const;
@@ -140,9 +146,14 @@ private:
     bool bulk_loading_ = false;
 
     BucketRef FindBucket(std::string_view key) const;
+    std::wstring_view EntryWordView(const Entry* entry, const SnapshotEntryRecord* record) const;
+    Candidate BuildCandidate(const std::string& key,
+        const Entry* entry, const SnapshotEntryRecord* record) const;
     void AppendBucketCandidates(
         const std::string& key, const BucketRef& bucket,
-        std::vector<Candidate>* out) const;
+        std::vector<Candidate>* out,
+        size_t maximum = (std::numeric_limits<size_t>::max)(),
+        size_t syllable_count = 0) const;
     std::wstring MappedEntryWord(const SnapshotEntryRecord& record) const;
 
     // 双模式访问器：查询路径一律经由它们触达 Trie/音节表/指纹，屏蔽
@@ -185,10 +196,11 @@ private:
     int FindSyllableChild(int node, std::uint16_t syllable_id) const;
     void TrieInsert(const std::string& pinyin);
     void SyllableTrieInsert(const std::string& pinyin);
-    void CollectTriePrefix(const std::string& prefix, size_t limit, std::vector<std::string>* out_keys) const;
+    void CollectTriePrefix(const std::string& prefix, size_t limit,
+        std::vector<std::string>* out_keys, QueryWorkBudget* budget = nullptr) const;
     void CollectTrieSubtree(
         int node, const std::string& prefix, size_t limit,
-        std::vector<std::string>* out_keys) const;
+        std::vector<std::string>* out_keys, QueryWorkBudget* budget = nullptr) const;
 
     void RebuildTrieIndex();
     void RebuildSyllableTrieIndex();
@@ -198,7 +210,6 @@ private:
     void IndexPinyinKey(const std::string& pinyin);
 
     static void SortEntries(std::vector<Entry>& entries);
-    static std::vector<Candidate> ToCandidates(const std::string& pinyin, const std::vector<Entry>& entries);
 };
 
 }  // namespace shuru
