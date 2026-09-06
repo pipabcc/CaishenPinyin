@@ -86,24 +86,43 @@ bool VerifyFailedReloadKeepsPublishedSnapshot(
 }
 
 bool VerifyLearningDuringConcurrentQueries(shuru::PinyinEngine& engine) {
+    constexpr int kReaderCount = 4;
+    constexpr int kLearningCount = 20;
     std::atomic<bool> stop {false};
+    std::atomic<int> readers_ready {0};
+    std::atomic<int> concurrent_queries {0};
+    std::atomic<bool> learning_started {false};
     std::atomic<int> failures {0};
     std::atomic<long long> maximum_learn_latency_us {0};
     std::vector<std::thread> readers;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < kReaderCount; ++i) {
         readers.emplace_back([&]() {
+            bool announced_ready = false;
             while (!stop.load(std::memory_order_acquire)) {
                 const auto result = engine.Query("ni", 9);
                 if (result.candidates.empty()) {
                     failures.fetch_add(1, std::memory_order_relaxed);
                 }
+                if (!announced_ready) {
+                    readers_ready.fetch_add(1, std::memory_order_release);
+                    announced_ready = true;
+                }
+                if (learning_started.load(std::memory_order_acquire))
+                    concurrent_queries.fetch_add(1, std::memory_order_relaxed);
+                // 持续占满两核 CI 会把线程未获调度的时间计入学习延迟。
+                // 每轮真实查询后让出时间片，仍保留并发快照与写入竞争。
+                SwitchToThread();
             }
         });
     }
 
+    while (readers_ready.load(std::memory_order_acquire) != kReaderCount) SwitchToThread();
+    learning_started.store(true, std::memory_order_release);
+
     // 一音节只能学习一个汉字；多字样本会被标准拼音结构校验正确过滤。
     constexpr wchar_t kLearnedWord[] = L"拟";
-    for (int i = 0; i < 20; ++i) {
+    for (int i = 0; i < kLearningCount; ++i) {
+        const int queries_before_learning = concurrent_queries.load(std::memory_order_relaxed);
         const auto started = std::chrono::steady_clock::now();
         engine.Learn("ni", kLearnedWord);
         const auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -113,7 +132,11 @@ bool VerifyLearningDuringConcurrentQueries(shuru::PinyinEngine& engine) {
                !maximum_learn_latency_us.compare_exchange_weak(
                    observed, latency, std::memory_order_relaxed)) {
         }
+        // 极快的学习循环也必须与真实查询交错；调度等待不计入被测调用。
+        while (concurrent_queries.load(std::memory_order_relaxed) == queries_before_learning)
+            SwitchToThread();
     }
+    learning_started.store(false, std::memory_order_release);
     stop.store(true, std::memory_order_release);
     for (auto& reader : readers) {
         reader.join();
@@ -126,8 +149,10 @@ bool VerifyLearningDuringConcurrentQueries(shuru::PinyinEngine& engine) {
     }
     const long long maximum_ms = (maximum_learn_latency_us.load() + 999) / 1000;
     std::cout << "learning maximum latency with active readers: " << maximum_ms << " ms\n";
+    std::cout << "queries completed during learning: " << concurrent_queries.load() << "\n";
     // 压力词库有 40 万行；若误复制基础快照，学习延迟会明显越过此上限。
-    return failures.load() == 0 && found && maximum_ms < 100;
+    return failures.load() == 0 && concurrent_queries.load() >= kLearningCount &&
+           found && maximum_ms < 100;
 }
 
 bool VerifyQueryOptionSnapshots(shuru::PinyinEngine& engine) {
