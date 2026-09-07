@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <thread>
 
+int RunCompositionLifecycleTest();
+
 namespace {
 
 constexpr UINT kStopThread = WM_APP + 0x71;
@@ -82,7 +84,9 @@ bool WaitReady(HANDLE event) {
 
 }  // namespace
 
-int wmain() {
+int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && wcscmp(argv[1], L"--composition-lifecycle") == 0)
+        return RunCompositionLifecycleTest();
     HINSTANCE instance = GetModuleHandleW(nullptr);
     HANDLE ready_a = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     HANDLE ready_b = CreateEventW(nullptr, TRUE, FALSE, nullptr);

@@ -296,33 +296,6 @@ bool TryMapChinesePunctuation(WPARAM wparam, bool shift, wchar_t* punctuation) {
     }
 }
 
-bool IsPasswordWindow(HWND window) {
-    if (window == nullptr) {
-        return false;
-    }
-    wchar_t class_name[64] = {};
-    if (GetClassNameW(window, class_name, ARRAYSIZE(class_name)) > 0) {
-        if (_wcsicmp(class_name, L"PasswordBox") == 0 ||
-            _wcsicmp(class_name, L"CredentialEdit") == 0) {
-            return true;
-        }
-        // 只有标准的 Edit 与 RichEdit 控件，ES_PASSWORD (0x0020) 才是密码框样式。
-        // 绝不能对任意父容器窗口盲目检查 0x0020 位，避免将搜索框、查找框等误判为密码框。
-        if (_wcsicmp(class_name, L"Edit") == 0 ||
-            _wcsicmp(class_name, L"RichEdit") == 0 ||
-            _wcsicmp(class_name, L"RichEdit20W") == 0 ||
-            _wcsicmp(class_name, L"RichEdit20A") == 0 ||
-            _wcsicmp(class_name, L"RICHEDIT50W") == 0 ||
-            _wcsicmp(class_name, L"RICHEDIT60W") == 0) {
-            const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-            if ((style & ES_PASSWORD) != 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 HWND ContextWindow(ITfContext* context) {
     if (context != nullptr) {
         ITfContextView* view = nullptr;
@@ -1018,7 +991,7 @@ void TextService::ShowAssociation(ITfContext* /*context*/) {
     candidate_window_.Hide();
 }
 
-bool TextService::CommitCandidate(ITfContext* context, const Candidate& candidate) {
+bool TextService::CommitCandidate(ITfContext* context, Candidate candidate) {
     auto finish_external_paste = [&](const char* operation) {
         const HRESULT end_result = EndComposition();
         if (FAILED(end_result)) {
@@ -1586,6 +1559,7 @@ bool TextService::BeginFirstKeyRecovery(
                 first_key_recovery_pending_ &&
                 pending_first_key_generation_ == generation) {
                 composing_pinyin_.clear();
+                composition_text_ = adopted_text;
                 composing_pinyin_.reserve(adopted_text.size());
                 for (const wchar_t character : adopted_text) {
                     composing_pinyin_.push_back(static_cast<char>(character));
@@ -3200,6 +3174,7 @@ void TextService::ClearCompositionState() {
     candidate_window_.StopVModeTimer();
     candidate_window_.StopDeferredAction();
     composing_pinyin_.clear();
+    composition_text_.clear();
     SafeRelease(&recovered_composition_start_);
     candidate_state_ = {};
     current_result_ = {};
@@ -3225,21 +3200,36 @@ void TextService::ResetCandidateAnchor() noexcept {
 }
 
 HRESULT TextService::EndComposition() {
-    if (composition_ == nullptr || edit_context_ == nullptr) {
-        if (composition_ != nullptr) {
-            SHURU_LOG_WARN("composition released without edit context");
-        }
-        SafeRelease(&composition_);
-        return S_OK;
-    }
-    auto* session = new (std::nothrow) EndCompositionEditSession(&composition_);
+    if (composition_ == nullptr) return S_OK;
+    ITfComposition* ending = composition_;
+    auto* session = new (std::nothrow) EndCompositionEditSession(ending, composition_text_);
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }
+    ITfRange* range = nullptr;
+    ITfContext* owner = nullptr;
+    HRESULT hr = ending->GetRange(&range);
+    if (SUCCEEDED(hr) && range != nullptr) hr = range->GetContext(&owner);
+    SafeRelease(&range);
+    if (FAILED(hr) || owner == nullptr) {
+        session->Release();
+        SafeRelease(&owner);
+        return FAILED(hr) ? hr : E_FAIL;
+    }
     HRESULT hr_session = S_OK;
-    const HRESULT hr = edit_context_->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
+    hr = owner->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &hr_session);
+    HRESULT result = SUCCEEDED(hr) ? hr_session : hr;
+    if (FAILED(result)) {
+        // 焦点/复制通知可能持有只读锁。排队清理保有独立引用的旧组合，
+        // 不让异步会话通过成员指针误操作后续输入的新组合。
+        hr_session = E_FAIL;
+        hr = owner->RequestEditSession(client_id_, session, TF_ES_ASYNC | TF_ES_READWRITE, &hr_session);
+        result = SUCCEEDED(hr) ? hr_session : hr;
+    }
+    if (SUCCEEDED(result) && composition_ == ending) SafeRelease(&composition_);
+    owner->Release();
     session->Release();
-    return SUCCEEDED(hr) ? hr_session : hr;
+    return result;
 }
 
 HRESULT TextService::CommitText(ITfContext* context, const std::wstring& text, bool count_typing_stats) {
@@ -3341,6 +3331,7 @@ HRESULT TextService::SetCompositionString(ITfContext* context, const std::wstrin
     composition_edit_in_progress_ = false;
     session->Release();
     const HRESULT final_hr = SUCCEEDED(hr) ? hr_session : hr;
+    if (SUCCEEDED(final_hr) && composition_ != nullptr) composition_text_ = text;
     if (FAILED(final_hr) || text.empty()) {
         candidate_position_pending_ = false;
         candidate_layout_notified_ = false;
@@ -3407,7 +3398,20 @@ STDMETHODIMP TextService::OnLayoutChange(
     return S_OK;
 }
 
-STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie /*ecWrite*/, ITfComposition* /*pComposition*/) {
+STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie /*ecWrite*/, ITfComposition* pComposition) {
+    if (composition_ == nullptr || pComposition == nullptr) return S_OK;
+    // 复制或焦点切换可能让旧组合的通知迟到；释放新组合会在宿主中留下孤立组合。
+    IUnknown* current_identity = nullptr;
+    IUnknown* terminated_identity = nullptr;
+    const bool matches = SUCCEEDED(composition_->QueryInterface(
+        IID_IUnknown, reinterpret_cast<void**>(&current_identity))) &&
+        SUCCEEDED(pComposition->QueryInterface(
+            IID_IUnknown, reinterpret_cast<void**>(&terminated_identity))) &&
+        current_identity != nullptr && terminated_identity != nullptr &&
+        current_identity == terminated_identity;
+    SafeRelease(&current_identity);
+    SafeRelease(&terminated_identity);
+    if (!matches) return S_OK;
     CancelFirstKeyRecovery(true);
     SafeRelease(&composition_);
     ClearCompositionState();

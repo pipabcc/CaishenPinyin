@@ -27,8 +27,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $releasedTags = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) { throw '查询现有 Release 失败' }
+          if ($releasedTags -ccontains $env:GITHUB_REF_NAME) {
             'exists=true' >> $env:GITHUB_OUTPUT
             Write-Host '该标签已有 Release，跳过自动重建和覆盖。'
           } else {

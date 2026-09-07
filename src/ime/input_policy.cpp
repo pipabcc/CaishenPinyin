@@ -1,6 +1,24 @@
 #include "input_policy.h"
+#include <cwchar>
 
 namespace shuru {
+
+bool IsPasswordWindow(HWND window) {
+    if (window == nullptr) return false;
+    wchar_t class_name[64]{};
+    if (GetClassNameW(window, class_name, ARRAYSIZE(class_name)) <= 0) return false;
+    if (_wcsicmp(class_name, L"PasswordBox") == 0 ||
+        _wcsicmp(class_name, L"CredentialEdit") == 0) return true;
+    // 0x0020 在普通容器上有其他含义，只有标准编辑控件才能按密码样式解释。
+    if (_wcsicmp(class_name, L"Edit") == 0 ||
+        _wcsicmp(class_name, L"RichEdit") == 0 ||
+        _wcsicmp(class_name, L"RichEdit20W") == 0 ||
+        _wcsicmp(class_name, L"RichEdit20A") == 0 ||
+        _wcsicmp(class_name, L"RICHEDIT50W") == 0 ||
+        _wcsicmp(class_name, L"RICHEDIT60W") == 0)
+        return (GetWindowLongPtrW(window, GWL_STYLE) & ES_PASSWORD) != 0;
+    return false;
+}
 
 bool IsSensitiveInputScope(InputScope scope) {
     switch (scope) {

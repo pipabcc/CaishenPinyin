@@ -10,6 +10,7 @@ namespace shuru {
 enum class InputScopePrivacy { Unknown, Normal, Sensitive };
 bool IsSensitiveInputScope(InputScope scope);
 InputScopePrivacy ClassifyInputScopes(const InputScope* scopes, UINT count);
+bool IsPasswordWindow(HWND window);
 
 // F10 modifies the current runtime schema. The persisted setting takes over
 // only when its value actually changes afterwards.

@@ -82,6 +82,8 @@ private:
     ITfContext* edit_context_ = nullptr;
 
     ITfComposition* composition_ = nullptr;
+    // 最近一次成功写入的预编辑文本，用于避免延后清理误删宿主已修改的正文。
+    std::wstring composition_text_;
     bool english_mode_ = false;
     bool shuangpin_mode_ = false;  // 小鹤双拼
     SchemaSyncState schema_sync_;
@@ -253,7 +255,8 @@ private:
     void OnSoftKey(wchar_t ch, bool is_special);
     void OnCandidateSelected(size_t index);
     void OnCandidatePinToggled(size_t index);
-    bool CommitCandidate(ITfContext* context, const Candidate& candidate);
+    // COM 编辑可能重入并清空候选容器，提交期间需要持有自己的候选副本。
+    bool CommitCandidate(ITfContext* context, Candidate candidate);
     bool CommitRawComposition(ITfContext* context);
     static void SendVirtualKey(WORD vk);
 
