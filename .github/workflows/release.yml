@@ -51,6 +51,9 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne $expectedTag) {
             throw "标签 $env:GITHUB_REF_NAME 与源码版本 $expectedTag 不一致"
           }
+          if (-not (Test-Path -LiteralPath "docs/releases/$expectedTag.md" -PathType Leaf)) {
+            throw "缺少对应版本的发布说明：docs/releases/$expectedTag.md"
+          }
 
       - name: 配置 Python 3.11
         if: steps.release-state.outputs.exists != 'true'
@@ -74,7 +77,23 @@ jobs:
         shell: pwsh
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_installer.ps1 -Config Release
+          if ($LASTEXITCODE -ne 0) { throw 'Setup 构建或验证失败' }
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_portable.ps1 -SigningPolicy Off
+          if ($LASTEXITCODE -ne 0) { throw 'Portable 构建或验证失败' }
+
+          $notes = Get-Content -LiteralPath "docs/releases/$env:GITHUB_REF_NAME.md" -Raw -Encoding UTF8
+          $rows = @(Get-ChildItem -LiteralPath artifacts/installer -Filter '*.sha256' |
+            Sort-Object Name | ForEach-Object {
+              $parts = (Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8).Trim() -split '\s+', 2
+              if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[0-9a-f]{64}$') {
+                throw "校验文件格式错误：$($_.Name)"
+              }
+              '| {0} | `{1}` |' -f $parts[1], $parts[0]
+            })
+          if ($rows.Count -ne 2) { throw '必须生成 Setup 与 Portable 两份 SHA-256' }
+          $notes += "`n`n## SHA-256`n`n| 文件 | SHA-256 |`n|---|---|`n" + ($rows -join "`n") + "`n"
+          $notesOutput = Join-Path $PWD.Path 'artifacts/installer/release-notes.md'
+          [IO.File]::WriteAllText($notesOutput, $notes, [Text.UTF8Encoding]::new($false))
 
       - name: 保存发行产物
         if: steps.release-state.outputs.exists != 'true'
@@ -86,6 +105,7 @@ jobs:
             artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe.sha256
             artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip
             artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip.sha256
+            artifacts/installer/release-notes.md
           if-no-files-found: error
 
       - name: 发布 GitHub Release
@@ -93,19 +113,14 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: 财神输入法 ${{ github.ref_name }}
-          body: |
-            > 本版本尚未进行 Authenticode 代码签名。UAC 会显示“未知发布者”，SmartScreen
-            > 也可能告警。请只从本 Release 下载，并在运行前核对随附的 SHA-256。
-
-            Setup 适合普通安装、升级和标准卸载；Portable 必须完整解压，并以管理员身份
-            运行包内安装脚本。两种文件是同一版本的不同部署形式。
+          body_path: artifacts/installer/release-notes.md
           files: |
             artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe
             artifacts/installer/CaishenPinyin-*-win-x64-Setup.exe.sha256
             artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip
             artifacts/installer/CaishenPinyin-*-win-x64-Portable.zip.sha256
           fail_on_unmatched_files: true
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: false
           make_latest: true
