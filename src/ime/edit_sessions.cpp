@@ -10,9 +10,42 @@
 #include <new>
 #include <InputScope.h>
 #include <utility>
+#include <wrl/client.h>
 
 namespace shuru {
 namespace {
+
+bool CanInspectCompositionText(ITfRange* range, TfEditCookie cookie) {
+    Microsoft::WRL::ComPtr<ITfContext> context;
+    if (FAILED(range->GetContext(&context)) || !context) return false;
+    InputScopePrivacy privacy = InputScopePrivacy::Unknown;
+    ReadContextInputScopePrivacy(context.Get(), cookie, &privacy);
+    if (privacy == InputScopePrivacy::Sensitive) return false;
+    Microsoft::WRL::ComPtr<ITfContextView> view;
+    HWND window = nullptr;
+    if (SUCCEEDED(context->GetActiveView(&view)) && view) view->GetWnd(&window);
+    return !IsPasswordWindow(window);
+}
+
+bool RangeMatchesText(ITfRange* range, TfEditCookie cookie, const std::wstring& expected) {
+    Microsoft::WRL::ComPtr<ITfRange> cursor;
+    if (FAILED(range->Clone(&cursor)) || !cursor) return false;
+    std::array<wchar_t, 128> buffer{};
+    size_t offset = 0;
+    for (;;) {
+        ULONG read = 0;
+        if (FAILED(cursor->GetText(cookie, TF_TF_MOVESTART, buffer.data(),
+                                   static_cast<ULONG>(buffer.size()), &read))) return false;
+        if (read > buffer.size() || offset > expected.size() ||
+            read > expected.size() - offset ||
+            expected.compare(offset, read, buffer.data(), read) != 0) return false;
+        offset += read;
+        BOOL empty = FALSE;
+        if (FAILED(cursor->IsEmpty(cookie, &empty))) return false;
+        if (empty) return offset == expected.size();
+        if (read == 0) return false;
+    }
+}
 
 void SetCaretToRangeEnd(ITfContext* context, TfEditCookie ec, ITfRange* range) {
     if (context == nullptr || range == nullptr) {
@@ -153,8 +186,9 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
     // 核心：若有组合串，必须“原位替换”为最终文本，再结束组合。
     // 若先 EndComposition 再插入，拼音会残留在文档中，形成拉丁残片。
     if (composition_ && *composition_) {
+        Microsoft::WRL::ComPtr<ITfComposition> active(*composition_);
         ITfRange* range = nullptr;
-        HRESULT hr = (*composition_)->GetRange(&range);
+        HRESULT hr = active->GetRange(&range);
         if (SUCCEEDED(hr) && range != nullptr) {
             if (recovered_composition_start_ != nullptr) {
                 if (expected_composition_text_.empty()) {
@@ -172,7 +206,7 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
                     hr = composition_start->Collapse(ec, TF_ANCHOR_START);
                 }
                 if (SUCCEEDED(hr)) {
-                    hr = (*composition_)->ShiftStart(ec, composition_start);
+                    hr = active->ShiftStart(ec, composition_start);
                 }
                 SafeRelease(&composition_start);
                 if (FAILED(hr)) {
@@ -181,7 +215,7 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
                 }
                 range->Release();
                 range = nullptr;
-                hr = (*composition_)->GetRange(&range);
+                hr = active->GetRange(&range);
                 if (FAILED(hr) || range == nullptr) {
                     SafeRelease(&range);
                     return FAILED(hr) ? hr : E_FAIL;
@@ -246,13 +280,23 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
                 SetCaretToRangeEnd(context_, ec, range);
                 range->Release();
 
-                const HRESULT end_hr = (*composition_)->EndComposition(ec);
-                (*composition_)->Release();
-                *composition_ = nullptr;
+                HRESULT end_hr = active->EndComposition(ec);
                 if (FAILED(end_hr)) {
-                    SHURU_LOG_ERROR("EndComposition after insert failed: 0x%08X", end_hr);
-                    return end_hr;
+                    // 文字已经写入，后续只结束旧组合，不能重插或删除已上屏内容。
+                    auto* cleanup = new (std::nothrow) EndCompositionEditSession(active.Get(), {});
+                    if (cleanup != nullptr) {
+                        HRESULT cleanup_result = E_FAIL;
+                        const HRESULT request = context_->RequestEditSession(
+                            client_id_, cleanup, TF_ES_ASYNC | TF_ES_READWRITE, &cleanup_result);
+                        cleanup->Release();
+                        if (SUCCEEDED(request) && SUCCEEDED(cleanup_result)) end_hr = S_OK;
+                    }
+                    if (FAILED(end_hr)) {
+                        SHURU_LOG_ERROR("EndComposition after insert failed: 0x%08X", end_hr);
+                        return end_hr;
+                    }
                 }
+                if (*composition_ == active.Get()) SafeRelease(composition_);
                 SHURU_LOG_INFO("InsertText via composition replace, chars=%u", static_cast<unsigned>(text_.size()));
                 return S_OK;
             }
@@ -690,10 +734,15 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
 
 // -------- EndCompositionEditSession --------
 
-EndCompositionEditSession::EndCompositionEditSession(ITfComposition** composition)
-    : composition_(composition) {}
+EndCompositionEditSession::EndCompositionEditSession(
+    ITfComposition* composition, const std::wstring& expected_text)
+    : composition_(composition), expected_text_(expected_text) {
+    if (composition_) composition_->AddRef();
+}
 
-EndCompositionEditSession::~EndCompositionEditSession() = default;
+EndCompositionEditSession::~EndCompositionEditSession() {
+    SafeRelease(&composition_);
+}
 
 STDMETHODIMP EndCompositionEditSession::QueryInterface(REFIID riid, void** ppvObj) {
     if (!ppvObj) {
@@ -721,31 +770,33 @@ STDMETHODIMP_(ULONG) EndCompositionEditSession::Release() {
 }
 
 STDMETHODIMP EndCompositionEditSession::DoEditSession(TfEditCookie ec) {
-    if (composition_ == nullptr || *composition_ == nullptr) {
+    if (composition_ == nullptr || finished_) {
         return S_OK;
     }
 
-    // 取消组合时清空组合串文本，避免拼音残留
+    // 异步清理只处理捕获的旧组合；宿主已经替换的正文必须保留。
     ITfRange* range = nullptr;
-    HRESULT clear_hr = (*composition_)->GetRange(&range);
+    HRESULT clear_hr = composition_->GetRange(&range);
     if (FAILED(clear_hr) || range == nullptr) {
         SHURU_LOG_ERROR("Cancel composition GetRange failed: 0x%08X", clear_hr);
+        SafeRelease(&range);
         return FAILED(clear_hr) ? clear_hr : E_FAIL;
     }
-    clear_hr = range->SetText(ec, 0, L"", 0);
+    if (!expected_text_.empty() && CanInspectCompositionText(range, ec) &&
+        RangeMatchesText(range, ec, expected_text_))
+        clear_hr = range->SetText(ec, 0, L"", 0);
     range->Release();
     if (FAILED(clear_hr)) {
         SHURU_LOG_ERROR("Cancel composition SetText failed: 0x%08X", clear_hr);
         return clear_hr;
     }
 
-    const HRESULT end_hr = (*composition_)->EndComposition(ec);
+    const HRESULT end_hr = composition_->EndComposition(ec);
     if (FAILED(end_hr)) {
         SHURU_LOG_ERROR("Cancel composition failed: 0x%08X", end_hr);
         return end_hr;
     }
-    (*composition_)->Release();
-    *composition_ = nullptr;
+    finished_ = true;
     return S_OK;
 }
 

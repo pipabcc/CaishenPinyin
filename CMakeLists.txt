@@ -483,6 +483,7 @@ if(BUILD_TESTING)
 
   add_executable(shared_status_ui_test
     tests/engine_playground/shared_status_ui_test.cpp
+    tests/engine_playground/composition_lifecycle_test.cpp
     src/common/logger.cpp
     src/common/runtime_config.cpp
     src/common/typing_stats.cpp
@@ -519,6 +520,8 @@ if(BUILD_TESTING)
 
   add_test(NAME shared_status_ui COMMAND shared_status_ui_test)
   set_tests_properties(shared_status_ui PROPERTIES TIMEOUT 30)
+  add_test(NAME composition_lifecycle COMMAND shared_status_ui_test --composition-lifecycle)
+  set_tests_properties(composition_lifecycle PROPERTIES TIMEOUT 30)
 
   add_executable(langbar_item_test
     tests/engine_playground/langbar_item_test.cpp

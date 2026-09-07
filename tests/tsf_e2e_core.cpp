@@ -1,4 +1,5 @@
 #include "ime/edit_sessions.h"
+#include "ime/display_attribute.h"
 
 #include <Windows.h>
 #include <msctf.h>
@@ -42,8 +43,11 @@ private:
 
 class ReadTextEditSession final : public ITfEditSession {
 public:
-    ReadTextEditSession(ITfContext* context, std::wstring* output)
-        : context_(context), output_(output) {
+    ReadTextEditSession(ITfContext* context, std::wstring* output,
+                       TfGuidAtom expected_atom = TF_INVALID_GUIDATOM,
+                       bool* has_attribute = nullptr)
+        : context_(context), output_(output), expected_atom_(expected_atom),
+          has_attribute_(has_attribute) {
         if (context_ != nullptr) context_->AddRef();
     }
 
@@ -84,6 +88,21 @@ public:
         wchar_t buffer[512] {};
         ULONG length = 0;
         hr = range->GetText(edit_cookie, 0, buffer, 511, &length);
+        if (SUCCEEDED(hr) && has_attribute_ != nullptr) {
+            ITfProperty* property = nullptr;
+            hr = context_->GetProperty(GUID_PROP_ATTRIBUTE, &property);
+            if (SUCCEEDED(hr) && property != nullptr) {
+                VARIANT value;
+                VariantInit(&value);
+                hr = property->GetValue(edit_cookie, range, &value);
+                if (SUCCEEDED(hr)) {
+                    *has_attribute_ = value.vt == VT_I4 &&
+                        value.lVal == static_cast<LONG>(expected_atom_);
+                }
+                VariantClear(&value);
+                property->Release();
+            }
+        }
         range->Release();
         if (SUCCEEDED(hr)) output_->assign(buffer, length);
         return hr;
@@ -93,6 +112,8 @@ private:
     LONG refs_ = 1;
     ITfContext* context_ = nullptr;
     std::wstring* output_ = nullptr;
+    TfGuidAtom expected_atom_ = TF_INVALID_GUIDATOM;
+    bool* has_attribute_ = nullptr;
 };
 
 class ReadSelectionEditSession final : public ITfEditSession {
@@ -352,6 +373,7 @@ int wmain() {
     auto* sink = new CompositionSink();
     TfClientId client_id = TF_CLIENTID_NULL;
     TfEditCookie edit_cookie = TF_INVALID_COOKIE;
+    const TfGuidAtom display_atom = shuru::RegisterDisplayAttributeAtom();
     int result = 1;
 
     HRESULT hr = CoCreateInstance(
@@ -376,7 +398,8 @@ int wmain() {
     if (!RunEditSession(
             context, client_id,
             new shuru::SetCompositionEditSession(
-                context, client_id, sink, &composition, L"suixinshuru"))) {
+                context, client_id, sink, &composition, L"suixinshuru",
+                display_atom))) {
         goto cleanup;
     }
 
@@ -407,7 +430,7 @@ int wmain() {
             context, client_id,
             new shuru::SetCompositionEditSession(
                 context, client_id, sink, &composition, L"suixinshurua",
-                TF_INVALID_GUIDATOM, false))) {
+                display_atom, false))) {
         goto cleanup;
     }
     {
@@ -426,11 +449,33 @@ int wmain() {
         }
     }
 
+    {
+        std::wstring preedit;
+        bool has_attribute = false;
+        if (display_atom == TF_INVALID_GUIDATOM || !RunEditSession(context, client_id,
+                new ReadTextEditSession(context, &preedit, display_atom, &has_attribute),
+                TF_ES_SYNC | TF_ES_READ) || !has_attribute) {
+            std::fwprintf(stderr, L"active composition display attribute was not applied\n");
+            goto cleanup;
+        }
+    }
+
     if (!RunEditSession(
             context, client_id,
             new shuru::InsertTextEditSession(
                 context, client_id, &composition, L"\u968f\u5fc3"))) {
         goto cleanup;
+    }
+
+    {
+        std::wstring committed;
+        bool has_attribute = true;
+        if (!RunEditSession(context, client_id,
+                new ReadTextEditSession(context, &committed, display_atom, &has_attribute),
+                TF_ES_SYNC | TF_ES_READ) || has_attribute) {
+            std::fwprintf(stderr, L"committed text retained the composition display attribute\n");
+            goto cleanup;
+        }
     }
 
     // A committed prefix remains while the tail becomes a new real TSF composition.

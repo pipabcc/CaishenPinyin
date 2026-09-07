@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [ValidateSet('Debug','Release')][string]$Config='Release',
   [string]$BuildDir='build-release',
@@ -114,7 +114,7 @@ Invoke-BuildBatch -Path $x86Bat -FailureMessage 'x86 configure/build/CTest faile
 call "$dev" -arch=x86 -host_arch=amd64 || exit /b 1
 $x86Configure || exit /b 1
 $x86Compile || exit /b 1
-ctest --test-dir "$x86Build" -C $Config -R "input_policy|engine_snapshot|release_health|tsf_e2e_core" --output-on-failure || exit /b 1
+ctest --test-dir "$x86Build" -C $Config -R "input_policy|engine_snapshot|release_health|tsf_e2e_core|composition_lifecycle" --output-on-failure || exit /b 1
 "@
 Invoke-BuildBatch -Path $publishBat -FailureMessage 'settings publish failed' -Content @"
 @echo on

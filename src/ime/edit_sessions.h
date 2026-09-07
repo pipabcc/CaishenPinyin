@@ -120,7 +120,8 @@ private:
 
 class EndCompositionEditSession : public ITfEditSession {
 public:
-    explicit EndCompositionEditSession(ITfComposition** composition);
+    // 持有目标对象，允许异步执行；空 expected_text 表示只结束组合并保留正文。
+    EndCompositionEditSession(ITfComposition* composition, const std::wstring& expected_text);
     virtual ~EndCompositionEditSession();
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
@@ -130,7 +131,9 @@ public:
 
 private:
     LONG ref_ = 1;
-    ITfComposition** composition_ = nullptr;
+    ITfComposition* composition_ = nullptr;
+    std::wstring expected_text_;
+    bool finished_ = false;
 };
 
 // 只读会话：用合法 edit cookie 取组合/选区屏幕矩形

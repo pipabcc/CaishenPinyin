@@ -19,14 +19,14 @@ C++20, TSF, DirectWrite and .NET 8 WPF.
 
 ## 下载与安装
 
-最新稳定版：[财神输入法 2.0.1](https://github.com/pipabcc/CaishenPinyin/releases/tag/v2.0.1)
+最新稳定版：[财神输入法 2.0.2](https://github.com/pipabcc/CaishenPinyin/releases/tag/v2.0.2)
 
 | 发行文件 | 适用场景 | 安装方式 |
 |---|---|---|
-| `CaishenPinyin-2.0.1-win-x64-Setup.exe` | 推荐给普通用户；支持安装目录、升级/修复、开始菜单和标准卸载 | 双击运行，按安装向导操作 |
-| `CaishenPinyin-2.0.1-win-x64-Portable.zip` | 适合测试或手动管理文件；仍需注册 Windows TSF 组件 | 完整解压后，以管理员身份运行包内安装脚本 |
+| `CaishenPinyin-2.0.2-win-x64-Setup.exe` | 推荐给普通用户；支持安装目录、升级/修复、开始菜单和标准卸载 | 双击运行，按安装向导操作 |
+| `CaishenPinyin-2.0.2-win-x64-Portable.zip` | 适合测试或手动管理文件；仍需注册 Windows TSF 组件 | 完整解压后，以管理员身份运行包内安装脚本 |
 
-两种包都是 `2.0.1`，区别是部署形式，不是两个不同版本。仅支持 AMD64/x64 Windows，
+两种包均为 `2.0.2`，分别提供安装版和便携版。仅支持 AMD64/x64 Windows，
 不支持 ARM64、x86、macOS、Linux、Android 或 iOS。
 
 安装完成后按 `Win + Space`，选择“财神输入法”。输入法 DLL 被宿主进程加载后通常不会
@@ -37,8 +37,8 @@ C++20, TSF, DirectWrite and .NET 8 WPF.
 Release 会同时提供两个 `.sha256` 文件。在 PowerShell 中执行：
 
 ```powershell
-Get-FileHash .\CaishenPinyin-2.0.1-win-x64-Setup.exe -Algorithm SHA256
-Get-FileHash .\CaishenPinyin-2.0.1-win-x64-Portable.zip -Algorithm SHA256
+Get-FileHash .\CaishenPinyin-2.0.2-win-x64-Setup.exe -Algorithm SHA256
+Get-FileHash .\CaishenPinyin-2.0.2-win-x64-Portable.zip -Algorithm SHA256
 ```
 
 输出应与 Release 页面及对应 `.sha256` 文件完全一致。若不一致，请不要运行。
@@ -53,7 +53,7 @@ Setup 版可从 Windows“已安装的应用”卸载。默认卸载保留设置
 
 - **原生系统级集成**：基于微软 TSF 文本服务框架，接入 Windows 10/11 桌面应用和支持 TSF 的 UWP/WinUI 宿主；候选窗使用 Win32 与 DirectWrite 绘制，不抢占输入焦点。具体兼容性取决于宿主对 TSF 的实现。
 - **纯净离线与隐私保护**：查询、候选排序、用户词学习和统计均在本机完成；运行时不包含网络上传模块，不收集用户击键正文，内容日志默认关闭。
-- **白霜拼音与英文词库**：v2.0.1 内置白霜派生词库，共 `677,441` 条字词记录和 `8,247` 条单字读音，并附带常用英文词库。数量以 [词库清单](data/lexicon/manifest.json) 为准。
+- **白霜拼音与英文词库**：当前发行版内置白霜派生词库，共 `677,441` 条字词记录和 `8,247` 条单字读音，并附带常用英文词库。数量以 [词库清单](data/lexicon/manifest.json) 为准。
 - **分级回退语言模型**：支持完整模型、内置 `system_ngram.bin` 和字符先验的分级回退；缺少可选大模型时仍可完成基础候选检索和排序。
 - **丰富个性化配置**：
   - 支持全拼以及自然码、微软双拼、小鹤双拼等主流双拼方案，可通过设置和快捷键切换
