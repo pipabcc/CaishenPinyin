@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('Install', 'HealthCheck', 'Rollback', 'Cleanup', 'Uninstall')]
+    [ValidateSet('Install', 'HealthCheck', 'Rollback', 'Cleanup', 'Uninstall', 'RepairPermissions')]
     [string]$Action = 'Install',
     [string]$DllPath = '',
     [string]$X86DllPath = '',
@@ -1098,6 +1098,87 @@ function Deny-PrivateTreeToAppContainers {
     }
 }
 
+function Assert-UserDataScope {
+    $privateRoot = [IO.Path]::GetFullPath($UserDataRoot).TrimEnd('\')
+    foreach ($publicRoot in @($InstallRoot, $DataRoot)) {
+        $publicRoot = [IO.Path]::GetFullPath($publicRoot).TrimEnd('\')
+        if ($privateRoot -eq $publicRoot -or
+            $publicRoot.StartsWith($privateRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            $privateRoot.StartsWith($publicRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Deployment 54 'personal data must not overlap program or public lexicon directories'
+        }
+    }
+}
+
+function Repair-PublicLexiconAccess {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    $workQueue = New-Object 'System.Collections.Generic.Queue[string]'
+    $workQueue.Enqueue([IO.Path]::GetFullPath($Path))
+    while ($workQueue.Count -gt 0) {
+        $currentPath = $workQueue.Dequeue()
+        $item = Get-Item -LiteralPath $currentPath -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        $security = Get-Acl -LiteralPath $currentPath
+        $rules = @($security.GetAccessRules($true, $true,
+            [System.Security.Principal.SecurityIdentifier]))
+        $needsRepair = $false
+        foreach ($sid in $AppContainerSids) {
+            $packageRules = @($rules | Where-Object { $_.IdentityReference.Value -eq $sid })
+            $readAllowed = @($packageRules | Where-Object {
+                $_.AccessControlType -eq 'Allow' -and
+                ($_.FileSystemRights -band $AppContainerReadRights) -eq $AppContainerReadRights
+            }).Count -gt 0
+            $unsafe = @($packageRules | Where-Object {
+                $_.AccessControlType -eq 'Deny' -or
+                ([int64]$_.FileSystemRights -band (-bnot [int64]$AppContainerReadRights)) -ne 0
+            }).Count -gt 0
+            $needsRepair = $needsRepair -or -not $readAllowed -or $unsafe
+        }
+        if ($needsRepair) {
+            # 旧安装器可能把上级公共 data 目录当成私人目录；保留其他主体权限，
+            # 仅为系统词库隔断错误的应用包继承项，并恢复应用包只读访问。
+            $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new(
+                $security.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access))
+            $descriptor.SetFlags($descriptor.ControlFlags -bor
+                [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected)
+            $acl = $descriptor.DiscretionaryAcl
+            for ($index = $acl.Count - 1; $index -ge 0; --$index) {
+                $ace = $acl[$index]
+                if ($ace -is [System.Security.AccessControl.KnownAce] -and
+                    $ace.SecurityIdentifier.Value -in $AppContainerSids) { $acl.RemoveAce($index) }
+            }
+            $insertAt = $acl.Count
+            for ($index = 0; $index -lt $acl.Count; ++$index) {
+                if (([int]$acl[$index].AceFlags -band [int][System.Security.AccessControl.AceFlags]::Inherited) -ne 0) {
+                    $insertAt = $index
+                    break
+                }
+            }
+            $flags = if ($item.PSIsContainer) {
+                [System.Security.AccessControl.AceFlags]'ContainerInherit, ObjectInherit'
+            } else { [System.Security.AccessControl.AceFlags]::None }
+            foreach ($sid in $AppContainerSids) {
+                $identity = [System.Security.Principal.SecurityIdentifier]::new($sid)
+                $acl.InsertAce($insertAt, [System.Security.AccessControl.CommonAce]::new(
+                    $flags, [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+                    [int]$AppContainerReadRights, $identity, $false, $null))
+                ++$insertAt
+            }
+            $security.SetSecurityDescriptorSddlForm(
+                $descriptor.GetSddlForm([System.Security.AccessControl.AccessControlSections]::Access),
+                [System.Security.AccessControl.AccessControlSections]::Access)
+            Set-Acl -LiteralPath $currentPath -AclObject $security
+            Write-DeployLog "public lexicon appcontainer read access repaired: $currentPath"
+        }
+        if ($item.PSIsContainer) {
+            foreach ($child in Get-ChildItem -LiteralPath $currentPath -Force) {
+                $workQueue.Enqueue($child.FullName)
+            }
+        }
+    }
+}
+
 function Grant-AppContainerAccess {
     # The root only inherits down to direct child files, so settings.ini keeps read
     # access across atomic replacement while the clipboard subdirectory stays closed.
@@ -1117,8 +1198,7 @@ function Grant-AppContainerAccess {
     # Lexicon and program directories only need read access. Both carried this ACE
     # from a manual icacls run that was never committed, so reinstalling dropped it;
     # pin it down here.
-    Grant-PathToAppContainers $DataRoot `
-        $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
+    Repair-PublicLexiconAccess $DataRoot
     Grant-PathToAppContainers $InstallRoot `
         $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
 }
@@ -1179,6 +1259,12 @@ function Test-CurrentInstallation {
 }
 
 try {
+    Assert-UserDataScope
+    if ($Action -eq 'RepairPermissions') {
+        Grant-AppContainerAccess
+        Write-DeployLog 'permission repair complete'
+        exit 0
+    }
     if ($Action -eq 'Uninstall') {
         Invoke-Uninstall
         exit 0
@@ -1446,7 +1532,7 @@ try {
     }
 } catch {
     if (-not $_.Exception.Message.StartsWith('ERROR[')) {
-        Write-DeployLog "FAILED $($_.Exception.Message)"
+        Write-DeployLog "FAILED line=$($_.InvocationInfo.ScriptLineNumber) $($_.Exception.Message)"
     }
     exit $script:ExitCode
 }

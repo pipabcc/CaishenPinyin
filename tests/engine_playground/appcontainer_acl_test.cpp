@@ -76,7 +76,7 @@ std::size_t CountAces(const std::wstring& path) {
 }
 
 bool ProbeWithAppContainer(const fs::path& root, const fs::path& private_file,
-                            const fs::path& public_file) {
+                            const fs::path& public_file, bool public_read_only = false) {
     const auto name = L"CaishenAclTest_" + std::to_wstring(GetCurrentProcessId()) +
         L"_" + std::to_wstring(GetTickCount64());
     PSID sid = nullptr;
@@ -111,6 +111,7 @@ bool ProbeWithAppContainer(const fs::path& root, const fs::path& private_file,
     PROCESS_INFORMATION process{};
     auto command = L"\"" + probe.wstring() + L"\" --probe-private \"" + private_file.wstring() +
         L"\" \"" + public_file.wstring() + L"\"";
+    if (public_read_only) command += L" --read-only";
     const bool created = CreateProcessW(probe.c_str(), command.data(), nullptr, nullptr, FALSE,
         EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW, nullptr, nullptr,
         &startup.StartupInfo, &process) != FALSE;
@@ -133,7 +134,7 @@ bool ProbeWithAppContainer(const fs::path& root, const fs::path& private_file,
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 4 && std::wstring(argv[1]) == L"--probe-private") {
+    if ((argc == 4 || argc == 5) && std::wstring(argv[1]) == L"--probe-private") {
         if (!shuru::IsCurrentProcessAppContainer()) return 90;
         const DWORD access_masks[] = {GENERIC_READ, GENERIC_WRITE};
         for (const DWORD access : access_masks) {
@@ -146,7 +147,24 @@ int wmain(int argc, wchar_t** argv) {
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file == INVALID_HANDLE_VALUE) return 93;
         CloseHandle(file);
+        if (argc == 5 && std::wstring(argv[4]) == L"--read-only") {
+            file = CreateFileW(argv[3], GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file != INVALID_HANDLE_VALUE) { CloseHandle(file); return 94; }
+            if (GetLastError() != ERROR_ACCESS_DENIED) return 95;
+        }
         return 0;
+    }
+    if (argc == 4 && std::wstring(argv[1]) == L"--verify-paths") {
+        const auto probe_root = fs::temp_directory_path() /
+            (L"CaishenInstalledAcl-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+             std::to_wstring(GetTickCount64()));
+        fs::create_directories(probe_root);
+        const bool allowed = ProbeWithAppContainer(probe_root, argv[2], argv[3], true);
+        std::error_code error;
+        fs::remove_all(probe_root, error);
+        std::cout << "AppContainer private denied / public read-only: " << allowed << '\n';
+        return allowed ? 0 : 1;
     }
     const fs::path root = fs::temp_directory_path() /
         (L"caishen-appcontainer-acl-" + std::to_wstring(GetCurrentProcessId()));

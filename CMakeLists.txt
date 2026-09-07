@@ -594,10 +594,17 @@ if(BUILD_TESTING)
   add_test(NAME deployment_core
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/deployment_core_test.ps1)
+  add_test(NAME installer_acl
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_acl_test.ps1
+            -ProbeExe $<TARGET_FILE:appcontainer_acl_test>)
+  set_tests_properties(installer_acl PROPERTIES TIMEOUT 60)
   set_tests_properties(deployment_core PROPERTIES
     # 完整白霜词库较大，部署测试会多次复制并校验哈希。
     # 在机械盘或实时防护开启时 60 秒不足，保留明确上限但给足正常 I/O 时间。
     TIMEOUT 180
+  )
+  set_tests_properties(deployment_core installer_acl PROPERTIES
     # VsDevCmd 可能把 PowerShell 7 模块目录放到最前，导致 Windows PowerShell
     # 先发现不兼容的 Microsoft.PowerShell.Utility，而不是自身模块。
     ENVIRONMENT "PSModulePath=$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0/Modules"
