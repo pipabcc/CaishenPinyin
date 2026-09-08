@@ -7,33 +7,34 @@
 //
 // 用法：firstkey_sim <ShuruIme.dll 路径> [mode]
 //   mode = onendedit（默认）：落字时触发器新鲜，检验 OnEndEdit 接管网。
-//   mode = tight     ：落字后立刻继续按键（无泵间隔），检验缓冲时序。
+//   mode = tight     ：宿主保留首字母组合，立即连打并按空格，检验跨客户端交接与缓冲。
 //   mode = sweep     ：落字时触发器已过期（OnEndEdit 网必然拒绝），随后
 //                      用 Ctrl+C 重新武装，检验按键清扫网兜底。
 //   mode = paste     ：用 Ctrl+V 粘贴武装触发器（粘贴后首键掉落场景），
 //                      先整段写入"粘贴内容"再让首键掉落，随后连打，
 //                      检验粘贴武装 + OnEndEdit/清扫接管网全链路。
-//   mode = paste_blind：在从未被输入法绑定的上下文上重复 paste 时序，
-//                      粘贴与掉落都不产生 OnEndEdit（绑定滞后/失明），
-//                      检验清扫网独立兜底。
+//   mode = paste_mouse：不发送粘贴快捷键，模拟右键菜单粘贴后的首键掉落，
+//                      检验外部编辑通知能独立武装恢复逻辑。
 // 退出码：0=接管成功；3=首键未被接管（复现用户 bug）；其他=环境失败。
 
 #include "common/guid_def.h"
+#include "tsf_test_thread_manager.h"
 
 #include <Windows.h>
 #include <msctf.h>
 
 #include <cstdio>
 #include <cwctype>
+#include <new>
 #include <string>
 
 namespace {
 
 // ---------- 应用侧原始插入会话：模拟真实应用的 WM_CHAR 落字 ----------
-class AppTypeTextSession final : public ITfEditSession {
+class AppTypeTextSession final : public ITfEditSession, public ITfCompositionSink {
 public:
-    AppTypeTextSession(ITfContext* context, const wchar_t* text)
-        : context_(context), text_(text) {
+    AppTypeTextSession(ITfContext* context, const wchar_t* text, bool make_composition)
+        : context_(context), text_(text), make_composition_(make_composition) {
         if (context_ != nullptr) context_->AddRef();
     }
     ~AppTypeTextSession() {
@@ -48,7 +49,16 @@ public:
             AddRef();
             return S_OK;
         }
+        if (iid == IID_ITfCompositionSink) {
+            *object = static_cast<ITfCompositionSink*>(this);
+            AddRef();
+            return S_OK;
+        }
         return E_NOINTERFACE;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnCompositionTerminated(TfEditCookie, ITfComposition*) override {
+        return S_OK;
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs_); }
     ULONG STDMETHODCALLTYPE Release() override {
@@ -67,7 +77,15 @@ public:
             return FAILED(hr) ? hr : E_FAIL;
         }
         hr = selection.range->SetText(
-            edit_cookie, 0, text_, static_cast<ULONG>(wcslen(text_)));
+            edit_cookie, 0, text_.c_str(), static_cast<ULONG>(text_.size()));
+        if (SUCCEEDED(hr) && make_composition_) {
+            Microsoft::WRL::ComPtr<ITfContextComposition> compositions;
+            hr = context_->QueryInterface(IID_PPV_ARGS(&compositions));
+            if (SUCCEEDED(hr)) {
+                Microsoft::WRL::ComPtr<ITfComposition> composition;
+                hr = compositions->StartComposition(edit_cookie, selection.range, this, &composition);
+            }
+        }
         if (SUCCEEDED(hr)) {
             selection.range->Collapse(edit_cookie, TF_ANCHOR_END);
             hr = context_->SetSelection(edit_cookie, 1, &selection);
@@ -79,12 +97,13 @@ public:
 private:
     LONG refs_ = 1;
     ITfContext* context_ = nullptr;
-    const wchar_t* text_ = nullptr;
+    std::wstring text_;
+    bool make_composition_ = false;
 };
 
 bool AppTypeRawInsert(
-    ITfContext* context, TfClientId client_id, const wchar_t* text) {
-    auto* session = new AppTypeTextSession(context, text);
+    ITfContext* context, TfClientId client_id, const wchar_t* text, bool make_composition = false) {
+    auto* session = new AppTypeTextSession(context, text, make_composition);
     HRESULT session_result = E_FAIL;
     const HRESULT request_result = context->RequestEditSession(
         client_id, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
@@ -199,7 +218,7 @@ bool SendKeyRelaxed(
     return SUCCEEDED(hr);
 }
 
-HRESULT PrepareDirectTipActivation(
+HRESULT GetTestServiceClientId(
     ITfThreadMgr* thread_manager, TfClientId* service_client_id) {
     if (thread_manager == nullptr || service_client_id == nullptr) {
         return E_INVALIDARG;
@@ -210,34 +229,6 @@ HRESULT PrepareDirectTipActivation(
     HRESULT hr = thread_manager->QueryInterface(
         IID_ITfClientId, reinterpret_cast<void**>(&client_ids));
     if (FAILED(hr) || client_ids == nullptr) return FAILED(hr) ? hr : E_FAIL;
-
-    ITfInputProcessorProfileMgr* profiles = nullptr;
-    hr = CoCreateInstance(
-        CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
-        IID_ITfInputProcessorProfileMgr,
-        reinterpret_cast<void**>(&profiles));
-    if (SUCCEEDED(hr) && profiles != nullptr) {
-        TF_INPUTPROCESSORPROFILE active_profile {};
-        hr = profiles->GetActiveProfile(
-            GUID_TFCAT_TIP_KEYBOARD, &active_profile);
-        if (SUCCEEDED(hr) &&
-            active_profile.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR) {
-            TfClientId active_client_id = TF_CLIENTID_NULL;
-            hr = client_ids->GetClientId(
-                active_profile.clsid, &active_client_id);
-            if (SUCCEEDED(hr) && active_client_id != TF_CLIENTID_NULL) {
-                ITfKeystrokeMgr* keystrokes = nullptr;
-                hr = thread_manager->QueryInterface(
-                    IID_ITfKeystrokeMgr,
-                    reinterpret_cast<void**>(&keystrokes));
-                if (SUCCEEDED(hr) && keystrokes != nullptr) {
-                    (void)keystrokes->UnadviseKeyEventSink(active_client_id);
-                    keystrokes->Release();
-                }
-            }
-        }
-        profiles->Release();
-    }
 
     hr = client_ids->GetClientId(
         CLSID_ShuruTextService, service_client_id);
@@ -263,6 +254,7 @@ int wmain(int argc, wchar_t** argv) {
     if (FAILED(com_result)) return 1;
 
     ITfThreadMgr* thread_manager = nullptr;
+    ITfThreadMgr* service_thread_manager = nullptr;
     TfClientId client_id = TF_CLIENTID_NULL;
     TfClientId service_client_id = TF_CLIENTID_NULL;
     ITfDocumentMgr* document_manager = nullptr;
@@ -281,10 +273,12 @@ int wmain(int argc, wchar_t** argv) {
     if (FAILED(hr) || thread_manager_ex == nullptr) goto cleanup;
     thread_manager = thread_manager_ex;
     failure_stage = "ITfThreadMgrEx::ActivateEx";
-    hr = thread_manager_ex->ActivateEx(&client_id, TF_TMAE_UIELEMENTENABLEDONLY);
+    // 测试直接加载待测 DLL，禁止系统同时激活已安装版本的编辑通知和首键恢复逻辑。
+    hr = thread_manager_ex->ActivateEx(
+        &client_id, TF_TMAE_UIELEMENTENABLEDONLY | TF_TMAE_NOACTIVATETIP);
     if (FAILED(hr)) goto cleanup;
-    failure_stage = "PrepareDirectTipActivation";
-    hr = PrepareDirectTipActivation(thread_manager, &service_client_id);
+    failure_stage = "GetTestServiceClientId";
+    hr = GetTestServiceClientId(thread_manager, &service_client_id);
     if (FAILED(hr) || service_client_id == TF_CLIENTID_NULL) goto cleanup;
     failure_stage = "ITfThreadMgr::CreateDocumentMgr";
     hr = thread_manager->CreateDocumentMgr(&document_manager);
@@ -325,7 +319,9 @@ int wmain(int argc, wchar_t** argv) {
         if (FAILED(hr) || text_service == nullptr) goto cleanup;
     }
     failure_stage = "ITfTextInputProcessorEx::ActivateEx";
-    hr = text_service->ActivateEx(thread_manager, service_client_id, 0);
+    service_thread_manager = new (std::nothrow) shuru::test::TestThreadManager(thread_manager);
+    if (service_thread_manager == nullptr) { hr = E_OUTOFMEMORY; goto cleanup; }
+    hr = text_service->ActivateEx(service_thread_manager, service_client_id, 0);
     if (FAILED(hr)) goto cleanup;
     failure_stage = "QueryInterface(IID_ITfKeyEventSink)";
     hr = text_service->QueryInterface(
@@ -366,7 +362,7 @@ int wmain(int argc, wchar_t** argv) {
     // ---- 阶段 1：模拟首键绕过 —— 应用侧直接插入原始字母 ----
     failure_stage = "AppTypeRawInsert(fallen first letter)";
     if (!AppTypeRawInsert(
-            body_context, client_id, std::wstring(1, fallen).c_str())) {
+            body_context, client_id, std::wstring(1, fallen).c_str(), mode == Mode::Tight)) {
         goto cleanup;
     }
 
@@ -400,10 +396,10 @@ int wmain(int argc, wchar_t** argv) {
                     static_cast<WPARAM>(::towupper(*p)))) {
                 goto cleanup;
             }
-            PumpFor(60);
+            if (mode != Mode::Tight) PumpFor(60);
         }
     }
-    PumpFor(400);
+    if (mode != Mode::Tight) PumpFor(400);
     failure_stage = "SendKey(space commit)";
     if (!SendKeyRelaxed(key_sink, body_context, VK_SPACE)) goto cleanup;
     PumpFor(600);
@@ -423,6 +419,20 @@ int wmain(int argc, wchar_t** argv) {
                 L"VERDICT: FIRST KEY NOT RECOVERED (raw letter remains)\n");
             result = 3;
         } else {
+            Microsoft::WRL::ComPtr<ITfContextComposition> compositions;
+            hr = body_context->QueryInterface(IID_PPV_ARGS(&compositions));
+            if (FAILED(hr)) goto cleanup;
+            Microsoft::WRL::ComPtr<IEnumITfCompositionView> views;
+            hr = compositions->EnumCompositions(&views);
+            if (FAILED(hr)) goto cleanup;
+            Microsoft::WRL::ComPtr<ITfCompositionView> remaining;
+            ULONG count = 0;
+            hr = views->Next(1, &remaining, &count);
+            if (FAILED(hr) || count != 0) {
+                std::fwprintf(stdout, L"VERDICT: committed text left an active composition\n");
+                result = 3;
+                goto cleanup;
+            }
             std::fwprintf(stdout, L"VERDICT: first key recovered\n");
             result = 0;
         }
@@ -443,6 +453,7 @@ cleanup:
         if (!text_service_deactivated) text_service->Deactivate();
         text_service->Release();
     }
+    if (service_thread_manager != nullptr) service_thread_manager->Release();
     if (document_manager != nullptr) document_manager->Pop(TF_POPF_ALL);
     if (body_context != nullptr) body_context->Release();
     if (document_manager != nullptr) document_manager->Release();

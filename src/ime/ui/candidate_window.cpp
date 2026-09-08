@@ -1,5 +1,6 @@
 #include "candidate_window.h"
 #include "skin_manager.h"
+#include "common/logger.h"
 #include "common/runtime_config.h"
 #include "common/user_data_paths.h"
 
@@ -375,6 +376,7 @@ CandidateWindow::~CandidateWindow() {
 }
 
 bool CandidateWindow::Create(HINSTANCE instance) {
+    if (changing_owner_) return hwnd_ != nullptr;
     instance_ = instance;
     if (hwnd_ != nullptr) {
         return true;
@@ -399,6 +401,7 @@ bool CandidateWindow::Create(HINSTANCE instance) {
 }
 
 bool CandidateWindow::CreateNativeWindow(HWND owner) {
+    if (instance_ == nullptr) return false;
     hwnd_ = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         kWindowClass,
@@ -422,6 +425,7 @@ bool CandidateWindow::CreateNativeWindow(HWND owner) {
 }
 
 void CandidateWindow::Destroy() {
+    changing_owner_ = false;
     if (hwnd_ != nullptr) {
         StopReadyPolling();
         StopShiftReleasePolling();
@@ -455,6 +459,7 @@ void CandidateWindow::Destroy() {
         font_utility_ = nullptr;
     }
     visible_ = false;
+    ResetWindowBoundState();
     instance_ = nullptr;
 }
 
@@ -722,6 +727,12 @@ void CandidateWindow::Show(const POINT& screen_pos, HWND owner) {
 }
 
 void CandidateWindow::Hide() {
+#if defined(SHURU_INPUT_LIFECYCLE_TRACE)
+    if (visible_) {
+        SHURU_LOG_WARN("tsf-window pid=%lu tid=%lu event=hide window=%p",
+            GetCurrentProcessId(), GetCurrentThreadId(), hwnd_);
+    }
+#endif
     if (hwnd_ == nullptr) {
         return;
     }
@@ -751,6 +762,7 @@ HWND CandidateWindow::NormalizeOwner(HWND requested_owner) const noexcept {
 }
 
 bool CandidateWindow::EnsureOwner(HWND requested_owner) {
+    if (changing_owner_) return false;
     const HWND normalized_owner = NormalizeOwner(requested_owner);
 
     if (hwnd_ != nullptr && GetWindow(hwnd_, GW_OWNER) == normalized_owner) {
@@ -763,28 +775,35 @@ bool CandidateWindow::EnsureOwner(HWND requested_owner) {
         return true;
     }
 
-    if (hwnd_ != nullptr) {
-        if (!DestroyWindow(hwnd_)) {
-            host_owner_ = GetWindow(hwnd_, GW_OWNER);
+    // 绑定宿主会重建 HWND，但排队的 TSF 交接和逻辑定时器属于当前服务，不能随之丢弃。
+    changing_owner_ = true;
+    bool window_recreated = hwnd_ == nullptr;
+    const bool rebound = [this, normalized_owner, &window_recreated] {
+        if (hwnd_ != nullptr) {
+            if (!DestroyWindow(hwnd_)) {
+                host_owner_ = GetWindow(hwnd_, GW_OWNER);
+                return false;
+            }
+            window_recreated = true;
+        }
+        if (!CreateNativeWindow(normalized_owner)) {
+            if (normalized_owner != nullptr && CreateNativeWindow(nullptr)) {
+                rejected_owner_ = normalized_owner;
+                return true;
+            }
             return false;
         }
-    }
-
-    if (!CreateNativeWindow(normalized_owner)) {
-        if (normalized_owner != nullptr && CreateNativeWindow(nullptr)) {
+        host_owner_ = GetWindow(hwnd_, GW_OWNER);
+        if (host_owner_ != normalized_owner) {
             rejected_owner_ = normalized_owner;
             return true;
         }
-        return false;
-    }
-
-    host_owner_ = GetWindow(hwnd_, GW_OWNER);
-    if (host_owner_ != normalized_owner) {
-        rejected_owner_ = normalized_owner;
+        rejected_owner_ = nullptr;
         return true;
-    }
-    rejected_owner_ = nullptr;
-    return true;
+    }();
+    changing_owner_ = false;
+    if (window_recreated && hwnd_ != nullptr) RestoreWindowWork();
+    return rebound;
 }
 
 void CandidateWindow::ResetWindowBoundState() noexcept {
@@ -798,13 +817,36 @@ void CandidateWindow::ResetWindowBoundState() noexcept {
     skin_animation_timer_active_ = false;
     host_owner_ = nullptr;
     rejected_owner_ = nullptr;
+    if (changing_owner_) return;
     ready_poll_ = nullptr;
     shift_release_poll_ = nullptr;
     shortcut_release_poll_ = nullptr;
     direct_commit_poll_ = nullptr;
     vmode_timer_cb_ = nullptr;
     deferred_action_ = nullptr;
+    deferred_action_due_tick_ = 0;
+    vmode_due_tick_ = 0;
     owner_thread_actions_.clear();
+}
+
+void CandidateWindow::RestoreWindowWork() {
+    if (hwnd_ == nullptr) return;
+    const ULONGLONG now = GetTickCount64();
+    const auto remaining_delay = [now](ULONGLONG deadline) {
+        return deadline > now ? static_cast<UINT>(deadline - now) : UINT{1};
+    };
+    if (ready_poll_) StartReadyPolling(std::move(ready_poll_));
+    if (shift_release_poll_) StartShiftReleasePolling(std::move(shift_release_poll_));
+    if (shortcut_release_poll_) StartShortcutReleasePolling(std::move(shortcut_release_poll_));
+    if (direct_commit_poll_) StartDirectCommitPolling(std::move(direct_commit_poll_));
+    if (deferred_action_) StartDeferredAction(std::move(deferred_action_), remaining_delay(deferred_action_due_tick_));
+    if (vmode_timer_cb_) StartVModeTimer(std::move(vmode_timer_cb_), remaining_delay(vmode_due_tick_));
+    for (size_t index = 0; index < owner_thread_actions_.size(); ++index) {
+        if (!PostMessageW(hwnd_, kOwnerThreadActionMessage, 0, 0)) {
+            SHURU_LOG_WARN("candidate owner work repost failed: %lu", GetLastError());
+            break;
+        }
+    }
 }
 
 void CandidateWindow::StopSkinAnimation() {
@@ -1013,9 +1055,9 @@ void CandidateWindow::RefreshTypingStats() {
 }
 
 void CandidateWindow::StartReadyPolling(std::function<bool()> poll) {
-    if (hwnd_ == nullptr) return;
+    if (hwnd_ == nullptr && !changing_owner_) return;
     ready_poll_ = std::move(poll);
-    if (!ready_poll_active_) {
+    if (!ready_poll_active_ && hwnd_ != nullptr) {
         ready_poll_active_ =
             SetTimer(hwnd_, kReadyPollTimerId, kReadyPollIntervalMs, nullptr) != 0;
     }
@@ -1031,10 +1073,10 @@ void CandidateWindow::StopReadyPolling() {
 
 void CandidateWindow::StartShiftReleasePolling(
     std::function<bool()> poll) {
-    if (hwnd_ == nullptr) return;
+    if (hwnd_ == nullptr && !changing_owner_) return;
     StopShiftReleasePolling();
     shift_release_poll_ = std::move(poll);
-    if (shift_release_poll_) {
+    if (shift_release_poll_ && hwnd_ != nullptr) {
         shift_release_poll_active_ = SetTimer(
             hwnd_, kShiftReleasePollTimerId,
             kShiftReleasePollIntervalMs, nullptr) != 0;
@@ -1052,10 +1094,10 @@ void CandidateWindow::StopShiftReleasePolling() {
 
 void CandidateWindow::StartShortcutReleasePolling(
     std::function<bool()> poll) {
-    if (hwnd_ == nullptr) return;
+    if (hwnd_ == nullptr && !changing_owner_) return;
     StopShortcutReleasePolling();
     shortcut_release_poll_ = std::move(poll);
-    if (shortcut_release_poll_) {
+    if (shortcut_release_poll_ && hwnd_ != nullptr) {
         shortcut_release_poll_active_ = SetTimer(
             hwnd_, kShortcutReleasePollTimerId,
             kShortcutReleasePollIntervalMs, nullptr) != 0;
@@ -1073,16 +1115,16 @@ void CandidateWindow::StopShortcutReleasePolling() {
 
 bool CandidateWindow::StartDirectCommitPolling(
     std::function<bool()> poll) {
-    if (hwnd_ == nullptr) return false;
+    if (hwnd_ == nullptr && !changing_owner_) return false;
     StopDirectCommitPolling();
     direct_commit_poll_ = std::move(poll);
-    if (direct_commit_poll_) {
+    if (direct_commit_poll_ && hwnd_ != nullptr) {
         direct_commit_poll_active_ = SetTimer(
             hwnd_, kDirectCommitPollTimerId,
             kDirectCommitPollIntervalMs, nullptr) != 0;
         if (!direct_commit_poll_active_) direct_commit_poll_ = nullptr;
     }
-    return direct_commit_poll_active_;
+    return direct_commit_poll_active_ || (changing_owner_ && direct_commit_poll_ != nullptr);
 }
 
 void CandidateWindow::StopDirectCommitPolling() {
@@ -1095,11 +1137,13 @@ void CandidateWindow::StopDirectCommitPolling() {
 
 void CandidateWindow::StartDeferredAction(
     std::function<void()> action, UINT delay_ms) {
-    if (hwnd_ == nullptr) return;
+    if (hwnd_ == nullptr && !changing_owner_) return;
     StopDeferredAction();
     deferred_action_ = std::move(action);
     if (deferred_action_) {
         const UINT interval = (std::max)(UINT{1}, delay_ms);
+        deferred_action_due_tick_ = GetTickCount64() + interval;
+        if (hwnd_ == nullptr) return;
         // WM_TIMER 可能在 KillTimer 后仍以旧 ID 留在消息队列中。每次
         // 请求换用新 ID，旧消息不会误执行当前这一次的回调。
         ++deferred_timer_serial_;
@@ -1121,22 +1165,27 @@ void CandidateWindow::StopDeferredAction() {
     }
     deferred_action_active_ = false;
     deferred_action_ = nullptr;
+    deferred_action_due_tick_ = 0;
 }
 
 bool CandidateWindow::PostOwnerThreadAction(std::function<void()> action) {
-    if (hwnd_ == nullptr || !action) return false;
+    if ((hwnd_ == nullptr && !changing_owner_) || !action) return false;
     owner_thread_actions_.push_back(std::move(action));
+    if (changing_owner_) return true;
     if (PostMessageW(hwnd_, kOwnerThreadActionMessage, 0, 0)) return true;
     owner_thread_actions_.pop_back();
     return false;
 }
 
 void CandidateWindow::StartVModeTimer(std::function<void()> callback, UINT delay_ms) {
-    if (hwnd_ == nullptr) return;
+    if (hwnd_ == nullptr && !changing_owner_) return;
     StopVModeTimer();
     vmode_timer_cb_ = std::move(callback);
     if (vmode_timer_cb_) {
-        vmode_timer_active_ = SetTimer(hwnd_, kVModeTimerId, delay_ms, nullptr) != 0;
+        const UINT interval = (std::max)(UINT{1}, delay_ms);
+        vmode_due_tick_ = GetTickCount64() + interval;
+        if (hwnd_ == nullptr) return;
+        vmode_timer_active_ = SetTimer(hwnd_, kVModeTimerId, interval, nullptr) != 0;
     }
 }
 
@@ -1146,6 +1195,7 @@ void CandidateWindow::StopVModeTimer() {
     }
     vmode_timer_active_ = false;
     vmode_timer_cb_ = nullptr;
+    vmode_due_tick_ = 0;
 }
 
 void CandidateWindow::OpenSettings() {
@@ -2114,6 +2164,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         if (wparam == kVModeTimerId) {
             KillTimer(hwnd, kVModeTimerId);
             self->vmode_timer_active_ = false;
+            self->vmode_due_tick_ = 0;
             auto cb = std::move(self->vmode_timer_cb_);
             self->vmode_timer_cb_ = nullptr;
             if (cb) cb();
@@ -2123,6 +2174,7 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             if (!self->deferred_action_active_) return 0;
             KillTimer(hwnd, self->deferred_timer_id_);
             self->deferred_action_active_ = false;
+            self->deferred_action_due_tick_ = 0;
             auto action = std::move(self->deferred_action_);
             self->deferred_action_ = nullptr;
             if (action) action();

@@ -64,6 +64,76 @@ void SetCaretToRangeEnd(ITfContext* context, TfEditCookie ec, ITfRange* range) {
     clone->Release();
 }
 
+HRESULT FinishComposition(ITfComposition* composition, TfEditCookie cookie) {
+    Microsoft::WRL::ComPtr<ITfRange> range;
+    HRESULT hr = composition->GetRange(&range);
+    if (SUCCEEDED(hr) && range) {
+        Microsoft::WRL::ComPtr<ITfContext> context;
+        if (SUCCEEDED(range->GetContext(&context)) && context &&
+            !ClearCompositionDisplayAttribute(context.Get(), cookie, range.Get())) {
+            SHURU_LOG_WARN("composition display attribute cleanup failed");
+        }
+
+        // 富文本宿主在写锁退出时读取活动组合。EndComposition 若需要重试，
+        // 必须先将已提交文字移出组合，不能让下一次输入仍把旧正文当成预编辑。
+        hr = range->Collapse(cookie, TF_ANCHOR_END);
+        if (SUCCEEDED(hr)) hr = composition->ShiftStart(cookie, range.Get());
+        if (FAILED(hr)) {
+            SHURU_LOG_WARN("composition range retirement failed: 0x%08X", hr);
+        }
+    }
+    return composition->EndComposition(cookie);
+}
+
+HRESULT FindCompositionForAdoption(
+    ITfContextComposition* compositions, TfEditCookie cookie,
+    ITfRange* adoption_range, ITfCompositionView** found) {
+    *found = nullptr;
+    Microsoft::WRL::ComPtr<IEnumITfCompositionView> views;
+    HRESULT hr = compositions->FindComposition(cookie, adoption_range, &views);
+    if (FAILED(hr) || !views) return FAILED(hr) ? hr : E_FAIL;
+    Microsoft::WRL::ComPtr<ITfCompositionView> existing;
+    ULONG fetched = 0;
+    hr = views->Next(1, &existing, &fetched);
+    if (FAILED(hr)) return hr;
+    if (fetched == 0) return S_OK;
+    if (!existing) return E_FAIL;
+    Microsoft::WRL::ComPtr<ITfCompositionView> additional;
+    fetched = 0;
+    hr = views->Next(1, &additional, &fetched);
+    if (FAILED(hr)) return hr;
+    if (fetched != 0) return S_FALSE;
+
+    Microsoft::WRL::ComPtr<ITfRange> existing_range;
+    hr = existing->GetRange(&existing_range);
+    if (FAILED(hr) || !existing_range) return FAILED(hr) ? hr : E_FAIL;
+    LONG start = 0;
+    LONG end = 0;
+    // 现有组合可属于宿主客户端；比较必须由当前编辑客户端的范围发起。
+    hr = adoption_range->CompareStart(cookie, existing_range.Get(), TF_ANCHOR_START, &start);
+    if (SUCCEEDED(hr))
+        hr = adoption_range->CompareEnd(cookie, existing_range.Get(), TF_ANCHOR_END, &end);
+    if (FAILED(hr)) return hr;
+    if (start > 0 || end < 0) return S_FALSE;
+    *found = existing.Detach();
+    return S_OK;
+}
+
+bool SelectionMatches(ITfContext* context, TfEditCookie cookie, ITfRange* expected) {
+    if (expected == nullptr) return false;
+    TF_SELECTION selection{};
+    ULONG fetched = 0;
+    LONG start = 1;
+    LONG end = 1;
+    const HRESULT hr = context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    const bool matches = SUCCEEDED(hr) && fetched == 1 && selection.range != nullptr &&
+        SUCCEEDED(selection.range->CompareStart(cookie, expected, TF_ANCHOR_START, &start)) &&
+        SUCCEEDED(selection.range->CompareEnd(cookie, expected, TF_ANCHOR_END, &end)) &&
+        start == 0 && end == 0;
+    SafeRelease(&selection.range);
+    return matches;
+}
+
 }  // namespace
 
 HRESULT ReadContextInputScopePrivacy(
@@ -280,9 +350,11 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec) {
                 SetCaretToRangeEnd(context_, ec, range);
                 range->Release();
 
-                HRESULT end_hr = active->EndComposition(ec);
+                HRESULT end_hr = FinishComposition(active.Get(), ec);
                 if (FAILED(end_hr)) {
                     // 文字已经写入，后续只结束旧组合，不能重插或删除已上屏内容。
+                    SHURU_LOG_WARN("composition finalization deferred: pid=%lu tid=%lu hr=0x%08X",
+                                   GetCurrentProcessId(), GetCurrentThreadId(), end_hr);
                     auto* cleanup = new (std::nothrow) EndCompositionEditSession(active.Get(), {});
                     if (cleanup != nullptr) {
                         HRESULT cleanup_result = E_FAIL;
@@ -385,17 +457,50 @@ STDMETHODIMP SetCompositionEditSession::DoEditSession(TfEditCookie ec) {
     }
 
     if (*composition_ == nullptr) {
-        ITfInsertAtSelection* insert = nullptr;
-        HRESULT hr = context_->QueryInterface(
-            IID_ITfInsertAtSelection, reinterpret_cast<void**>(&insert));
-        if (FAILED(hr) || insert == nullptr) return FAILED(hr) ? hr : E_NOINTERFACE;
+        HRESULT hr = S_OK;
         ITfRange* insertion_range = nullptr;
-        hr = insert->InsertTextAtSelection(
-            ec, TF_IAS_QUERYONLY, nullptr, 0, &insertion_range);
-        insert->Release();
-        if (FAILED(hr) || insertion_range == nullptr) {
-            SafeRelease(&insertion_range);
-            return FAILED(hr) ? hr : E_FAIL;
+
+        // 检查光标前是否已残留预期的预编辑文本（典型于宿主延后收尾意外终止组合后文本就地残留）。
+        // 若光标前文本恰好精确匹配 text_，直接纳管该范围作为新组合，避免在其后重复追加首字母。
+        TF_SELECTION selection {};
+        ULONG fetched = 0;
+        if (SUCCEEDED(context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched)) &&
+            fetched == 1 && selection.range != nullptr) {
+            BOOL empty = FALSE;
+            if (SUCCEEDED(selection.range->IsEmpty(ec, &empty)) && empty && !text_.empty()) {
+                ITfRange* check_range = nullptr;
+                if (SUCCEEDED(selection.range->Clone(&check_range)) && check_range != nullptr) {
+                    LONG shifted = 0;
+                    const LONG expected_len = static_cast<LONG>(text_.size());
+                    if (SUCCEEDED(check_range->ShiftStart(ec, -expected_len, &shifted, nullptr)) &&
+                        shifted == -expected_len) {
+                        std::vector<wchar_t> buf(static_cast<size_t>(expected_len) + 1, 0);
+                        ULONG read = 0;
+                        if (SUCCEEDED(check_range->GetText(ec, 0, buf.data(), expected_len, &read)) &&
+                            read == static_cast<ULONG>(expected_len) &&
+                            text_.compare(0, text_.size(), buf.data(), read) == 0) {
+                            insertion_range = check_range;
+                            check_range = nullptr;
+                        }
+                    }
+                    SafeRelease(&check_range);
+                }
+            }
+            selection.range->Release();
+        }
+
+        if (insertion_range == nullptr) {
+            ITfInsertAtSelection* insert = nullptr;
+            hr = context_->QueryInterface(
+                IID_ITfInsertAtSelection, reinterpret_cast<void**>(&insert));
+            if (FAILED(hr) || insert == nullptr) return FAILED(hr) ? hr : E_NOINTERFACE;
+            hr = insert->InsertTextAtSelection(
+                ec, TF_IAS_QUERYONLY, nullptr, 0, &insertion_range);
+            insert->Release();
+            if (FAILED(hr) || insertion_range == nullptr) {
+                SafeRelease(&insertion_range);
+                return FAILED(hr) ? hr : E_FAIL;
+            }
         }
 
         ITfContextComposition* context_composition = nullptr;
@@ -448,18 +553,24 @@ AdoptExistingTextEditSession::AdoptExistingTextEditSession(
     ITfRange** recovered_composition_start,
     TfGuidAtom display_atom,
     Preflight preflight,
-    Completion completion)
+    Completion completion,
+    TfClientId client_id,
+    DeferAction defer_action)
     : context_(context), sink_(sink), range_(range),
       expected_character_(expected_character), composition_(composition),
       recovered_composition_start_(recovered_composition_start),
       display_atom_(display_atom), preflight_(std::move(preflight)),
-      completion_(std::move(completion)) {
+      completion_(std::move(completion)), client_id_(client_id),
+      defer_action_(std::move(defer_action)) {
     if (context_ != nullptr) context_->AddRef();
     if (sink_ != nullptr) sink_->AddRef();
     if (range_ != nullptr) range_->AddRef();
 }
 
 AdoptExistingTextEditSession::~AdoptExistingTextEditSession() {
+    SafeRelease(&handoff_composition_);
+    SafeRelease(&handoff_range_);
+    SafeRelease(&handoff_selection_);
     SafeRelease(&range_);
     SafeRelease(&sink_);
     SafeRelease(&context_);
@@ -499,7 +610,94 @@ HRESULT AdoptExistingTextEditSession::Finish(
     return hr;
 }
 
+HRESULT AdoptExistingTextEditSession::QueueHandoff() {
+    Microsoft::WRL::ComPtr<AdoptExistingTextEditSession> self(this);
+    if (!defer_action_([self] { self->CompleteHandoff(); }))
+        return Finish(ExistingTextCompositionResult::Failed, E_FAIL);
+    return S_OK;
+}
+
+HRESULT AdoptExistingTextEditSession::ValidateHandoff(TfEditCookie cookie) {
+    validation_result_ = ExistingTextCompositionResult::Failed;
+    if (preflight_ && !preflight_()) {
+        validation_result_ = ExistingTextCompositionResult::StaleRequest;
+        return S_FALSE;
+    }
+    if (!CanInspectCompositionText(handoff_range_, cookie)) {
+        validation_result_ = ExistingTextCompositionResult::SensitiveContext;
+        return E_ACCESSDENIED;
+    }
+    if (!RangeMatchesText(handoff_range_, cookie, handoff_text_)) {
+        validation_result_ = ExistingTextCompositionResult::RangeChanged;
+        return S_FALSE;
+    }
+    if (!SelectionMatches(context_, cookie, handoff_selection_)) {
+        validation_result_ = ExistingTextCompositionResult::SelectionChanged;
+        return S_FALSE;
+    }
+    Microsoft::WRL::ComPtr<ITfContextComposition> compositions;
+    HRESULT hr = context_->QueryInterface(IID_PPV_ARGS(&compositions));
+    if (FAILED(hr)) return hr;
+    Microsoft::WRL::ComPtr<ITfCompositionView> existing;
+    hr = FindCompositionForAdoption(compositions.Get(), cookie, handoff_range_, &existing);
+    if (hr != S_OK) {
+        validation_result_ = ExistingTextCompositionResult::CompositionActive;
+        return hr;
+    }
+    handoff_still_exists_ = existing != nullptr;
+    if (existing) {
+        Microsoft::WRL::ComPtr<IUnknown> current;
+        Microsoft::WRL::ComPtr<IUnknown> captured;
+        if (FAILED(existing.As(&current)) ||
+            FAILED(handoff_composition_->QueryInterface(IID_PPV_ARGS(&captured))) ||
+            current.Get() != captured.Get()) {
+            validation_result_ = ExistingTextCompositionResult::CompositionActive;
+            return S_FALSE;
+        }
+    }
+    return S_OK;
+}
+
+void AdoptExistingTextEditSession::CompleteHandoff() {
+    if (completed_) return;
+    HRESULT result = E_FAIL;
+    validating_handoff_ = true;
+    HRESULT hr = context_->RequestEditSession(client_id_, this, TF_ES_SYNC | TF_ES_READ, &result);
+    validating_handoff_ = false;
+    if (FAILED(hr) || result != S_OK) {
+        Finish(validation_result_, FAILED(hr) ? hr : result);
+        return;
+    }
+    if (handoff_still_exists_) {
+        // TakeOwnership 未实现；宿主结束组合需要自己的写锁，不能在输入法写会话内调用。
+        Microsoft::WRL::ComPtr<ITfContextOwnerCompositionServices> services;
+        hr = context_->QueryInterface(IID_PPV_ARGS(&services));
+        if (SUCCEEDED(hr)) hr = services->TerminateComposition(handoff_composition_);
+        if (FAILED(hr)) {
+            SHURU_LOG_WARN("first-key composition handoff failed: 0x%08X", hr);
+            Finish(ExistingTextCompositionResult::Failed, hr);
+            return;
+        }
+    }
+    SafeRelease(&handoff_composition_);
+    // TSF One 的 TerminateComposition 会通过 CInputContextAdapter 延后完成。
+    // 其返回成功不代表宿主这轮清理已经退出；立即创建新组合会被这次清理结束。
+    // 让新的写请求跨过消息边界，排在已产生的宿主清理通知之后。
+    Microsoft::WRL::ComPtr<AdoptExistingTextEditSession> self(this);
+    if (!defer_action_([self] {
+            HRESULT result = E_FAIL;
+            const HRESULT hr = self->context_->RequestEditSession(
+                self->client_id_, self.Get(), TF_ES_ASYNC | TF_ES_READWRITE, &result);
+            if (FAILED(hr) || FAILED(result))
+                self->Finish(ExistingTextCompositionResult::Failed, FAILED(hr) ? hr : result);
+        })) {
+        Finish(ExistingTextCompositionResult::Failed, E_FAIL);
+    }
+}
+
 STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
+    if (completed_) return S_FALSE;
+    if (validating_handoff_) return ValidateHandoff(ec);
     if (context_ == nullptr || sink_ == nullptr || range_ == nullptr ||
         composition_ == nullptr || recovered_composition_start_ == nullptr) {
         return Finish(ExistingTextCompositionResult::Failed, E_INVALIDARG);
@@ -519,7 +717,8 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
     InputScopePrivacy privacy = InputScopePrivacy::Unknown;
     const HRESULT privacy_hr = ReadContextInputScopePrivacy(
         context_, ec, &privacy);
-    if (SUCCEEDED(privacy_hr) && privacy == InputScopePrivacy::Sensitive) {
+    if ((SUCCEEDED(privacy_hr) && privacy == InputScopePrivacy::Sensitive) ||
+        !CanInspectCompositionText(range_, ec)) {
         return Finish(
             ExistingTextCompositionResult::SensitiveContext,
             E_ACCESSDENIED);
@@ -571,6 +770,7 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
         return Finish(ExistingTextCompositionResult::RangeChanged, S_FALSE);
     }
 
+    Microsoft::WRL::ComPtr<ITfRange> selection_before_handoff;
     TF_SELECTION selection {};
     ULONG fetched = 0;
     const HRESULT selection_hr = context_->GetSelection(
@@ -607,6 +807,7 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
             return Finish(
                 ExistingTextCompositionResult::SelectionChanged, S_FALSE);
         }
+        selection_before_handoff = selection.range;
         selection.range->Release();
     }
 
@@ -640,32 +841,58 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
                       FAILED(hr) ? hr : E_NOINTERFACE);
     }
 
-    ITfComposition* adopted_composition = nullptr;
-    bool took_existing_composition = false;
-    IEnumITfCompositionView* composition_views = nullptr;
-    HRESULT find_hr = context_composition->FindComposition(
-        ec, adoption_range, &composition_views);
-    if (SUCCEEDED(find_hr) && composition_views != nullptr) {
-        ITfCompositionView* existing_view = nullptr;
-        ULONG view_count = 0;
-        const HRESULT next_hr = composition_views->Next(
-            1, &existing_view, &view_count);
-        if (SUCCEEDED(next_hr) && view_count == 1 && existing_view != nullptr) {
-            const HRESULT take_hr = context_composition->TakeOwnership(
-                ec, existing_view, sink_, &adopted_composition);
-            took_existing_composition = SUCCEEDED(take_hr) &&
-                adopted_composition != nullptr;
-            if (!took_existing_composition && FAILED(take_hr)) {
-                hr = take_hr;
-            }
+    Microsoft::WRL::ComPtr<ITfCompositionView> existing;
+    hr = FindCompositionForAdoption(context_composition, ec, adoption_range, &existing);
+    if (hr != S_OK) {
+        context_composition->Release();
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        return Finish(FAILED(hr) ? ExistingTextCompositionResult::Failed
+                                 : ExistingTextCompositionResult::CompositionActive, hr);
+    }
+    if (existing) {
+        if (handoff_scheduled_ || client_id_ == TF_CLIENTID_NULL || !defer_action_) {
+            context_composition->Release();
+            recovered_composition_start->Release();
+            adoption_range->Release();
+            return Finish(ExistingTextCompositionResult::CompositionActive, S_FALSE);
         }
-        SafeRelease(&existing_view);
-        composition_views->Release();
+        handoff_scheduled_ = true;
+        handoff_composition_ = existing.Detach();
+        handoff_range_ = adoption_range;
+        handoff_range_->AddRef();
+        handoff_selection_ = selection_before_handoff.Detach();
+        handoff_text_ = adopted_text;
+        context_composition->Release();
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        return QueueHandoff();
     }
-    if (!took_existing_composition) {
-        hr = context_composition->StartComposition(
-            ec, adoption_range, sink_, &adopted_composition);
+    if (*composition_ != nullptr || *recovered_composition_start_ != nullptr) {
+        context_composition->Release();
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        return Finish(ExistingTextCompositionResult::CompositionActive, S_FALSE);
     }
+    std::wstring confirmed_text;
+    if ((preflight_ && !preflight_()) ||
+        !read_recoverable_text(adoption_range, &confirmed_text) || confirmed_text != adopted_text ||
+        (handoff_scheduled_ && confirmed_text != handoff_text_)) {
+        context_composition->Release();
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        return Finish(ExistingTextCompositionResult::RangeChanged, S_FALSE);
+    }
+    if (handoff_scheduled_ && !SelectionMatches(context_, ec, handoff_selection_)) {
+        context_composition->Release();
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        return Finish(ExistingTextCompositionResult::SelectionChanged, S_FALSE);
+    }
+
+    ITfComposition* adopted_composition = nullptr;
+    hr = context_composition->StartComposition(
+        ec, adoption_range, sink_, &adopted_composition);
     context_composition->Release();
     if (FAILED(hr) || adopted_composition == nullptr) {
         recovered_composition_start->Release();
@@ -675,19 +902,13 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
                       FAILED(hr) ? hr : E_FAIL);
     }
 
+    Microsoft::WRL::ComPtr<ITfComposition> retained_composition(adopted_composition);
     *composition_ = adopted_composition;
-    ITfRange* composition_range = nullptr;
-    hr = adopted_composition->GetRange(&composition_range);
-    if (FAILED(hr) || composition_range == nullptr) {
-        recovered_composition_start->Release();
-        adoption_range->Release();
+    const auto abandon_adoption = [this, ec, adopted_composition] {
+        // 编辑宿主可能在调用中重入结束通知；只释放本次建立的组合。
         adopted_composition->EndComposition(ec);
-        adopted_composition->Release();
-        *composition_ = nullptr;
-        SafeRelease(&composition_range);
-        return Finish(ExistingTextCompositionResult::Failed,
-                      FAILED(hr) ? hr : E_FAIL);
-    }
+        if (*composition_ == adopted_composition) SafeRelease(composition_);
+    };
     // 某些 WinUI 宿主会在 StartComposition 返回时把组合范围折叠到
     // 当前插入点。必须通过 ITfComposition 自身移动边界；只移动
     // GetRange 返回的快照不会更新组合对象，空格提交时首字母仍会残留。
@@ -713,12 +934,20 @@ STDMETHODIMP AdoptExistingTextEditSession::DoEditSession(TfEditCookie ec) {
     SafeRelease(&composition_end);
     if (FAILED(end_shift_hr)) {
         recovered_composition_start->Release();
-        composition_range->Release();
         adoption_range->Release();
-        adopted_composition->EndComposition(ec);
-        adopted_composition->Release();
-        *composition_ = nullptr;
+        abandon_adoption();
         return Finish(ExistingTextCompositionResult::Failed, end_shift_hr);
+    }
+    // GetRange 返回的是范围快照，必须在边界调整完成后再读取以覆盖全部首键文字。
+    ITfRange* composition_range = nullptr;
+    hr = adopted_composition->GetRange(&composition_range);
+    if (FAILED(hr) || composition_range == nullptr) {
+        recovered_composition_start->Release();
+        adoption_range->Release();
+        abandon_adoption();
+        SafeRelease(&composition_range);
+        return Finish(ExistingTextCompositionResult::Failed,
+                      FAILED(hr) ? hr : E_FAIL);
     }
     ApplyCompositionDisplayAttribute(
         context_, ec, composition_range, display_atom_);
@@ -791,7 +1020,11 @@ STDMETHODIMP EndCompositionEditSession::DoEditSession(TfEditCookie ec) {
         return clear_hr;
     }
 
-    const HRESULT end_hr = composition_->EndComposition(ec);
+    // 最终提交已在原写会话移出了正文。此处只结束旧对象，不能再次清理
+    // 显示属性：新组合可能已经在同一插入点开始，旧范围的端点也可能随之移动。
+    const HRESULT end_hr = expected_text_.empty()
+        ? composition_->EndComposition(ec)
+        : FinishComposition(composition_, ec);
     if (FAILED(end_hr)) {
         SHURU_LOG_ERROR("Cancel composition failed: 0x%08X", end_hr);
         return end_hr;

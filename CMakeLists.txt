@@ -3,6 +3,8 @@ project(ShuruPinyin LANGUAGES CXX)
 
 include(CTest)
 
+option(SHURU_INPUT_LIFECYCLE_TRACE "Enable local TSF lifecycle diagnostics without input text" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -102,6 +104,7 @@ target_compile_definitions(ShuruIme PRIVATE
   _UNICODE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
+  $<$<BOOL:${SHURU_INPUT_LIFECYCLE_TRACE}>:SHURU_INPUT_LIFECYCLE_TRACE>
 )
 
 target_link_libraries(ShuruIme PRIVATE
@@ -673,10 +676,11 @@ if(BUILD_TESTING)
               ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_logic/SettingsLogic.csproj
               --configuration Release)
     set_tests_properties(settings_logic PROPERTIES TIMEOUT 60)
+    # 正式入口已编译设置程序；测试时再次构建会与按需启动的后台进程争用程序文件。
     add_test(NAME settings_ui_smoke
       COMMAND ${DOTNET_EXECUTABLE} run --project
               ${CMAKE_CURRENT_SOURCE_DIR}/settings/ShuruSettings.csproj
-              --configuration Release -- -self-test)
+              --configuration Release --no-build -- -self-test)
     set_tests_properties(settings_ui_smoke PROPERTIES
       TIMEOUT 30
       LABELS "interactive-tsf"
