@@ -3,6 +3,8 @@ project(ShuruPinyin LANGUAGES CXX)
 
 include(CTest)
 
+option(SHURU_INPUT_LIFECYCLE_TRACE "Enable local TSF lifecycle diagnostics without input text" OFF)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -102,6 +104,7 @@ target_compile_definitions(ShuruIme PRIVATE
   _UNICODE
   WIN32_LEAN_AND_MEAN
   NOMINMAX
+  $<$<BOOL:${SHURU_INPUT_LIFECYCLE_TRACE}>:SHURU_INPUT_LIFECYCLE_TRACE>
 )
 
 target_link_libraries(ShuruIme PRIVATE
@@ -594,10 +597,17 @@ if(BUILD_TESTING)
   add_test(NAME deployment_core
     COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/deployment_core_test.ps1)
+  add_test(NAME installer_acl
+    COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_acl_test.ps1
+            -ProbeExe $<TARGET_FILE:appcontainer_acl_test>)
+  set_tests_properties(installer_acl PROPERTIES TIMEOUT 60)
   set_tests_properties(deployment_core PROPERTIES
     # 完整白霜词库较大，部署测试会多次复制并校验哈希。
     # 在机械盘或实时防护开启时 60 秒不足，保留明确上限但给足正常 I/O 时间。
     TIMEOUT 180
+  )
+  set_tests_properties(deployment_core installer_acl PROPERTIES
     # VsDevCmd 可能把 PowerShell 7 模块目录放到最前，导致 Windows PowerShell
     # 先发现不兼容的 Microsoft.PowerShell.Utility，而不是自身模块。
     ENVIRONMENT "PSModulePath=$ENV{SystemRoot}/System32/WindowsPowerShell/v1.0/Modules"
@@ -666,10 +676,11 @@ if(BUILD_TESTING)
               ${CMAKE_CURRENT_SOURCE_DIR}/tests/settings_logic/SettingsLogic.csproj
               --configuration Release)
     set_tests_properties(settings_logic PROPERTIES TIMEOUT 60)
+    # 正式入口已编译设置程序；测试时再次构建会与按需启动的后台进程争用程序文件。
     add_test(NAME settings_ui_smoke
       COMMAND ${DOTNET_EXECUTABLE} run --project
               ${CMAKE_CURRENT_SOURCE_DIR}/settings/ShuruSettings.csproj
-              --configuration Release -- -self-test)
+              --configuration Release --no-build -- -self-test)
     set_tests_properties(settings_ui_smoke PROPERTIES
       TIMEOUT 30
       LABELS "interactive-tsf"

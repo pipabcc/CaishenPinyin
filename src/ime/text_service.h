@@ -70,8 +70,16 @@ public:
     void OnStatusToggleSchema();
     void OnStatusToggleKeyboard();
     void OnStatusSoftKey(wchar_t ch, bool is_special);
+    void ArmShortcutForFirstKeyRecoveryForTest(ITfContext* context, WPARAM wparam) noexcept;
 
 private:
+#if defined(SHURU_INPUT_LIFECYCLE_TRACE)
+    void TraceInputLifecycle(const char* event, const void* subject = nullptr,
+                             unsigned long detail = 0) const;
+#else
+    void TraceInputLifecycle(const char*, const void* = nullptr,
+                             unsigned long = 0) const {}
+#endif
     LONG ref_ = 1;
 
     ITfThreadMgr* thread_mgr_ = nullptr;
@@ -166,6 +174,13 @@ private:
     bool first_key_recovery_pending_ = false;
     bool first_key_recovery_adopted_ = false;
 
+    // 组合创建时间戳与意外终止自愈控制：现代宿主（如 XAML/Edge）在复制（Ctrl+C）后
+    // 会延后异步派发 FinalizeComposition。若其误伤新键入的拼音，由自愈机制在下个消息轮次重建组合。
+    std::uint64_t composition_created_tick_ = 0;
+    unsigned composition_recreation_count_ = 0;
+    bool terminating_voluntarily_ = false;
+    bool recreating_composition_ = false;
+
     // 独立搜索窗口文本直达会话。目标上下文由创建会话的 TSF 线程持有，
     // 设置程序只拿到不可预测令牌，不能自行选择其他输入框上屏。
     std::wstring direct_commit_token_;
@@ -208,7 +223,7 @@ private:
     void StopShortcutReleasePolling();
     void RecordShortcutForFirstKeyRecovery(
         ITfContext* context, WPARAM wparam,
-        bool shortcut_modifier) noexcept;
+        bool shortcut_modifier, bool bypass_physical_check = false) noexcept;
     void TryRecoverExternalFirstKey(
         ITfContext* context, TfEditCookie read_cookie,
         ITfEditRecord* edit_record);
@@ -245,6 +260,7 @@ private:
     bool RebindFocusedContext();
     bool IsCurrentTopContext(ITfContext* context) const;
     void AbortRejectedComposition(HRESULT reason, ITfContext* attempted_context);
+    void RecreateCompositionAfterUnexpectedTermination(ITfContext* context);
     void ToggleEnglishMode();
     void SyncStatusUi();
     void SyncLangBarItemEnglishMode();

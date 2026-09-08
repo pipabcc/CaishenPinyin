@@ -88,6 +88,17 @@ CaishenPinyin-<version>-win-x64-Setup.exe /S /NODEFAULTIME
 拒绝规则，保留原用户及系统管理权限，并跳过重解析点。普通用户启动设置程序或输入法
 后，再将个人数据目录及文件收敛为当前用户独占的受保护 DACL。
 
+NSIS 的全用户 Shell 上下文仅用于公共程序和菜单位置；安装、卸载均由部署脚本读取
+当前进程的 `LOCALAPPDATA` 解析个人目录，避免将其误当成 `ProgramData`。部署入口
+拒绝个人目录与程序、公共词库目录重叠。权限迁移可移除公共词库上遗留的应用包拒绝
+或写入权限，只恢复读取权限，保留其他用户及系统管理权限，并跳过重解析点。
+
+需要单独修复已有目录权限时，可在管理员 PowerShell 中执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action RepairPermissions
+```
+
 ## 卸载与数据
 
 图形卸载默认不删除个人数据，保留：

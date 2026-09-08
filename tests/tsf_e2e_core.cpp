@@ -92,14 +92,29 @@ public:
             ITfProperty* property = nullptr;
             hr = context_->GetProperty(GUID_PROP_ATTRIBUTE, &property);
             if (SUCCEEDED(hr) && property != nullptr) {
-                VARIANT value;
-                VariantInit(&value);
-                hr = property->GetValue(edit_cookie, range, &value);
-                if (SUCCEEDED(hr)) {
-                    *has_attribute_ = value.vt == VT_I4 &&
-                        value.lVal == static_cast<LONG>(expected_atom_);
+                // 整段 GetValue 在属性不一致时返回空值，不能据此认定局部标记已清除。
+                *has_attribute_ = false;
+                IEnumTfRanges* attribute_ranges = nullptr;
+                hr = property->EnumRanges(edit_cookie, &attribute_ranges, range);
+                if (SUCCEEDED(hr) && attribute_ranges != nullptr) {
+                    for (;;) {
+                        ITfRange* attribute_range = nullptr;
+                        ULONG fetched = 0;
+                        hr = attribute_ranges->Next(1, &attribute_range, &fetched);
+                        if (FAILED(hr) || fetched == 0) break;
+                        VARIANT value;
+                        VariantInit(&value);
+                        hr = property->GetValue(edit_cookie, attribute_range, &value);
+                        attribute_range->Release();
+                        if (SUCCEEDED(hr) && value.vt == VT_I4 &&
+                            value.lVal == static_cast<LONG>(expected_atom_)) {
+                            *has_attribute_ = true;
+                        }
+                        VariantClear(&value);
+                        if (FAILED(hr)) break;
+                    }
+                    attribute_ranges->Release();
                 }
-                VariantClear(&value);
                 property->Release();
             }
         }

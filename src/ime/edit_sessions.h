@@ -81,6 +81,8 @@ public:
     using Preflight = std::function<bool()>;
     using Completion = std::function<void(
         ExistingTextCompositionResult, std::wstring)>;
+    // 必须在当前编辑会话返回后，于同一 TSF 线程执行回调。
+    using DeferAction = std::function<bool(std::function<void()>)>;
 
     AdoptExistingTextEditSession(
         ITfContext* context,
@@ -91,7 +93,9 @@ public:
         ITfRange** recovered_composition_start,
         TfGuidAtom display_atom,
         Preflight preflight,
-        Completion completion);
+        Completion completion,
+        TfClientId client_id = TF_CLIENTID_NULL,
+        DeferAction defer_action = {});
     virtual ~AdoptExistingTextEditSession();
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override;
@@ -104,6 +108,9 @@ private:
         ExistingTextCompositionResult result,
         HRESULT hr,
         std::wstring adopted_text = {});
+    HRESULT QueueHandoff();
+    HRESULT ValidateHandoff(TfEditCookie cookie);
+    void CompleteHandoff();
 
     LONG ref_ = 1;
     ITfContext* context_ = nullptr;
@@ -115,6 +122,16 @@ private:
     TfGuidAtom display_atom_ = TF_INVALID_GUIDATOM;
     Preflight preflight_;
     Completion completion_;
+    TfClientId client_id_ = TF_CLIENTID_NULL;
+    DeferAction defer_action_;
+    ITfCompositionView* handoff_composition_ = nullptr;
+    ITfRange* handoff_range_ = nullptr;
+    ITfRange* handoff_selection_ = nullptr;
+    std::wstring handoff_text_;
+    ExistingTextCompositionResult validation_result_ = ExistingTextCompositionResult::Failed;
+    bool handoff_scheduled_ = false;
+    bool validating_handoff_ = false;
+    bool handoff_still_exists_ = false;
     bool completed_ = false;
 };
 

@@ -258,16 +258,50 @@ inline void AppendCandidateExpansion(
         current->matched_pinyin_len, expanded.matched_pinyin_len);
 }
 
+inline std::wstring ApplyInputCasing(
+    const std::wstring& display,
+    const std::string& raw_input) {
+    if (display.empty() || raw_input.empty()) {
+        return display;
+    }
+    std::wstring result = display;
+    std::size_t raw_idx = 0;
+    for (std::size_t i = 0; i < result.size() && raw_idx < raw_input.size(); ++i) {
+        const wchar_t ch = result[i];
+        if ((ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z')) {
+            while (raw_idx < raw_input.size() &&
+                   !((raw_input[raw_idx] >= 'a' && raw_input[raw_idx] <= 'z') ||
+                     (raw_input[raw_idx] >= 'A' && raw_input[raw_idx] <= 'Z'))) {
+                ++raw_idx;
+            }
+            if (raw_idx < raw_input.size()) {
+                const char raw_ch = raw_input[raw_idx++];
+                if (raw_ch >= 'A' && raw_ch <= 'Z') {
+                    result[i] = static_cast<wchar_t>(std::towupper(ch));
+                } else if (raw_ch >= 'a' && raw_ch <= 'z') {
+                    result[i] = static_cast<wchar_t>(std::towlower(ch));
+                }
+            }
+        }
+    }
+    return result;
+}
+
 inline std::wstring CandidateComposingDisplay(
     const std::vector<Candidate>& candidates,
     std::size_t selected,
-    const std::wstring& fallback) {
-    if (selected >= candidates.size() ||
-        candidates[selected].input_segmentation.empty()) {
-        return fallback;
+    const std::wstring& fallback,
+    const std::string& raw_input = {}) {
+    std::wstring display = fallback;
+    if (selected < candidates.size() &&
+        !candidates[selected].input_segmentation.empty()) {
+        const std::string& segmented = candidates[selected].input_segmentation;
+        display = std::wstring(segmented.begin(), segmented.end());
     }
-    const std::string& segmented = candidates[selected].input_segmentation;
-    return std::wstring(segmented.begin(), segmented.end());
+    if (!raw_input.empty()) {
+        display = ApplyInputCasing(display, raw_input);
+    }
+    return display;
 }
 
 struct CandidateItemLayout {

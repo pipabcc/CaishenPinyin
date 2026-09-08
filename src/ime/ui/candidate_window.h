@@ -172,6 +172,7 @@ private:
     void* gdip_font_utility_ = nullptr;
     DirectWriteTextRenderer directwrite_text_;
     bool visible_ = false;
+    bool changing_owner_ = false;
     bool english_mode_ = false;
     bool expanded_ = false;
     bool mouse_down_ = false;
@@ -226,6 +227,7 @@ private:
     std::function<bool()> direct_commit_poll_;
     bool direct_commit_poll_active_ = false;
     bool vmode_timer_active_ = false;
+    ULONGLONG vmode_due_tick_ = 0;
     std::function<void()> vmode_timer_cb_;
     bool deferred_action_active_ = false;
     // 每次延迟请求使用新的定时器 ID。KillTimer 无法撤回已经排队的
@@ -233,6 +235,7 @@ private:
     UINT_PTR deferred_timer_id_ = kDeferredActionTimerId;
     UINT_PTR deferred_timer_serial_ = 0;
     std::function<void()> deferred_action_;
+    ULONGLONG deferred_action_due_tick_ = 0;
     std::deque<std::function<void()>> owner_thread_actions_;
     bool skin_animation_timer_active_ = false;
     HWND host_owner_ = nullptr;
@@ -267,6 +270,7 @@ private:
     bool EnsureOwner(HWND requested_owner);
     HWND NormalizeOwner(HWND requested_owner) const noexcept;
     void ResetWindowBoundState() noexcept;
+    void RestoreWindowWork();
     LRESULT OnPaint();
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 };

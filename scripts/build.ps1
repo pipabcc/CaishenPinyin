@@ -6,6 +6,7 @@ param(
   [string]$OutputDir='artifacts\release',
   [string]$GrammarPath='',
   [ValidateSet('Off','IfPresent','Required')][string]$SigningPolicy='Off',
+  [switch]$Incremental,
   [switch]$NoPackage
 )
 $ErrorActionPreference='Stop'
@@ -50,18 +51,19 @@ $cl=Get-Command cl -ErrorAction SilentlyContinue
 # Ninja 必须配合当前进程可见的 cl.exe；只有 Ninja 而没有 MSVC 环境时，
 # 退回 Visual Studio Generator，让各架构批处理自行加载对应的工具链。
 $useNinja=$null -ne $ninja -and $null -ne $cl
+$cleanFirstOption=if($Incremental){''}else{' --clean-first'}
 if($useNinja){
  $configure="cmake -S `"$Root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
- $compile="cmake --build `"$build`" --config $Config --clean-first"
+ $compile="cmake --build `"$build`" --config $Config$cleanFirstOption"
  $x86Configure="cmake -S `"$Root`" -B `"$x86Build`" -G Ninja -DCMAKE_BUILD_TYPE=$Config -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
- $x86Compile="cmake --build `"$x86Build`" --config $Config --clean-first"
+ $x86Compile="cmake --build `"$x86Build`" --config $Config$cleanFirstOption"
  $dll=Join-Path $build 'ShuruIme.dll'
  $x86Dll=Join-Path $x86Build 'ShuruIme32.dll'
 }else{
  $configure="cmake -S `"$Root`" -B `"$build`" -G `"Visual Studio 17 2022`" -A x64 -DBUILD_TESTING=ON"
- $compile="cmake --build `"$build`" --config $Config --clean-first"
+ $compile="cmake --build `"$build`" --config $Config$cleanFirstOption"
  $x86Configure="cmake -S `"$Root`" -B `"$x86Build`" -G `"Visual Studio 17 2022`" -A Win32 -DBUILD_TESTING=ON"
- $x86Compile="cmake --build `"$x86Build`" --config $Config --clean-first"
+ $x86Compile="cmake --build `"$x86Build`" --config $Config$cleanFirstOption"
  $dll=Join-Path $build "$Config\ShuruIme.dll"
  $x86Dll=Join-Path $x86Build "$Config\ShuruIme32.dll"
 }
@@ -114,11 +116,11 @@ Invoke-BuildBatch -Path $x86Bat -FailureMessage 'x86 configure/build/CTest faile
 call "$dev" -arch=x86 -host_arch=amd64 || exit /b 1
 $x86Configure || exit /b 1
 $x86Compile || exit /b 1
-ctest --test-dir "$x86Build" -C $Config -R "input_policy|engine_snapshot|release_health|tsf_e2e_core|composition_lifecycle" --output-on-failure || exit /b 1
+ctest --test-dir "$x86Build" -C $Config -R "input_policy|engine_snapshot|release_health|tsf_e2e_core|composition_lifecycle|candidate_window" --output-on-failure || exit /b 1
 "@
 Invoke-BuildBatch -Path $publishBat -FailureMessage 'settings publish failed' -Content @"
 @echo on
-rem settings_ui_smoke uses dotnet run and rebuilds with the project defaults.
+rem settings_ui_smoke runs the application built before CTest without rebuilding it.
 rem Publish the final settings application with its own Windows desktop runtime.
 call "$dev" -arch=amd64 -host_arch=amd64 || exit /b 1
 dotnet publish "$settingsProject" --configuration $Config --runtime win-x64 --self-contained true --output "$settingsOutput" -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -p:Version=$productVersion -p:FileVersion=$productVersion -p:AssemblyVersion=$productVersion.0 || exit /b 1

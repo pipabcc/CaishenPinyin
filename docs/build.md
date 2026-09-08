@@ -49,6 +49,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 `
 - `-BuildDir`：CMake 构建目录；
 - `-OutputDir`：发行目录；
 - `-NoPackage`：只编译和测试，不生成发行目录；
+- `-Incremental`：本地迭代时复用 CMake 已编译的对象文件，仍配置两种架构、运行全部既定
+  测试并重新生成发布清单；默认构建继续先清理再编译；
 - `-GrammarPath`：仅供本地测试使用的完整墨奇模型；
 - `-SigningPolicy Off|IfPresent|Required`：发行签名策略。
 
@@ -74,6 +76,9 @@ dotnet run --project tests\settings_logic
 
 GitHub Actions 在无桌面的托管环境运行可自动化的测试。需要真实前台焦点、候选窗观察或多
 DPI/多显示器的场景仍需 Windows 真机验收，不能用 CI 结果替代。
+
+设置界面冒烟测试直接运行正式入口在 CTest 前已编译的设置程序，不在测试时再次构建，
+避免首键测试按需启动的剪贴板后台进程占用程序文件而导致复制失败。
 
 性能排查可在构建后运行 `query_benchmark <词库目录> <隔离用户目录> [候选数量]`，
 分别以 10 项首屏和 90 项多页比较查询耗时。工具还报告分阶段工作量、预算是否用尽

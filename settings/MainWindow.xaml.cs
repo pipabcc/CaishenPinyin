@@ -95,6 +95,8 @@ public partial class MainWindow : Window
         {
             await RefreshClipboardGridAsync();
         }
+
+        UpdateBottomStatusBar();
     }
 
     private void ApplySettings(AppSettings settings)
@@ -628,13 +630,48 @@ public partial class MainWindow : Window
         UserDictionaryText.Text = user.Exists
             ? $"{CountDataLines(UserDictionaryPath):N0} 条自动学习词 · {user.Length:N0} 字节\n{UserDictionaryPath}"
             : $"尚未产生自动学习词\n{UserDictionaryPath}";
-        StatusText.Text = ImeRegistrationRepair.RegistrationStatus();
+        UpdateBottomStatusBar();
+    }
+
+    private const string SkinDownloadUrl = "https://pinyin.sogou.com/skins/";
+
+    private void UpdateBottomStatusBar()
+    {
+        if (StatusText is null) return;
+
+        if (NavigationList?.SelectedIndex == 4)
+        {
+            StatusText.Text = $"皮肤下载：{SkinDownloadUrl}";
+            StatusText.ToolTip = "使用默认浏览器打开搜狗拼音皮肤下载页面";
+        }
+        else
+        {
+            StatusText.Text = ImeRegistrationRepair.RegistrationStatus();
+            StatusText.ToolTip = "打开输入法安装文件夹";
+        }
     }
 
     private void StatusText_MouseLeftButtonUp(
         object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        if (NavigationList?.SelectedIndex == 4)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = SkinDownloadUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                ShowOperationError(ex);
+            }
+            return;
+        }
+
         var directory = string.IsNullOrWhiteSpace(registeredDllPath_)
             ? null
             : Path.GetDirectoryName(registeredDllPath_);

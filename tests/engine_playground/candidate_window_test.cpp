@@ -521,6 +521,23 @@ int wmain(int argc, wchar_t** argv) {
         return 3;
     }
 
+    if (shuru::ApplyInputCasing(L"tt", "TT") != L"TT" ||
+        shuru::ApplyInputCasing(L"t't", "TT") != L"T'T" ||
+        shuru::ApplyInputCasing(L"xi'an", "XIAN") != L"XI'AN" ||
+        shuru::ApplyInputCasing(L"tian", "Tian") != L"Tian" ||
+        shuru::ApplyInputCasing(L"tt", "tt") != L"tt") {
+        std::fwprintf(stderr, L"ApplyInputCasing failed to preserve user casing\n");
+        return 70;
+    }
+    shuru::Candidate cand_sample;
+    cand_sample.text = L"天天";
+    cand_sample.input_segmentation = "tt";
+    std::vector<shuru::Candidate> sample_candidates = {cand_sample};
+    if (shuru::CandidateComposingDisplay(sample_candidates, 0, L"tt", "TT") != L"TT") {
+        std::fwprintf(stderr, L"CandidateComposingDisplay failed to format TT\n");
+        return 71;
+    }
+
     shuru::CandidateWindow window;
     if (!window.Create(GetModuleHandleW(nullptr))) return 4;
 
@@ -762,12 +779,33 @@ int wmain(int argc, wchar_t** argv) {
         0, L"STATIC", L"candidate-owner", WS_OVERLAPPED,
         0, 0, 100, 100, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (owner == nullptr) return 58;
+    std::vector<int> rebound_actions;
+    int rebound_ready = 0, rebound_shift = 0, rebound_shortcut = 0;
+    int rebound_direct = 0, rebound_deferred = 0, rebound_vmode = 0;
+    if (!window.PostOwnerThreadAction([&] { rebound_actions.push_back(1); }) ||
+        !window.PostOwnerThreadAction([&] { rebound_actions.push_back(2); })) return 74;
+    window.StartReadyPolling([&] { ++rebound_ready; return false; });
+    window.StartShiftReleasePolling([&] { ++rebound_shift; return false; });
+    window.StartShortcutReleasePolling([&] { ++rebound_shortcut; return false; });
+    window.StartDirectCommitPolling([&] { ++rebound_direct; return false; });
+    window.StartDeferredAction([&] { ++rebound_deferred; }, 30);
+    window.StartVModeTimer([&] { ++rebound_vmode; }, 30);
     window.Show(POINT {40, 40}, owner);
     handle = window.GetHwnd();
     if (GetWindow(handle, GW_OWNER) != owner) {
         std::fwprintf(stderr, L"candidate window did not bind its host owner\n");
         DestroyWindow(owner);
         return 59;
+    }
+    pump_until(GetTickCount64() + 250);
+    if (rebound_actions != std::vector<int>{1, 2} || rebound_ready != 1 || rebound_shift != 1 ||
+        rebound_shortcut != 1 || rebound_direct != 1 || rebound_deferred != 1 || rebound_vmode != 1) {
+        std::fwprintf(stderr,
+            L"owner rebinding lost or repeated work: actions=%zu ready=%d shift=%d shortcut=%d direct=%d deferred=%d vmode=%d\n",
+            rebound_actions.size(), rebound_ready, rebound_shift, rebound_shortcut,
+            rebound_direct, rebound_deferred, rebound_vmode);
+        DestroyWindow(owner);
+        return 75;
     }
     window.Hide();
     if (GetWindow(handle, GW_OWNER) != owner || IsWindowVisible(handle)) {
@@ -777,11 +815,16 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     window.Show(POINT {40, 40}, owner);
+    int destroyed_owner_actions = 0;
+    window.PostOwnerThreadAction([&] { ++destroyed_owner_actions; });
+    window.StartDeferredAction([&] { ++destroyed_owner_actions; }, 30);
     DestroyWindow(owner);
     if (window.GetHwnd() != nullptr || IsWindow(handle)) {
         std::fwprintf(stderr, L"destroyed owner retained its candidate window\n");
         return 61;
     }
+    pump_until(GetTickCount64() + 50);
+    if (destroyed_owner_actions != 0) return 76;
 
     HWND recovery_owner = CreateWindowExW(
         0, L"STATIC", L"candidate-recovery-owner", WS_OVERLAPPED,

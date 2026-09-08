@@ -338,7 +338,8 @@ Section "安装 ${PRODUCT_NAME}" SEC_INSTALL
   Call ValidateInstallDirectory
   CreateDirectory "$INSTDIR"
 
-  StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Install -DllPath "$PLUGINSDIR\payload\ShuruIme.dll" -X86DllPath "$PLUGINSDIR\payload\ShuruIme32.dll" -SettingsPath "$PLUGINSDIR\payload" -PackagePath "$PLUGINSDIR\payload\data\lexicon" -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -UserDataRoot "$LOCALAPPDATA\CaishenPinyin" -Version "$DeploymentVersion" -SigningPolicy Off'
+  ; 全用户模式会改变 NSIS 的本地数据变量含义，个人目录由部署脚本从用户环境解析。
+  StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Install -DllPath "$PLUGINSDIR\payload\ShuruIme.dll" -X86DllPath "$PLUGINSDIR\payload\ShuruIme32.dll" -SettingsPath "$PLUGINSDIR\payload" -PackagePath "$PLUGINSDIR\payload\data\lexicon" -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -Version "$DeploymentVersion" -SigningPolicy Off'
   ${If} $DefaultInputState == ${BST_CHECKED}
     StrCpy $2 '$2 -SetDefaultInputMethod'
   ${EndIf}
@@ -448,7 +449,7 @@ Section "Uninstall"
   SetOutPath "$PLUGINSDIR"
   File /oname=install_ime.ps1 "${DEPLOY_SCRIPT}"
 
-  StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Uninstall -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -UserDataRoot "$LOCALAPPDATA\CaishenPinyin" -SigningPolicy Off'
+  StrCpy $2 '"$PowerShellPath" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\install_ime.ps1" -Action Uninstall -InstallRoot "$INSTDIR" -DataRoot "$ProgramDataPath\CaishenPinyin\data\lexicon" -SigningPolicy Off'
   ${If} $DeleteUserDataState == ${BST_CHECKED}
     StrCpy $2 '$2 -DeleteUserData'
   ${EndIf}
