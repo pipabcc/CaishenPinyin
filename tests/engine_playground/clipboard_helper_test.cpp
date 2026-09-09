@@ -126,13 +126,15 @@ int main() {
     CHECK(all[0].text == L"多行文本");
     CHECK(all[0].full_content == L"第一行\r\n第二行");
     CHECK(all[0].covered_input_len == 1 && !all[0].learnable);
+    CHECK(all[0].action_data == L"one" && all[1].action_data == L"two");
     const auto filtered = GetClipboardCandidates("字段", 10);
     CHECK(filtered.size() == 1 && filtered[0].text == L"待删除");
     CHECK(GetClipboardCandidates("", 0).empty());
     CHECK(all[2].action == CandidateAction::PasteClipboardRecord);
     CHECK(all[2].action_data == L"image");
 
-    CHECK(DeleteClipboardCandidate(L"保留字段测试"));
+    CHECK(!DeleteClipboardCandidate(L"保留字段测试", L"不存在的记录"));
+    CHECK(DeleteClipboardCandidate(L"保留字段测试", all[1].action_data));
     const std::string after_delete = ReadUtf8(history);
     CHECK(after_delete.find("\"id\":\"two\"") == std::string::npos);
     CHECK(after_delete.find("\"future\":{\"nested\":true}") != std::string::npos);
@@ -162,6 +164,7 @@ int main() {
     const auto database_filtered = GetClipboardCandidates("SQLite", 10);
     CHECK(database_filtered.size() == 1);
     CHECK(database_filtered[0].action == CandidateAction::CommitText);
+    CHECK(database_filtered[0].action_data == L"db-text");
     CHECK(DeleteClipboardCandidate(
         database_items[0].full_content, database_items[0].action_data));
     const auto database_after_delete = GetClipboardCandidates("", 10);
@@ -170,6 +173,10 @@ int main() {
 
     CHECK(!ShouldPasteTextExternally(kDirectTextCommitLimit));
     CHECK(ShouldPasteTextExternally(kDirectTextCommitLimit + 1));
+    CHECK(!ShouldPasteTextExternally(L"单行纯文本"));
+    CHECK(ShouldPasteTextExternally(L"包含换行\n第二行"));
+    CHECK(ShouldPasteTextExternally(L"包含回车换行\r\n第二行"));
+    CHECK(ShouldPasteTextExternally(L"<?xml version=\"1.0\"?>\r\n<root>\r\n</root>"));
     const std::filesystem::path request_directory =
         test_directory / L"paste-requests";
     CHECK(SetEnvironmentVariableW(

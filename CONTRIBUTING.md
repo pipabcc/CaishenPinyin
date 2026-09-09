@@ -1,189 +1,111 @@
 # 贡献指南
 
-感谢你对财神输入法（Caishen IME）项目的关注与支持！无论是提交缺陷报告、改进文档、提出新想法还是贡献代码，我们都非常欢迎。
+本项目接受代码、测试、文档和可确认来源的数据贡献。社区协作遵循
+[行为规范](CODE_OF_CONDUCT.md)，安全漏洞按[安全政策](SECURITY.md)私密报告。
 
-为了让协作更加高效顺畅，请在参与贡献前阅读以下指引。
+## 提交问题
 
----
+先搜索已有 Issue。报告输入或安装问题时，提供 Windows 版本、应用版本、宿主名称及位数、
+可复现步骤、预期行为和实际结果。涉及升级时说明是否完全退出过旧宿主；
+只重注册 DLL 不能替换仍在运行的模块。
 
-## 目录
+截图、日志和测试样例应移除个人输入、真实剪贴板内容、用户名、凭据及无关本机信息。
+涉及架构或较大交互调整时，先在 Issue 或 PR 中说明需求、现状和方案。
 
-- [一、 行为准则](#一-行为准则)
-- [二、 如何参与贡献](#二-如何参与贡献)
-  - [1. 报告缺陷（Bug Report）](#1-报告缺陷bug-report)
-  - [2. 提出功能建议（Feature Request）](#2-提出功能建议feature-request)
-  - [3. 改进文档](#3-改进文档)
-  - [4. 贡献代码](#4-贡献代码)
-- [三、 本地开发与环境搭建](#三-本地开发与环境搭建)
-  - [环境要求](#环境要求)
-  - [编译与运行测试](#编译与运行测试)
-  - [无 C++ 工具链的轻量验证](#无-c-工具链的轻量验证)
-- [四、 代码规范与设计哲学](#四-代码规范与设计哲学)
-  - [设计与编码原则](#设计与编码原则)
-  - [C++ 代码风格](#c-代码风格)
-  - [C# / WPF 代码风格](#c--wpf-代码风格)
-  - [PowerShell 脚本风格](#powershell-脚本风格)
-- [五、 Git 提交规范](#五-git-提交规范)
-- [六、 合并请求（Pull Request）流程](#六-合并请求pull-request流程)
+## 开发环境
 
----
+- Windows 10/11 x64。
+- VS2022 Build Tools，包含 MSVC v143 的 x64/x86 编译工具和 Windows SDK。
+- CMake 3.20+、.NET 8 SDK、Python 3.11+；Ninja 可选。
+- 打包 Setup 时需要 NSIS 3.x。
 
-## 一、 行为准则
-
-我们致力于为所有参与者打造一个友好、包容、互相尊重的开源社区。在沟通与协作中，请保持友善与客观，尊重不同意见与技术探讨。
-
----
-
-## 二、 如何参与贡献
-
-### 1. 报告缺陷（Bug Report）
-如果你在安装、日常打字、候选框渲染、宿主兼容性（如 Office、浏览器、游戏等）或设置界面中发现了问题：
-1. 请先在 GitHub Issues 中搜索，确认该问题是否已被提出或已有解决方案。
-2. 若未找到，请创建新的 Issue，并选用 **问题反馈（Bug Report）** 模板，尽可能详细地提供：
-   - 操作系统版本（如 Windows 11 23H2 / 24H2）
-   - 输入法版本号（如 v2.0.1）
-   - 复现步骤、期望效果与实际效果
-   - 相关的截图或录屏
-
-### 2. 提出功能建议（Feature Request）
-如果你有新的功能想法（如词库支持、皮肤交互、分词算法、快捷键模式等）：
-- 欢迎在 Issues 中选用 **功能建议（Feature Request）** 模板发起讨论，说明需求的使用场景与解决的痛点。
-
-### 3. 改进文档
-文档中若有表述不清、过时或错误之处，可以直接修改并提交 Pull Request。
-
-### 4. 贡献代码
-如果你打算实现一个较大的新功能或进行深度的架构重构，建议先提交 Issue 进行方案讨论，达成共识后再着手编码，以避免不必要的重复劳动。
-
-提交代码、词库、皮肤、截图或其他数据前，请确认你拥有按本项目许可证再分发它们的权利。
-不要提交来源不明的二进制资产、个人输入内容、真实剪贴板数据、凭据或带有本机隐私信息的
-截图。测试夹具应尽量由测试代码确定性生成，或使用附带明确许可证的小型样例。
-
----
-
-## 三、 本地开发与环境搭建
-
-### 环境要求
-
-1. **操作系统**：Windows 10 / Windows 11（x64）
-2. **C++ 工具链**：Visual Studio 2022 Build Tools（包含 MSVC v143 及 Windows 10/11 SDK，包含 `msctf.h`）
-3. **CMake**：>= 3.20
-4. **.NET SDK**：.NET 8.0 SDK（用于编译 WPF 设置中心与 C# 演练工具）
-5. **打包工具（可选）**：NSIS 3.x（仅在生成完整图形安装包时需要）
-
-检查本地开发环境是否就绪：
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
-```
-
-### 编译与运行测试
-
-项目的正式编译入口统一为 `scripts\build.ps1`，它会自动配置 CMake、编译 Release 目标并运行完整的 CTest 自动化测试套件：
+C++ 标准为 `CMakeLists.txt` 中的 C++17。维护者可使用 `tools/env.ps1` 加载可选的
+仓库工具链，外部贡献者也可使用系统安装的工具。所有命令在仓库根目录执行。
 
 ```powershell
-# 编译 Release 版本并执行自动化测试
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check_env.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
 ```
 
-构建产物将输出在 `artifacts\release` 目录。
+日常迭代可加 `-Incremental`，仍会运行相应测试。构建路径、参数和 CI 跳过条件见
+[构建说明](docs/build.md)，不要另建不执行验证的正式发布入口。
 
-生成单文件图形安装包：
+## 按改动选择验证
+
+| 改动范围 | 重点验证 |
+|---|---|
+| 拼音检索、模型、学习 | `p1_engine`、`engine_phase1`、学习持久化/压力测试、相关模型测试 |
+| TSF、组合、首键恢复 | `input_policy`、`composition_lifecycle`、`tsf_e2e_core`，以及可用的首键交互测试 |
+| 候选窗或复制记录 | `candidate_window`、`clipboard_helper`、`settings_logic`、`settings_ui_smoke` |
+| 安装、权限、发行 | 部署事务、ACL、`release_health` 与发行包验证 |
+| 仅 Markdown | 代码事实、示例参数、相对链接、标题锚点和删除文档后的引用 |
+
+完整构建后可用 `ctest --test-dir build-release -C Release -N` 查看当前注册测试；
+测试数量会随代码变化，不以旧报告中的固定数量为准。只改文档不需要重跑耗时的词库测试。
+
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+ctest --test-dir build-release -C Release -R "candidate_window|clipboard_helper|composition_lifecycle" --output-on-failure
+dotnet run --project tests\settings_logic
 ```
 
-### 无 C++ 工具链的轻量验证
+`settings_ui_smoke` 和五项 `firstkey_recovery*` 测试需要交互桌面。自动化用例可检查
+真实 TSF 对象、模拟通知和合成记录，但不能代替每个宿主编辑器的实际兼容性验收。
+报告验证时说明实际执行的范围、跳过原因和测试环境。
 
-若仅参与 C# 设置中心开发或拼音引擎排序演练，无需安装完整 MSVC 工具链：
+只有 C# 工具链时可开发设置中心及逻辑测试：
+
 ```powershell
-# 运行 C# 引擎交互演练工具
-dotnet run --project tests\engine_playground_cs
-
-# 编译 WPF 设置中心
 dotnet build settings\ShuruSettings.csproj -c Release
+dotnet run --project tests\settings_logic
+dotnet run --project tests\engine_playground_cs
 ```
 
----
+C# 演练程序不能替代原生 C++ 引擎或 TSF 兼容性测试。
 
-## 四、 代码规范与设计哲学
+## 代码与数据约定
 
-### 设计与编码原则
+- 保持函数职责明确；查询、持久化、TSF 编辑会话和 UI 渲染分离。
+- 输入法运行在宿主进程的高频路径中，避免整份复制系统词库、同步等待磁盘或无界搜索。
+- 严格校验输入范围、文件边界、记录 ID 和跨进程请求；关键错误保留诊断，不吞掉业务失败。
+- C++ 使用 `/utf-8 /W4` 和静态 CRT，命名沿用模块风格；注释解释约束和原因。
+- C#/WPF 使用 .NET 8；新增私有字段优先 `_camelCase`，布局应适应高 DPI。
+- 含中文且由 Windows PowerShell 5.1 执行的脚本使用 UTF-8 BOM，参数显式声明类型。
+- 修改应用版本只改 `src/common/version.h`，并保持该文件 ASCII；
+  词库版本和哈希按[词库治理](docs/lexicon-governance.md)单独维护。
+- 新测试使用隔离用户目录和合成数据。需要操作剪贴板时使用隔离窗口站或不改动内容的受控测试。
+- 不提交本机工具链、构建产物、真实用户词、剪贴板数据库、密钥或来源不明的素材。
 
-* **保持简单（KISS）**：输入法运行于各个宿主进程的高频输入路径上，逻辑越清晰精简越可靠，避免晦涩难懂的过度设计。
-* **单一职责（Single Responsibility）**：每个函数只做一件事，核心引擎与界面渲染严格解耦。
-* **防御性编程**：严格校验外部输入与数据边界，防范空指针、越界与非法格式；杜绝吞掉异常，确保关键错误能快速暴露。
-* **高内聚低耦合**：TSF 接口层、拼音引擎层、词库层和 UI 渲染层边界清晰。
-* **童子军军规**：离开营地时，让代码比你发现时更整洁。
+提交第三方词库、皮肤或其他资源前，确认来源与再分发权限，并同步
+[第三方声明](THIRD_PARTY_NOTICES.md)和相应许可证文件。
 
-### C++ 代码风格
+## 提交与合并流程
 
-* 遵循现代 C++ 规范（C++20 标准）。
-* 类名与结构体采用 PascalCase（如 `PinyinEngine`、`CandidateWindow`）。
-* 成员变量建议采用下划线后缀或小驼峰（如 `candidate_list_` 或 `m_candidates`，与现有模块保持风格一致）。
-* 局部变量和函数参数采用 snake_case 或 camelCase。
-* 注释解释“为什么这么做（Why）”，避免无意义的自明性注释。
+有仓库写权限时直接使用功能分支，其他贡献者使用 Fork。分支基于最新 `main`，
+将不同目的的修改分成可审查的提交：
 
-### C# / WPF 代码风格
-
-* 遵循微软官方 C# 编码规范，使用 .NET 8 现代语法。
-* 属性与方法名采用 PascalCase，私有成员变量采用 `_camelCase` 前缀。
-* XAML 布局保持结构清晰，避免硬编码不可调整的绝对尺寸，确保高 DPI 下的自适应。
-
-### PowerShell 脚本风格
-
-* 统一使用 UTF-8 编码保存脚本文件。
-* 脚本参数显式声明类型与默认值，支持 `-Verbose` 与良好的错误提示。
-
----
-
-## 五、 Git 提交规范
-
-我们遵循约定式提交（Conventional Commits）规范，提交信息统一使用**中文**说明修改内容与原因：
-
-```text
-<类型>(<可选范围>): <简短描述>
-
-[可选的详细说明]
-
-[可选的关联 Issue，例如：Fixes #123]
+```powershell
+git switch -c codex/your-change
+git add -- README.md
+git commit -m "docs: 更新使用说明"
+git push -u origin codex/your-change
 ```
 
-### 常用类型说明：
+提交使用 Conventional Commits 和中文描述：
 
-| 类型 | 说明 | 示例 |
-| :--- | :--- | :--- |
-| `feat` | 新增功能 | `feat: 增加全拼双拼一键快捷键切换` |
-| `fix` | 修复缺陷 | `fix: 消除候选框快速打字时的逐键闪跳` |
-| `docs` | 文档变更 | `docs: 完善本地开发环境配置说明` |
-| `style` | 代码格式调整（不影响代码逻辑） | `style: 规范候选窗绘制相关的缩进与空格` |
-| `refactor` | 重构（既不是新增功能也不是修复缺陷） | `refactor: 提取双数组 Trie 树遍历公共逻辑` |
-| `perf` | 性能优化 | `perf: 优化高频输入下的内存分配与词频查询` |
-| `test` | 增加或修正测试用例 | `test: 增加模糊音匹配边界条件单元测试` |
-| `chore` | 构建流程、依赖管理或辅助工具变动 | `chore: 更新 NSIS 打包脚本中的文件清单` |
+| 类型 | 示例 |
+|---|---|
+| `fix` | `fix: 修复删除记录后误上屏` |
+| `feat` | `feat: 增加记录列表键盘导航` |
+| `docs` | `docs: 对齐安装与重载说明` |
+| `refactor` | `refactor: 提取词典查询公共逻辑` |
+| `perf` | `perf: 减少输入路径的同步写盘` |
+| `test` | `test: 覆盖剪贴板占用时取消操作` |
+| `chore` | `chore: 更新发行包校验脚本` |
 
----
+向 `main` 发起 PR，填写[模板](.github/PULL_REQUEST_TEMPLATE.md)，说明触发条件、
+改动后的行为和实际验证结果。涉及行为或接口变化时同步相关文档，将尚未发布的功能
+写入 [CHANGELOG](CHANGELOG.md#未发布)。合并前完成代码审查，包括异常、重入、取消、
+并发和边界场景；根据 CI 和审核意见继续修订。
 
-## 六、 合并请求（Pull Request）流程
-
-1. **Fork 本仓库** 到你个人的 GitHub 账号。
-2. 从 `main` 分支切出你的特性分支：
-   ```bash
-   git checkout -b feat/your-feature-name
-   ```
-3. 在本地完成代码修改，并确保所有本地测试均已通过：
-   ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Config Release
-   ```
-4. 提交你的修改并推送到你 Fork 的远程分支：
-   ```bash
-   git push origin feat/your-feature-name
-   ```
-5. 在 GitHub 上向本项目发起 Pull Request，并填写 PR 模板中的各项内容。
-6. 关注 CI 构建状态及 Code Review 反馈，配合完成必要的修改与讨论。
-7. 审核通过并合入后，你的贡献将正式成为项目的一部分！
-
-提交 Pull Request 即表示你确认所提交内容由你原创，或你有权按项目的
-[GPL-3.0-only](LICENSE) 及相应第三方许可证提供这些内容。项目不要求单独签署贡献者许可
-协议，但不会接收无法确认来源或授权范围的代码与数据。
-
-再次感谢你的贡献！
+提交 PR 表示内容由你原创，或你有权按项目的 [GPL-3.0-only](LICENSE) 及相应第三方
+许可证提供。项目不要求单独签署贡献者许可协议。

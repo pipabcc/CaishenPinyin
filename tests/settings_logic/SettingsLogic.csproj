@@ -13,6 +13,7 @@
     <Compile Include="..\..\settings\ClipboardStore.cs" Link="ClipboardStore.cs" />
     <Compile Include="..\..\settings\ClipboardDatabase.cs" Link="ClipboardDatabase.cs" />
     <Compile Include="..\..\settings\ClipboardImageService.cs" Link="ClipboardImageService.cs" />
+    <Compile Include="..\..\settings\ClipboardTextWriter.cs" Link="ClipboardTextWriter.cs" />
     <Compile Include="..\..\settings\ClipboardPasteInputProtocol.cs" Link="ClipboardPasteInputProtocol.cs" />
     <Compile Include="..\..\settings\ClipboardMonitor.cs" Link="ClipboardMonitor.cs" />
     <Compile Include="..\..\settings\ClipboardCaptureWorker.cs" Link="ClipboardCaptureWorker.cs" />

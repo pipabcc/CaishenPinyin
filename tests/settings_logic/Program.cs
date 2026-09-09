@@ -20,6 +20,8 @@ using WinForms = System.Windows.Forms;
 
 if (args.Contains("--corrupt-migration"))
     return RunCorruptMigrationTest();
+if (args.Contains("--clipboard-text-writer"))
+    return ClipboardTextWriterTests.Run();
 if (args.Length == 2 && args[0] == "--user-dictionary-clear")
 {
     UserDictionaryStore.Clear(args[1]);
@@ -52,6 +54,7 @@ static int RunMainTests()
         TestSsfConversion(root);
         TestTextPasteRequests(root);
         TestDirectTextCommitRequests(root);
+        TestClipboardTextWriterInChildProcess();
         TestCorruptMigrationInChildProcess(root);
         Console.WriteLine("settings_logic: OK");
         return 0;
@@ -593,6 +596,23 @@ static void TestClipboardMigrationAndCrud(string clipboardDirectory)
             new ClipboardRecord { Type = ClipboardItemType.Image }.OpenOrEditLabel == "打开" &&
             new ClipboardRecord { Type = ClipboardItemType.File }.OpenOrEditLabel == "打开",
         "剪贴板打开或编辑按钮名称错误");
+    var xmlContent = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n" +
+        "<record>\r\n  <title>多行文本保真测试</title>\r\n" +
+        "  <content>保留换行、引号和末尾字符</content>\r\n</record>";
+    ClipboardStore.AddRecord(new ClipboardRecord
+    {
+        Id = "xml-multiline-record",
+        Content = xmlContent,
+        DisplayTitle = "XML多行记录"
+    });
+    var retrievedXml = ClipboardStore.FindRecord("xml-multiline-record");
+    Require(retrievedXml != null && retrievedXml.Content == xmlContent,
+        "XML多行剪贴板记录存取保真性失败");
+    Require(retrievedXml!.Content.Contains('\n') && retrievedXml.Content.Contains('\r'),
+        "XML多行换行符丢失");
+    Require(retrievedXml.Content.EndsWith("</record>"),
+        "XML多行末尾字符不正确");
+    ClipboardStore.DeleteRecord("xml-multiline-record");
 }
 
 static void TestClipboardConcurrencyAndPerformance()
@@ -1063,6 +1083,21 @@ static void TestDirectTextCommitRequests(string root)
         Environment.SetEnvironmentVariable(
             "CAISHEN_DIRECT_COMMIT_REQUEST_DIR", null);
     }
+}
+
+static void TestClipboardTextWriterInChildProcess()
+{
+    var startInfo = new ProcessStartInfo("dotnet")
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true
+    };
+    startInfo.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
+    startInfo.ArgumentList.Add("--clipboard-text-writer");
+    using var process = Process.Start(startInfo) ??
+        throw new InvalidOperationException("无法启动文本剪贴板隔离测试");
+    Require(process.WaitForExit(20_000), "文本剪贴板隔离测试超时");
+    Require(process.ExitCode == 0, $"文本剪贴板隔离测试失败：{process.ExitCode}");
 }
 
 static void TestCorruptMigrationInChildProcess(string root)

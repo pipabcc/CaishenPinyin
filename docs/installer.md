@@ -1,146 +1,184 @@
-# NSIS 安装包
+# 安装、部署与重载
 
-## 交付结构
+当前支持 Windows 10/11 x64。正式包同时包含 x64 与 WOW64 x86 输入法 DLL，
+设置中心携带 .NET 8 桌面运行时，原生组件使用静态 CRT。
 
-安装包采用“NSIS 薄包装层 + `win-x64` 自包含 WPF + PowerShell 部署事务”：
+## 两种交付方式
 
-- `Setup.exe` 只负责界面、提权、释放发布包、调用部署事务和注册 Windows 卸载入口；
-- `scripts\install_ime.ps1` 负责清单校验、side-by-side 复制、注册、健康检查和回滚；
-- `ShuruSettings.exe` 连同 .NET 8 Desktop Runtime 一起部署，目标电脑不需要另装 .NET；
-- 原生 `ShuruIme.dll`（x64）与 `ShuruIme32.dll`（x86）使用静态 MSVC 运行库，
-  目标电脑不需要 VC++ Redistributable；
-- 默认安装到 `%ProgramFiles%\CaishenPinyin`，安装后由 NSIS 在安装根目录生成
-  `Uninstall.exe`。
+| 方式 | 安装与卸载 |
+|---|---|
+| Setup | NSIS 负责向导、提权、释放文件和卸载入口；部署事务由 `scripts/install_ime.ps1` 执行 |
+| Portable | 在解压目录注册 DLL，通过包内脚本安装或注销；需要保留该目录，不创建标准应用卸载入口 |
 
-安装包仅支持 AMD64 Windows 10/11。NSIS 是 32 位进程，因此通过 `Sysnative` 启动
-64 位 Windows PowerShell；部署事务分别使用 `System32\regsvr32.exe` 注册 x64 DLL，
-使用 `SysWOW64\regsvr32.exe` 注册 x86 DLL。两份 DLL 使用相同 CLSID/Profile，Windows
-按宿主进程位数自动选择对应 COM 注册视图，无需维护应用白名单。
+Setup 默认使用 `%ProgramFiles%\CaishenPinyin`。全新安装可以选择本机专用目录，
+升级和修复使用已有安装根。安装器拒绝磁盘根、系统目录、用户配置根以及已有无关文件的目录。
 
-## 构建
+Portable 同样需要管理员权限注册 TSF 组件。两种方式都不将设置中心加入开机启动；
+设置和输入法按需启动剪贴板后台进程，修复或升级会清理旧版遗留的 `CaishenSettings` 启动项。
 
-开发机需要 NSIS 3，默认路径为 `C:\Program Files (x86)\NSIS\makensis.exe`：
+构建与打包命令见[构建说明](build.md)。公开下载及哈希校验见 [README](../README.md#下载与安装)。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+## 版本、目录与事务
+
+Setup 程序结构：
+
+```text
+CaishenPinyin/
+  current
+  previous
+  versions/<应用版本或修复标识>/
+    ShuruIme.dll
+    ShuruIme32.dll
+    ShuruSettings.exe
+    运行时、内置资源和组件清单
+  logs/
+  Uninstall.exe
 ```
 
-脚本依次执行完整 Release 构建和 CTest、生成 schema 2 发布清单、验证全部文件哈希、
-确认 WPF 自包含运行时和 .NET 法律声明齐全、确认不含 `user_dict.txt`、
-`rime-moqi-zh.gram` 或 `zh-moqi.gram`，最后生成：
+系统词库位于 `%ProgramData%\CaishenPinyin\data\lexicon\`，
+物理目录为 `versions/<词库逻辑版本>-<manifest 哈希前缀>`，由独立的 `current` 指针选择。
+应用版本、修复目录名和词库逻辑版本是不同概念。
 
-- `artifacts\installer\CaishenPinyin-<version>-win-x64-Setup.exe`
-- `artifacts\installer\CaishenPinyin-<version>-win-x64-Setup.exe.sha256`
+部署顺序为暂存文件、验证组件及清单、移动到新版本目录、注册双架构 DLL、
+可选设置默认输入法、切换版本指针、更新快捷方式和健康检查。
+失败时恢复旧注册、指针、快捷方式及本次改变的默认输入法状态。
 
-同一份已验证发行目录还可以生成便携版：
+版本目录不可变：同名目录只有内容完全一致时才能复用。
+NSIS 遇到相同数值版本时创建带唯一后缀的修复目录；
+更高版本执行升级，更低版本被阻止。直接调用部署脚本时由调用方提供版本目录标识。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_portable.ps1 `
-  -SigningPolicy Off
-```
+两种位数共用同一 CLSID/Profile。NSIS 通过 Sysnative 调用 64 位 PowerShell，
+部署脚本分别使用 System32 和 SysWOW64 的 `regsvr32.exe` 注册，
+使不同位数的宿主选择正确 DLL。
 
-便携版输出同名 `Portable.zip` 和 `.sha256`。它不会写入 Windows“已安装的应用”，但仍需
-管理员权限注册或注销 TSF COM DLL；用户必须先完整解压，并保留原目录供卸载脚本使用。
-便携版和 Setup 均不会把设置中心加入 Windows 开机启动；升级或修复时会清理旧版本遗留的
-`CaishenSettings` 启动项。设置中心只在输入法或用户主动打开相关功能时按需运行。
+## 默认输入法
 
-只修改 NSIS 页面时可使用 `-SkipBuild`；该参数只跳过编译和 CTest，不跳过发布包校验。
-
-## 安装行为
-
-安装首页区分全新安装、升级和修复。版本比较使用已安装 DLL 的数值文件版本：
-
-- 新包版本更高时升级；
-- 数值版本相同时使用带唯一后缀的新不可变目录执行修复；
-- 已安装版本更高时阻止降级；
-- 安装失败时恢复旧 DLL 注册、版本指针、快捷方式和默认输入法状态。
-
-全新安装可输入或浏览选择本机任意磁盘上的专用安装目录。安装器拒绝磁盘根目录、
-Windows/Program Files/ProgramData/用户配置根目录，以及已经含有其他文件的目录。
-升级和修复始终锁定现有安装路径，避免同一产品被拆成两个安装根。
-
-“设为默认输入法”默认勾选。安装器保存安装前的
-`HKCU\Control Panel\International\User Profile\InputMethodOverride`，但只有在它实际改变
-默认输入法时才取得该状态的管理权。卸载时仅在当前值仍为财神输入法 TIP 时恢复原值；
-如果用户安装后手动换过默认输入法，卸载器不会覆盖用户选择。
-
-静默安装默认同样设置财神输入法为默认输入法：
+Setup 默认勾选“设为默认输入法”。安装器只有实际改变
+`HKCU\Control Panel\International\User Profile\InputMethodOverride` 时才管理原值；
+卸载时也只在当前值仍为财神输入法时恢复，避免覆盖用户后来手动选择的默认项。
 
 ```powershell
-CaishenPinyin-<version>-win-x64-Setup.exe /S
+# 示例使用当前公开发行文件；替换为实际下载路径。
+& .\CaishenPinyin-2.0.2-win-x64-Setup.exe /S
+& .\CaishenPinyin-2.0.2-win-x64-Setup.exe /S /NODEFAULTIME
 ```
 
-静默安装时不修改默认输入法：
+上面两条是可选的不同安装方式，不需要依次执行。
+直接调用 `install_ime.ps1` 只有传入 `-SetDefaultInputMethod` 时才申请修改默认输入法。
+
+## 开发部署
+
+先完成正式构建。在管理员 PowerShell 中从仓库根执行；
+如使用自定义安装根，修改 `$installDirectory`，后续命令保持一致。
 
 ```powershell
-CaishenPinyin-<version>-win-x64-Setup.exe /S /NODEFAULTIME
+$releaseDirectory = (Resolve-Path 'artifacts\release').Path
+$installDirectory = Join-Path $env:ProgramFiles 'CaishenPinyin'
+$releaseManifest = Get-Content (Join-Path $releaseDirectory 'release-manifest.json') -Raw | ConvertFrom-Json
+$repairVersion = [string]$releaseManifest.version + '-repair-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+$healthCheck = 'build-release\release_health_check.exe'
+if (Test-Path 'build-release\Release\release_health_check.exe') {
+    $healthCheck = 'build-release\Release\release_health_check.exe'
+}
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 `
+    -Action Install `
+    -DllPath (Join-Path $releaseDirectory 'ShuruIme.dll') `
+    -X86DllPath (Join-Path $releaseDirectory 'ShuruIme32.dll') `
+    -SettingsPath $releaseDirectory `
+    -PackagePath (Join-Path $releaseDirectory 'data\lexicon') `
+    -Version $repairVersion `
+    -InstallRoot $installDirectory `
+    -SigningPolicy Off `
+    -HealthCheckExe $healthCheck
 ```
 
-安装事务成功后，安装器会以隐藏方式启动随包的 `engine_snapshot_build_tool.exe`
-（`--lexicon-dir` 指向刚部署的版本化词库目录），按运行时完全相同的传统装载路径
-预生成 EngineSnapshot v2 并写入当前用户的 `%LOCALAPPDATA%\CaishenPinyin\snapshot\`
-缓存。该步骤失败不影响安装结果——首次冷启动会自动回退到传统装载并自行再生快照。
-注意：快照写入的是执行安装的那个用户 profile；同机其他用户首次使用时仍走一次
-传统装载后自行生成。
+唯一修复标识避免覆盖已存在或已被宿主加载的版本。安装日志位于安装根的 `logs/`，
+进度写入 `deploy-progress.json`。脚本不会终止持有旧 DLL 的宿主。
 
-部署权限与运行时保持一致：系统词库、程序、公共快照和皮肤允许沙箱只读访问；个人
-学习、统计、置顶、剪贴板正文及直接上屏交换目录拒绝应用包访问。安装器逐项补充
-拒绝规则，保留原用户及系统管理权限，并跳过重解析点。普通用户启动设置程序或输入法
-后，再将个人数据目录及文件收敛为当前用户独占的受保护 DACL。
-
-NSIS 的全用户 Shell 上下文仅用于公共程序和菜单位置；安装、卸载均由部署脚本读取
-当前进程的 `LOCALAPPDATA` 解析个人目录，避免将其误当成 `ProgramData`。部署入口
-拒绝个人目录与程序、公共词库目录重叠。权限迁移可移除公共词库上遗留的应用包拒绝
-或写入权限，只恢复读取权限，保留其他用户及系统管理权限，并跳过重解析点。
-
-需要单独修复已有目录权限时，可在管理员 PowerShell 中执行：
+直接注册仅供开发验证，不代替版本化部署事务：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action RepairPermissions
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\register_ime.ps1 `
+    -DllPath artifacts\release\ShuruIme.dll `
+    -X86DllPath artifacts\release\ShuruIme32.dll
 ```
 
-## 卸载与数据
+## 健康检查与回滚
 
-图形卸载默认不删除个人数据，保留：
-
-- `%LOCALAPPDATA%\CaishenPinyin` 下的设置、皮肤、剪贴板、学习数据和统计；
-- `%ProgramData%\CaishenPinyin\data\lexicon` 下的系统词库版本；
-- 用户自行复制到当前词库版本目录的 `rime-moqi-zh.gram`。
-
-勾选“同时删除设置、皮肤、剪贴板记录和词库数据”后会二次确认。静默卸载默认保留
-数据；显式删除数据使用：
+健康检查核对当前指针、组件文件、词库、快捷方式和注册；
+指定 `-HealthCheckExe` 可再执行原生 DLL/COM/词库健康测试。
 
 ```powershell
-"<安装目录>\Uninstall.exe" /S /DELETEUSERDATA
+$installDirectory = Join-Path $env:ProgramFiles 'CaishenPinyin'
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action HealthCheck -InstallRoot $installDirectory
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action Rollback -InstallRoot $installDirectory
 ```
 
-卸载先恢复受安装器管理的默认输入法，再注销 TSF DLL。若 DLL 丢失或注册路径不属于
-当前安装根，卸载会停止并要求先运行修复，避免留下半注销状态。占用中的程序文件由
-NSIS 使用 `/REBOOTOK` 安排在重启后删除。
+回滚使用 `previous` 指针恢复上一程序及词库版本，不撤销用户此后新增的个人数据。
+只有需要回滚时才运行第二条。清理旧版本是单独的显式操作：
 
-## 无签名限制
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_ime.ps1 -Action Cleanup
+```
 
-当前交付明确采用无签名方案，构建时使用 `SigningPolicy=Off`，并验证最终 Setup 的
-Authenticode 状态为 `NotSigned`。因此无法避免以下 Windows 提示：
+自定义安装根同样传 `-InstallRoot`。当前版和上一版被保留；
+占用中的旧文件不能通过清理强制替换。部署核心回归使用临时根和 `-NoRegister`，
+不会注册到真实系统。
 
-- UAC 显示“未知发布者”；
-- SmartScreen 可能显示“Windows 已保护你的电脑”；
-- 下载工具、浏览器或安全软件可能降低信誉或提高拦截概率。
+## 升级后的重载与排查
 
-SHA-256 文件只能用于校验下载完整性，不能替代发布者身份签名。未来购买正式
-Authenticode 证书后，应同时签名 `ShuruIme.dll`、`ShuruSettings.exe`、`Setup.exe` 和
-`Uninstall.exe`，并把发布构建切换到 `SigningPolicy=Required`。
+输入法 DLL 驻留在每个已使用它的应用进程中。文件和注册更新后，
+已打开的程序仍可能执行旧代码：
 
-## 发布验收
+1. 完全退出目标应用，包括托盘后台，再重新打开。
+2. 涉及资源管理器、开始菜单或多个长期运行宿主时，保存工作后注销并重新登录。
+3. 核对实际注册路径与安装根的 `current`，不要固定检查某个旧版本目录。
+4. 原生复制记录删除、候选窗及按键问题需要宿主加载新 DLL；
+   独立窗口也应使用与之配套的设置程序。
 
-每次发布至少验证：
+在 64 位 PowerShell 中可查看两个注册视图：
 
-1. 完整 CTest 与 `tests\deployment_core_test.ps1` 通过；
-2. Setup 的产品名、版本、图标、未签名状态和 SHA-256 正确；
-3. 100%、125%、150%、200% DPI 下文字无截断，Tab 顺序和焦点清晰；
-4. 全新安装、同版本修复、升级和降级阻止行为正确；
-5. 默认输入法勾选/取消、安装失败回滚和卸载条件恢复正确；
-6. “已安装的应用”存在卸载入口，默认卸载保留数据，显式删除数据可完整清理；
-7. 发布包和安装目录均不含 `rime-moqi-zh.gram`。
-8. Portable 可完整解压，包含安装、卸载和使用说明，且两个 Release 文件的 SHA-256
-   与各自 `.sha256` 一致。
+```powershell
+reg query "HKCR\CLSID\{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}\InprocServer32" /ve /reg:64
+reg query "HKCR\CLSID\{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}\InprocServer32" /ve /reg:32
+```
+
+当前代码隐藏旧“中 / 全 / 键 / 设”悬浮状态栏。隐藏旧窗口的临时脚本只能改变显示，
+不能完成模块升级。候选窗右键打开设置，F9 切换软键盘，F10 切换全拼与小鹤双拼。
+
+本机 TSF 验证可使用 `scripts/run_local_tsf_e2e.ps1`。
+`-BuildDir` 应指向实际包含测试 EXE 的目录；Visual Studio Generator 通常需要
+`build-release\Release`。非交互环境，或要求已注册 Profile 但没有注册时，返回 77 表示跳过。
+
+## 个人数据、权限与快照
+
+升级保留 `%LOCALAPPDATA%\CaishenPinyin\` 下的设置、皮肤、用户词、搭配、短语、
+置顶、统计、复制记录数据库及图片。数据库迁移和写入协议见[架构说明](architecture.md)。
+
+安装器收敛个人文件权限、跳过重解析点，并恢复公共词库和资源的沙箱只读访问。
+个人数据根取当前进程的 LOCALAPPDATA，不使用 NSIS 的全用户 Shell 目录代替。
+仅修复现有权限时使用 `-Action RepairPermissions`，自定义安装根和数据根应显式传入。
+
+正式构建包含 `engine_snapshot_build_tool.exe`。安装成功后，
+脚本在新目录存在该工具时尝试隐藏启动快照预生成；工具缺失、启动或生成失败均不影响
+安装结果，首次运行仍可回退装载。快照写入执行安装的用户目录，不能承诺其他用户也已预热。
+
+完整墨奇模型不随发行包提供。已有用户自行安装的模型可在词库升级时迁移保留。
+因此“包内不含模型”不等于“已有安装目录一定没有模型”。
+
+## 卸载
+
+Setup 通过 Windows“已安装的应用”或安装根的 `Uninstall.exe` 卸载。
+默认保留个人数据、系统词库和用户自行安装的模型；
+勾选删除数据会再次确认。静默删除数据必须显式传入 `/DELETEUSERDATA`。
+
+Portable 使用原目录的卸载脚本，不能用删除文件代替注销。
+卸载时若 DLL 丢失或注册路径不属于当前安装根，事务会停止；
+应先修复安装，避免半注销状态。占用中的文件由 NSIS 安排重启后删除。
+
+## 发行验收
+
+当前采用无签名发行，SHA-256 只核对完整性，不替代 Authenticode。
+公开发行前应验证新安装、升级、同版本修复、降级阻止、失败回滚、
+默认输入法条件恢复、DPI/焦点、卸载数据选择及 Portable 脚本。
+发行文件名、校验文件和法律声明按[构建说明](build.md#版本模型与发布验收)核对。

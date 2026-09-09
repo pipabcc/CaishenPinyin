@@ -188,6 +188,10 @@ private:
     // 竖向与滚动条交互状态
     int hovered_row_ = -1;
     bool hovered_delete_ = false;
+    int pressed_candidate_ = -1;
+    int pressed_delete_candidate_ = -1;
+    std::uint64_t content_revision_ = 0;
+    std::uint64_t pressed_content_revision_ = 0;
     int hovered_candidate_ = -1;
     bool hovered_pin_ = false;
     int pressed_pin_candidate_ = -1;
@@ -260,6 +264,7 @@ private:
     int MeasureText(HDC hdc, HFONT font, const std::wstring& text) const;
     int HitTestCandidate(int x, int y) const;
     int HitTestPin(int x, int y) const;
+    int HitTestDelete(int x, int y) const;
     void RefreshTypingStats();
     void OpenSettings();
     void DrawContent(

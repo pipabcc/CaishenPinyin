@@ -1,80 +1,121 @@
-# 词库包治理
+# 词库、模型与缓存治理
 
-系统词库包位于 `data/lexicon`，由 `manifest.json` 固定包 ID、schema、版本、来源、许可证声明、有效条目数和 SHA-256。空行及以 `#`/`;` 开头的注释不计入条目数。`user_dict.txt` 是用户数据，不属于系统包，也不得在升级时复制或覆盖。
+[manifest.json](../data/lexicon/manifest.json) 固定包 ID、schema、逻辑版本、
+文件大小、条目数、来源、许可证和 SHA-256。当前词库逻辑版本为 `2.0.1`，
+应用版本为 `2.0.2`；两者独立维护。
 
-中文基础词库固定为 Rime Frost 提交
-`2aedeea96c1468c1caa17cea01864419a11a4b26`，许可证为 `GPL-3.0-only`。
-`scripts/build_frost_lexicon.py` 读取 8105、base、ext、others、corrections 及选定细胞
-词库，只接受 BMP 基本汉字、合法拼音和可解析频率，再合并项目维护的
-`custom_dict.txt`。逐文件哈希和导入统计见 `docs/frost-import-report.json`。
+## 系统包与来源
 
-完整语言模型为 `rime-moqi-zh.gram`，固定到
-`gaboolic/rime-build-grammar` Release `1.0.0`，SHA-256 为
-`35993085E9CE5D9722050BD548B807572EDCDD784ABF8079152091F8CD9BC731`。运行时使用
-Windows 只读文件映射和兼容 librime-octagram 的 Darts 双数组查询，不把 193 MB 文件
-复制到堆内存。模型是本地统计 N-gram，不是神经网络或生成式 AI；输入时会查询，
-不会联网。上游仓库没有许可证文件，因此清单必须保持 `NOASSERTION`，公开再分发前
-需要模型权利人的明确授权。正式发布包和安装流程不携带该文件，用户自行下载后可复制到
-`%ProgramData%\CaishenPinyin\data\lexicon\versions\<current>`。
+| 文件 | 当前用途 |
+|---|---|
+| `base_dict.txt` | 白霜派生基础词典，当前 677,441 条 |
+| `char_dict.txt` | 单字读音，当前 8,247 条 |
+| `en_dict.txt` | 英文词库，当前 250,504 条 |
+| `base_dict.txt.bin`、`char_dict.txt.bin` | 对应文本的派生缓存，当前已列入 manifest |
+| `system_ngram.bin` | 必需的字符二元/三元回退模型 |
+| `system_lexeme_prior.bin` | 单字、双字常用度先验 |
+| `GPL-3.0.txt` | 随词库提供的许可证 |
 
-字符回退模型 `system_ngram.bin` 由 Rime Ice 固定提交
-`569ff3bc65dd4aec0a26b33c49c8bbdfa8b5fd57` 的 `cn_dicts/ext.dict.yaml` 与
-`cn_dicts/tencent.dict.yaml` 离线生成，许可证为 `GPL-3.0-only`。生成器只统计词条
-内部的二元、三元汉字频次，输出 `CSNGRM1\0` 格式版本 1；运行时不读取上游 YAML。
-该文件是 2.0.1 发布包的必需文件。
+中文源固定到 Rime Frost 提交 `2aedeea96c1468c1caa17cea01864419a11a4b26`。
+生成器按 `DEFAULT_SOURCES` 读取选定词典，接受 BMP 基本汉字、合法全拼和可解析频率，
+合并项目维护的 `custom_dict.txt`，输出确定性排序。
+逐源哈希及接受、拒绝、重复统计见[导入报告](frost-import-report.json)。
 
-短字短词先验 `system_lexeme_prior.bin` 保存
-`拼音 + 单字/双字 -> 常用度`。单字采用 25% 独立字频与 75% 词内上下文频次的几何
-融合，双字沿用白霜词频；三字及以上交给词典和 Grammar 排序。生成器输出
-`CSLXPR1\0` 格式版本 1 的严格有序变长记录。运行时仅加载派生二进制并做内存二分，
-不运行 Python、不读取上游 YAML。
+`system_ngram.bin` 来自固定 Rime Ice 字典的词内二元、三元频次；
+`system_lexeme_prior.bin` 对单字融合独立字频与词内上下文频次，对双字使用白霜词频。
+英文词典合并固定的 rime-easy-en 上游与项目旧词条，并保留 ECDICT 归属。
+具体提交、哈希、许可证全文入口见[第三方声明](../THIRD_PARTY_NOTICES.md)。
 
-可编辑文本是权威源；运行时优先加载按源文件 SHA-256 校验的 `.bin` 索引缓存。
+运行时只读取派生产物，不执行 Python、不读取上游 YAML，也不联网。
 
-在 `.bin` 缓存之上还有一层 **EngineSnapshot v2**（`src/engine/engine_snapshot.cpp`）：
-把传统装载的最终产物（排序词条、键哈希索引、双 Trie、音节表、词指纹、英文词典）序列化为
-偏移量布局的只读快照，使每个宿主进程冷加载从"解析 + 重排 + 重建索引"降为一次文件映射
-（一台 Windows 11 开发机的 Release 构建中，白霜全量词库从约 11-12 秒降到引擎整体
-约 150-160 毫秒就绪；结果受硬件、文件缓存和宿主环境影响，不作为普遍性能保证）。
-它是纯派生缓存：不入 `data/lexicon` 包与 `manifest.json`，运行时首次传统装载后自动生成到
-`%LOCALAPPDATA%\CaishenPinyin\snapshot\`（用户可写目录；`ProgramData` 对普通用户进程只读）。
-快照头部记录三个源文件的 size+mtime 与生成时 SHA-256；加载路径只 stat 比对并做顺序结构校验，
-不重算大文件强哈希。词库内容升级后源 stat 变化，旧 tag 快照自然失效并被清理。
+## 可选完整模型
 
-生成并校验：
+`rime-moqi-zh.gram` 固定参考上游 Release `1.0.0`，大小为 192,703,532 字节，
+SHA-256 为 `35993085E9CE5D9722050BD548B807572EDCDD784ABF8079152091F8CD9BC731`。
+它是本地统计 N-gram，使用只读文件映射和兼容的 Darts 双数组读取，
+不是神经网络模型。
+
+上游没有明确许可证声明，归属记录保持 `NOASSERTION`。该文件不提交 Git、不进入
+正式发行包。用户应在具有相应权利时自行取得副本，放入已安装词库的当前版本目录。
+
+引擎依次尝试完整墨奇、`system_ngram.bin`、兼容旧安装的 `zh-moqi.gram`。
+当前清单不包含这两种 `.gram`；缺少它们不影响包校验，必需回退模型仍须存在。
+当前清单生成器的 `FILES` 列表不包含 `.gram`，不会为它生成文件条目。
+源码保留旧版 `runtimeOptional` 元数据兼容；发行组装会跳过这类可选条目，
+包验证仍禁止携带 `.gram`。
+
+## 两层派生缓存
+
+### 文本缓存
+
+`src/engine/lexicon_cache.cpp` 与 `scripts/build_lexicon_cache.py` 使用
+`FCPYLEX1` 格式版本 1。头部包含源文本 SHA-256、负载 SHA-256 和条目数；
+运行时还检查字段长度及边界。校验失败时回退文本，并尝试原子重建缓存。
+
+可编辑文本仍是权威源，但当前的两份中文缓存已经纳入系统 manifest。
+更新文本后必须一起更新对应缓存和清单，不能保留“缓存不属于 manifest”的旧约定。
+清单工具对缓存检查大小和文件哈希，格式、源哈希与负载校验由运行时缓存读取器完成。
+
+### EngineSnapshot v2
+
+[engine_snapshot.cpp](../src/engine/engine_snapshot.cpp) 将最终系统词条、
+键索引、字符/音节 Trie、音节表、指纹和英文词典保存为偏移量布局。
+引擎可直接采用只读映射，语言模型另行加载。
+
+快照是运行时派生缓存，不属于系统词库 manifest，位于
+`%LOCALAPPDATA%\CaishenPinyin\snapshot\`。头部记录源文件 size、mtime 和生成时 SHA-256；
+正常加载比较源文件身份并验证索引、区段和 Trie 结构，不在每次启动重新散列所有源文件。
+失效后使用传统装载并尝试生成新快照。个人学习数据不写入系统快照。
+
+正式构建另提供 `engine_snapshot_build_tool.exe`，
+安装阶段可尝试预生成；是否成功不影响正常装载回退。详见[安装说明](installer.md#个人数据权限与快照)。
+
+## 生成和验证
+
+以下示例在临时产物目录重建当前中文数据，沿用清单中的其他必需文件。
+先将 `$frostRoot` 指向已检出固定提交的上游仓库，核对提交与导入报告后再接受结果。
 
 ```powershell
+$frostRoot = 'C:\src\rime-frost'
+$stage = 'artifacts\lexicon-stage'
+$currentManifest = Get-Content data\lexicon\manifest.json -Raw | ConvertFrom-Json
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+foreach ($entry in $currentManifest.files) {
+    if (-not $entry.runtimeOptional) {
+        Copy-Item -LiteralPath (Join-Path 'data\lexicon' $entry.path) -Destination (Join-Path $stage $entry.path)
+    }
+}
 python scripts/build_frost_lexicon.py `
-  --frost-root ciku/rime-frost-master白霜拼音 `
-  --output-dir artifacts/frost-build `
-  --custom data/lexicon/custom_dict.txt `
-  --report docs/frost-import-report.json
+    --frost-root $frostRoot --output-dir $stage `
+    --custom data/lexicon/custom_dict.txt --report artifacts/frost-import-report.json
+python scripts/build_lexicon_cache.py --source "$stage/base_dict.txt" --out "$stage/base_dict.txt.bin"
+python scripts/build_lexicon_cache.py --source "$stage/char_dict.txt" --out "$stage/char_dict.txt.bin"
 python scripts/build_lexeme_prior.py `
-  --char-source artifacts/frost-build/char_dict.txt `
-  --base artifacts/frost-build/base_dict.txt `
-  --out artifacts/frost-build/system_lexeme_prior.bin
-python scripts/lexicon_manifest.py generate --version 2.0.1 --schema 2
-python scripts/lexicon_manifest.py validate
+    --char-source "$stage/char_dict.txt" --base "$stage/base_dict.txt" --out "$stage/system_lexeme_prior.bin"
+python scripts/lexicon_manifest.py generate `
+    --dir $stage --manifest "$stage/manifest.json" --version $currentManifest.version --schema 2
+python scripts/lexicon_manifest.py validate --dir $stage --manifest "$stage/manifest.json"
 ```
 
-校验器严格检查中文三列、纯小写拼音、整数频率、英文三列（兼容旧两列）格式、完全重复键词对、
-短词先验与字符 N-gram 的 magic/版本/顺序，以及 Grammar 元数据、双数组偏移、
-根单元、单元上限和精确文件长度。清单还固定每个文件的大小和 SHA-256。
-英文词库由 `scripts/build_en_dict.py` 确定性生成。导入的
-`BlindingDark/rime-easy-en/easy_en.dict.yaml` 固定到提交
-`54a4a07289412efc54134092c0d945f895a71ed3`，原始文件 SHA-256 为
-`4F039026B2746FA9B0D4D7A248CDF866B64609DCA2317708F04E9E68AC7D868A`。
-上游仓库声明 LGPL-3.0；其词典内容致谢并基于 ECDICT，ECDICT 仓库声明 MIT
-许可证。对应许可证全文位于 `licenses/LGPL-3.0-rime-easy-en.txt` 与
-`licenses/MIT-ECDICT.txt`。项目只提交规范化派生词库，清单保留来源、提交号与
-哈希，发布包必须同时附带相应第三方声明。运行时不联网。
+该示例用于复现现有逻辑版本；真正改变来源、内容或转换规则时，
+维护者应选择新的词库版本并同步正式报告、缓存、清单和第三方声明。
+英文与字符模型的单独生成参数见对应脚本的 `--help`。
 
-部署使用 `scripts/install_ime.ps1`。系统包安装到稳定数据根的
-`versions/<version>-<manifest 哈希前缀>`，
-通过小型 `current` 指针原子切换；默认机器根为
-`%ProgramData%\CaishenPinyin\data\lexicon`。引擎优先读取该包，缺失或损坏指针时兼容
-DLL 旁 `data\lexicon`。运行时依次尝试完整墨奇、`system_ngram.bin` 和旧版小
-`zh-moqi.gram`；完整墨奇不列入发行清单且不会随包安装，缺失时健康检查仍通过，
-`system_ngram.bin` 则必须存在且校验通过。小墨奇不列入 2.0.1 清单，仅兼容旧安装。
-用户词始终位于
-`%LOCALAPPDATA%\CaishenPinyin\data\lexicon\user_dict.txt`。
+正式仓库校验：
+
+```powershell
+python scripts/lexicon_manifest.py validate --dir data/lexicon --manifest data/lexicon/manifest.json
+```
+
+校验包括文本格式、重复键词对、频率范围、文件哈希，以及相应模型的 magic、
+版本、排序和结构。空行及 `#`、`;` 注释不计入有效文本条目数。
+
+## 安装与个人数据
+
+系统包位于 `%ProgramData%\CaishenPinyin\data\lexicon\versions/<逻辑版本>-<清单哈希前缀>`，
+通过小型 `current` 指针切换。运行时优先读取这个版本目录，
+缺失时兼容 DLL 附近的 `data\lexicon`。
+
+`user_dict.txt`、`user_bigram.txt` 和 `custom_phrases.txt` 属于当前用户数据，
+不随系统包覆盖。升级可保留用户自行安装的完整模型，
+但不能因此将该模型加入发布包。安装事务与回滚见[安装说明](installer.md)。
