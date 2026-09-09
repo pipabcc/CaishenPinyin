@@ -320,7 +320,7 @@ function Test-Lexicon([string]$Path) {
         Stop-Deployment 20 'lexicon manifest missing'
     }
     try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
-    catch { Stop-Deployment 21 'lexicon manifest invalid' }
+    catch { Stop-Deployment 21 "lexicon manifest unreadable or invalid: $manifestPath : $($_.Exception.Message)" }
 
     foreach ($file in $manifest.files) {
         $filePath = Join-Path $Path $file.path
@@ -345,21 +345,20 @@ function Test-Lexicon([string]$Path) {
 }
 
 function Test-LexiconHealthy([string]$Path) {
-    $manifestPath = Join-Path $Path 'manifest.json'
-    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
-    try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
-    catch { return $false }
-
-    foreach ($file in $manifest.files) {
-        $filePath = Join-Path $Path $file.path
-        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
-            if ($file.PSObject.Properties.Name -contains 'runtimeOptional' -and
-                $file.runtimeOptional -eq $true) {
-                continue
+    try {
+        $manifestPath = Join-Path $Path 'manifest.json'
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($null -eq $manifest.files -or @($manifest.files).Count -eq 0) { return $false }
+        foreach ($file in $manifest.files) {
+            $filePath = Join-Path $Path $file.path
+            if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+                if ($file.PSObject.Properties.Name -contains 'runtimeOptional' -and
+                    $file.runtimeOptional -eq $true) {
+                    continue
+                }
+                return $false
             }
-            return $false
-        }
-        try {
             $actualHash = (Get-FileHash -LiteralPath $filePath -Algorithm SHA256).Hash
             if ($actualHash.ToLowerInvariant() -ne ([string]$file.sha256).ToLowerInvariant()) {
                 return $false
@@ -368,19 +367,73 @@ function Test-LexiconHealthy([string]$Path) {
                 (Get-Item -LiteralPath $filePath).Length -ne [int64]$file.size) {
                 return $false
             }
-        } catch { return $false }
+        }
+        return $true
+    } catch {
+        # 探测旧目录失败只表示不能复用；安装包自身仍使用严格校验。
+        Write-DeployLog "existing lexicon unavailable: $Path : $($_.Exception.Message)" | Out-Null
+        return $false
     }
-    return $true
 }
 
-function Assert-ReusableLexicon([string]$Source, [string]$Installed) {
-    [void](Test-Lexicon $Installed)
-    $sourceHash = (Get-FileHash (Join-Path $Source 'manifest.json') -Algorithm SHA256).Hash
-    $installedHash = (Get-FileHash (Join-Path $Installed 'manifest.json') -Algorithm SHA256).Hash
-    if ($sourceHash -ne $installedHash) {
-        Stop-Deployment 33 'installed lexicon version conflicts with package manifest'
+function Get-LexiconVersionDirectory([string]$Name) {
+    if ($Name -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+        Stop-Deployment 11 'invalid lexicon version identifier'
     }
-    Write-DeployLog "reusing verified lexicon $Installed"
+    return Join-Path $DataRoot "versions\$Name"
+}
+
+function Test-LexiconManifestMatch([string]$Path, [string]$ExpectedHash) {
+    try {
+        $actualHash = (Get-FileHash -LiteralPath (Join-Path $Path 'manifest.json') -Algorithm SHA256).Hash
+        return $actualHash -eq $ExpectedHash
+    } catch {
+        Write-DeployLog "existing lexicon manifest unavailable: $Path : $($_.Exception.Message)" | Out-Null
+        return $false
+    }
+}
+
+function Select-LexiconDeployment {
+    param([string]$CanonicalVersion, [string]$ExpectedManifestHash,
+          [string]$CurrentVersion, [bool]$CurrentHealthy)
+
+    # 修复目录也可再次复用，避免每次安装都绕回已损坏的原始目录。
+    if ($CurrentHealthy -and $CurrentVersion) {
+        $currentPath = Get-LexiconVersionDirectory $CurrentVersion
+        if (Test-LexiconManifestMatch $currentPath $ExpectedManifestHash) {
+            return [pscustomobject]@{ Version = $CurrentVersion; Path = $currentPath; Reuse = $true }
+        }
+    }
+
+    $canonicalPath = Get-LexiconVersionDirectory $CanonicalVersion
+    $existing = $null
+    $unavailable = $false
+    try {
+        $existing = Get-Item -LiteralPath $canonicalPath -Force -ErrorAction Stop
+    } catch {
+        if ($_.CategoryInfo.Category -ne [Management.Automation.ErrorCategory]::ObjectNotFound) {
+            $unavailable = $true
+            Write-DeployLog "existing lexicon directory unavailable: $canonicalPath : $($_.Exception.Message)" | Out-Null
+        }
+    }
+    if ($null -ne $existing -and -not $existing.PSIsContainer) {
+        Stop-Deployment 33 "lexicon version target is not a directory: $canonicalPath"
+    }
+    if ($null -eq $existing -and -not $unavailable) {
+        return [pscustomobject]@{ Version = $CanonicalVersion; Path = $canonicalPath; Reuse = $false }
+    }
+    if ($null -ne $existing -and
+        -not ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+        (Test-LexiconManifestMatch $canonicalPath $ExpectedManifestHash) -and
+        (Test-LexiconHealthy $canonicalPath)) {
+        return [pscustomobject]@{ Version = $CanonicalVersion; Path = $canonicalPath; Reuse = $true }
+    }
+
+    # 不接管旧 ACL、不覆盖或删除原文件；将已验证的包安装到新的不可变目录。
+    $repairVersion = $CanonicalVersion + '-repair-' + [guid]::NewGuid().ToString('N')
+    $repairPath = Get-LexiconVersionDirectory $repairVersion
+    Write-DeployLog "lexicon repair uses new directory: old=$canonicalPath new=$repairPath" | Out-Null
+    return [pscustomobject]@{ Version = $repairVersion; Path = $repairPath; Reuse = $false }
 }
 
 function Get-ApplicationResourceFiles([string]$Root) {
@@ -894,6 +947,7 @@ function Get-ShortcutPath {
 }
 
 function Remove-LegacySettingsStartup {
+    if ($NoRegister) { return }
     # 旧版便携注册脚本曾将设置中心写入 HKCU 启动项。该启动项属于本产品，
     # 新版设置中心不再开机启动；升级/修复时清理遗留值，避免用户仍被旧行为打扰。
     $runKey = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -1111,7 +1165,7 @@ function Assert-UserDataScope {
 }
 
 function Repair-PublicLexiconAccess {
-    param([string]$Path)
+    param([string]$Path, [switch]$DirectoryOnly)
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
     $workQueue = New-Object 'System.Collections.Generic.Queue[string]'
     $workQueue.Enqueue([IO.Path]::GetFullPath($Path))
@@ -1171,7 +1225,7 @@ function Repair-PublicLexiconAccess {
             Set-Acl -LiteralPath $currentPath -AclObject $security
             Write-DeployLog "public lexicon appcontainer read access repaired: $currentPath"
         }
-        if ($item.PSIsContainer) {
+        if ($item.PSIsContainer -and -not $DirectoryOnly) {
             foreach ($child in Get-ChildItem -LiteralPath $currentPath -Force) {
                 $workQueue.Enqueue($child.FullName)
             }
@@ -1198,7 +1252,15 @@ function Grant-AppContainerAccess {
     # Lexicon and program directories only need read access. Both carried this ACE
     # from a manual icacls run that was never committed, so reinstalling dropped it;
     # pin it down here.
-    Repair-PublicLexiconAccess $DataRoot
+    $activeLexiconVersion = Read-Pointer (Join-Path $DataRoot 'current')
+    if ($activeLexiconVersion) {
+        # 不遍历已停用、可能拒绝访问的旧版本，防止旁路修复在收尾阶段再次失败。
+        Repair-PublicLexiconAccess $DataRoot -DirectoryOnly
+        Repair-PublicLexiconAccess (Join-Path $DataRoot 'versions') -DirectoryOnly
+        Repair-PublicLexiconAccess (Get-LexiconVersionDirectory $activeLexiconVersion)
+    } else {
+        Repair-PublicLexiconAccess $DataRoot
+    }
     Grant-PathToAppContainers $InstallRoot `
         $AppContainerFullInherit $AppContainerPropagate $AppContainerReadRights
 }
@@ -1237,9 +1299,9 @@ function Test-CurrentInstallation {
     if (Test-Path -LiteralPath (Join-Path $versionDirectory 'install-components.json')) {
         Test-SettingsShortcut $versionDirectory
     }
-    [void](Test-Lexicon (Join-Path $DataRoot "versions\$dataVersion"))
+    [void](Test-Lexicon (Get-LexiconVersionDirectory $dataVersion))
     if ($HealthCheckExe) {
-        $arguments = @($dll, (Join-Path $DataRoot "versions\$dataVersion"))
+        $arguments = @($dll, (Get-LexiconVersionDirectory $dataVersion))
         if (-not $NoRegister) { $arguments += '--registered' }
         & $HealthCheckExe @arguments
         if ($LASTEXITCODE -ne 0) { Stop-Deployment 32 'real health check failed' }
@@ -1321,13 +1383,15 @@ try {
         $languageTipAdded = $false
         Write-DeployProgress 'prepare' 'running' 8 'Preparing install transaction'
         $oldDataHealthy = $oldDataVersion -and (Test-LexiconHealthy `
-            (Join-Path $DataRoot "versions\$oldDataVersion"))
+            (Get-LexiconVersionDirectory $oldDataVersion))
+        $lexiconDeployment = Select-LexiconDeployment $dataVersion $lexiconManifestHash $oldDataVersion ([bool]$oldDataHealthy)
+        $dataVersion = $lexiconDeployment.Version
         $stage = Join-Path $InstallRoot ".stage-$Version-$PID"
         $dataStage = Join-Path $DataRoot ".stage-$dataVersion-$PID"
         $target = Join-Path $InstallRoot "versions\$Version"
-        $dataTarget = Join-Path $DataRoot "versions\$dataVersion"
+        $dataTarget = $lexiconDeployment.Path
         $reuseApplication = Test-Path -LiteralPath $target -PathType Container
-        $reuseLexicon = Test-Path -LiteralPath $dataTarget -PathType Container
+        $reuseLexicon = $lexiconDeployment.Reuse
         if ((Test-Path -LiteralPath $target) -and -not $reuseApplication) {
             Stop-Deployment 33 'application version target is not a directory'
         }
@@ -1337,7 +1401,7 @@ try {
         if ($reuseApplication) {
             Assert-ReusableApplication $DllPath $X86DllPath $applicationFiles $target
         }
-        if ($reuseLexicon) { Assert-ReusableLexicon $PackagePath $dataTarget }
+        if ($reuseLexicon) { Write-DeployLog "reusing verified lexicon $dataTarget" }
 
         try {
             if (-not $reuseApplication) {
@@ -1381,15 +1445,26 @@ try {
                         -Destination (Join-Path $dataStage $file.path) -Force
                 }
                 if ($oldDataVersion) {
-                    $oldDataDirectory = Join-Path $DataRoot "versions\$oldDataVersion"
+                    $oldDataDirectory = Get-LexiconVersionDirectory $oldDataVersion
                     foreach ($optionalPath in $RuntimeOptionalLexiconFiles) {
                         $optionalSource = Join-Path $oldDataDirectory $optionalPath
-                        if (Test-Path -LiteralPath $optionalSource -PathType Leaf) {
+                        $optionalPresent = $false
+                        try {
+                            $optionalPresent = Test-Path -LiteralPath $optionalSource -PathType Leaf
+                        } catch {
+                            Write-DeployLog "optional model unavailable; original retained: $optionalSource : $($_.Exception.Message)"
+                        }
+                        if ($optionalPresent) {
                             $optionalDestination = Join-Path $dataStage $optionalPath
                             New-Item -ItemType Directory -Force -Path `
                                 (Split-Path -Parent $optionalDestination) | Out-Null
-                            Copy-Item -LiteralPath $optionalSource -Destination $optionalDestination -Force
-                            Write-DeployLog "preserved runtime-optional file: $optionalPath"
+                            try {
+                                Copy-Item -LiteralPath $optionalSource -Destination $optionalDestination -Force
+                                Write-DeployLog "preserved runtime-optional file: $optionalPath"
+                            } catch {
+                                Remove-Item -LiteralPath $optionalDestination -Force -ErrorAction SilentlyContinue
+                                Write-DeployLog "optional model copy failed; original retained: $optionalSource : $($_.Exception.Message)"
+                            }
                         }
                     }
                 }
@@ -1440,12 +1515,9 @@ try {
             # 会在首次传统装载后自行再生快照兜底。不使用续行符，避免
             # 行尾空白破坏解析。
             try {
-                $snapshotTool = $null
-                if ($PSScriptRoot) {
-                    $snapshotTool = Join-Path -Path $PSScriptRoot -ChildPath 'payload\engine_snapshot_build_tool.exe'
-                }
+                $snapshotTool = Join-Path $target 'engine_snapshot_build_tool.exe'
                 if ($snapshotTool -and (Test-Path -LiteralPath $snapshotTool -PathType Leaf)) {
-                    Start-Process -FilePath $snapshotTool -ArgumentList @('--lexicon-dir=' + $dataTarget) -WindowStyle Hidden
+                    Start-Process -FilePath $snapshotTool -ArgumentList @('--lexicon-dir="' + $dataTarget + '"') -WindowStyle Hidden
                     Write-DeployLog 'snapshot pregeneration started'
                 } else {
                     Write-DeployLog 'snapshot pregeneration skipped: tool not packaged'
@@ -1532,7 +1604,7 @@ try {
     }
 } catch {
     if (-not $_.Exception.Message.StartsWith('ERROR[')) {
-        Write-DeployLog "FAILED line=$($_.InvocationInfo.ScriptLineNumber) $($_.Exception.Message)"
+        Write-DeployLog "FAILED action=$Action line=$($_.InvocationInfo.ScriptLineNumber) target=$($_.TargetObject) $($_.Exception.Message)"
     }
     exit $script:ExitCode
 }
