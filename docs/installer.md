@@ -47,6 +47,11 @@ CaishenPinyin/
 NSIS 遇到相同数值版本时创建带唯一后缀的修复目录；
 更高版本执行升级，更低版本被阻止。直接调用部署脚本时由调用方提供版本目录标识。
 
+旧词库的 manifest 缺失、损坏或拒绝读取时，安装器将其判定为不可复用，
+把已校验的包复制到带 `-repair-` 后缀的新目录，再验证和切换指针。
+旧文件及其访问限制保持原样，不通过放宽个人数据权限完成安装。
+后续安装会复用内容匹配且健康的修复目录，避免重复复制。
+
 两种位数共用同一 CLSID/Profile。NSIS 通过 Sysnative 调用 64 位 PowerShell，
 部署脚本分别使用 System32 和 SysWOW64 的 `regsvr32.exe` 注册，
 使不同位数的宿主选择正确 DLL。
@@ -107,6 +112,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\register_ime.ps1 `
 
 健康检查核对当前指针、组件文件、词库、快捷方式和注册；
 指定 `-HealthCheckExe` 可再执行原生 DLL/COM/词库健康测试。
+旧词库不可用时不会把它保存成可回滚的数据目标；安装包自身的哈希或清单错误仍直接失败。
 
 ```powershell
 $installDirectory = Join-Path $env:ProgramFiles 'CaishenPinyin'
@@ -156,11 +162,12 @@ reg query "HKCR\CLSID\{7C4E9F2A-1B3D-4A8E-9F6C-2D5E8B1A4C7F}\InprocServer32" /ve
 置顶、统计、复制记录数据库及图片。数据库迁移和写入协议见[架构说明](architecture.md)。
 
 安装器收敛个人文件权限、跳过重解析点，并恢复公共词库和资源的沙箱只读访问。
+正常安装只修复公共根、版本父目录及当前选定词库的权限，避免遍历不可读的旧版本。
 个人数据根取当前进程的 LOCALAPPDATA，不使用 NSIS 的全用户 Shell 目录代替。
 仅修复现有权限时使用 `-Action RepairPermissions`，自定义安装根和数据根应显式传入。
 
 正式构建包含 `engine_snapshot_build_tool.exe`。安装成功后，
-脚本在新目录存在该工具时尝试隐藏启动快照预生成；工具缺失、启动或生成失败均不影响
+脚本从已安装的新版本目录隐藏启动快照预生成，不依赖安装器临时解包目录继续存在；工具缺失、启动或生成失败均不影响
 安装结果，首次运行仍可回退装载。快照写入执行安装的用户目录，不能承诺其他用户也已预热。
 
 完整墨奇模型不随发行包提供。已有用户自行安装的模型可在词库升级时迁移保留。

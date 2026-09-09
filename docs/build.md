@@ -85,6 +85,8 @@ ctest --test-dir build-release -C Release -R learning_persistence -V
 - x86 执行 `input_policy`、`engine_snapshot`、`release_health`、
   `tsf_e2e_core`、`composition_lifecycle`、`candidate_window`。
 - `p1_engine` 使用全量词库，当前超时上限为 600 秒。具体测试数和超时以 CMake 为准。
+- `installer_lexicon_recovery` 使用隔离目录，覆盖旧词库访问拒绝、损坏、修复目录复用、
+  失败回滚、可选模型保留和源包完整性检查。
 
 GitHub CI 显式设置 `CAISHEN_SKIP_INTERACTIVE_TESTS=1`，不代表已完成真实宿主的前台验证。
 输入兼容性、不同 DPI 和显示器仍需按改动进行实测。
