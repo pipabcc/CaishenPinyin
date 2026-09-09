@@ -281,6 +281,16 @@ public partial class App : Application
             window = new MainWindow();
             window.Show();
             await window.RunClipboardPageSmokeTestAsync();
+            var target = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+            var quickWindow = new QuickWindow(targetWindow: target);
+            try
+            {
+                quickWindow.Show();
+                await quickWindow.RunClipboardInteractionSmokeTestAsync();
+            }
+            finally { quickWindow.Close(); }
+            await QuickWindow.RunDirectTextCommitSmokeTestAsync(target);
+            await QuickWindow.RunClipboardCancellationSmokeTestAsync(target);
             exitCode = 0;
         }
         catch (Exception ex)

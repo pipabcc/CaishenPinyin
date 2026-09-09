@@ -737,6 +737,11 @@ void CandidateWindow::Hide() {
         return;
     }
     StopDeferredAction();
+    mouse_down_ = false;
+    dragging_ = false;
+    pressed_candidate_ = -1;
+    pressed_delete_candidate_ = -1;
+    if (GetCapture() == hwnd_) ReleaseCapture();
     ShowWindow(hwnd_, SW_HIDE);
     visible_ = false;
     StopSkinAnimation();
@@ -808,6 +813,10 @@ bool CandidateWindow::EnsureOwner(HWND requested_owner) {
 
 void CandidateWindow::ResetWindowBoundState() noexcept {
     visible_ = false;
+    mouse_down_ = false;
+    dragging_ = false;
+    pressed_candidate_ = -1;
+    pressed_delete_candidate_ = -1;
     ready_poll_active_ = false;
     shift_release_poll_active_ = false;
     shortcut_release_poll_active_ = false;
@@ -913,6 +922,7 @@ void CandidateWindow::SetContent(
             composing, candidates, normalized_page, normalized_page_size);
     const bool selection_changed = selected_ != normalized_selected;
     if (!layout_changed && !selection_changed) return;
+    if (layout_changed) ++content_revision_;
 
     composing_ = composing;
     candidates_ = candidates;
@@ -1374,8 +1384,10 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
     if (vertical_utility_mode_) {
         const int top_bar_h = Scale(38);
         const int row_h = Scale(kVerticalRowHeight);
-        if (y < top_bar_h || y >= height_) return -1;
+        if (x < 0 || x >= width_ - Scale(12) ||
+            y < top_bar_h || y >= height_) return -1;
         const int row = (y - top_bar_h) / row_h;
+        if (row >= kVerticalMaxVisible) return -1;
         const int idx = scroll_offset_ + row;
         if (idx >= 0 && static_cast<size_t>(idx) < candidates_.size()) {
             return idx;
@@ -1411,6 +1423,12 @@ int CandidateWindow::HitTestCandidate(int x, int y) const {
         }
     }
     return hit;
+}
+
+int CandidateWindow::HitTestDelete(int x, int y) const {
+    if (!vertical_utility_mode_ ||
+        x - ShadowMargin() < width_ - Scale(38)) return -1;
+    return HitTestCandidate(x, y);
 }
 
 int CandidateWindow::HitTestPin(int x, int y) const {
@@ -2224,6 +2242,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         break;
     }
     case WM_LBUTTONDOWN: {
+        self->mouse_down_ = false;
+        self->dragging_ = false;
+        self->pressed_candidate_ = -1;
+        self->pressed_delete_candidate_ = -1;
+        self->pressed_pin_candidate_ = -1;
+        self->scrollbar_dragging_ = false;
+        self->pressed_content_revision_ = self->content_revision_;
         const int shadow_margin = self->ShadowMargin();
         const int x = static_cast<short>(LOWORD(lparam)) - shadow_margin;
         const int y = static_cast<short>(HIWORD(lparam)) - shadow_margin;
@@ -2272,11 +2297,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 return 0;
             }
 
-            // 4. 检查是否点击垃圾桶
-            if (self->hovered_delete_ && self->hovered_row_ >= 0) {
-                if (self->on_delete_item_) {
-                    self->on_delete_item_(static_cast<size_t>(self->hovered_row_));
-                }
+            // 删除在抬起时执行，整次手势只负责删除，避免补位记录收到选词点击。
+            const int delete_candidate = self->HitTestDelete(
+                static_cast<short>(LOWORD(lparam)),
+                static_cast<short>(HIWORD(lparam)));
+            if (delete_candidate >= 0) {
+                self->pressed_delete_candidate_ = delete_candidate;
+                SetCapture(hwnd);
                 return 0;
             }
         }
@@ -2284,6 +2311,9 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         // 按下即捕获；位移超过系统拖动阈值判定为拖动，否则抬起时按点击选词。
         self->mouse_down_ = true;
         self->dragging_ = false;
+        self->pressed_candidate_ = self->HitTestCandidate(
+            static_cast<short>(LOWORD(lparam)),
+            static_cast<short>(HIWORD(lparam)));
         GetCursorPos(&self->drag_start_cursor_);
         RECT wr {};
         if (GetWindowRect(hwnd, &wr)) {
@@ -2405,8 +2435,24 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         self->dragging_ = false;
         self->scrollbar_dragging_ = false;
         self->pressed_pin_candidate_ = -1;
+        self->pressed_candidate_ = -1;
+        self->pressed_delete_candidate_ = -1;
         break;
     case WM_LBUTTONUP: {
+        if (self->pressed_delete_candidate_ >= 0) {
+            const int pressed = self->pressed_delete_candidate_;
+            const bool unchanged =
+                self->pressed_content_revision_ == self->content_revision_;
+            const int released = self->HitTestDelete(
+                static_cast<short>(LOWORD(lparam)),
+                static_cast<short>(HIWORD(lparam)));
+            self->pressed_delete_candidate_ = -1;
+            if (GetCapture() == hwnd) ReleaseCapture();
+            if (unchanged && released == pressed && self->on_delete_item_) {
+                self->on_delete_item_(static_cast<size_t>(pressed));
+            }
+            return 0;
+        }
         if (self->pressed_pin_candidate_ >= 0) {
             const int pressed = self->pressed_pin_candidate_;
             self->pressed_pin_candidate_ = -1;
@@ -2428,8 +2474,12 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
 
         const bool was_dragging = self->dragging_;
         const bool was_down = self->mouse_down_;
+        const int pressed = self->pressed_candidate_;
+        const bool unchanged =
+            self->pressed_content_revision_ == self->content_revision_;
         self->mouse_down_ = false;
         self->dragging_ = false;
+        self->pressed_candidate_ = -1;
         if (was_down && GetCapture() == hwnd) {
             ReleaseCapture();
         }
@@ -2442,10 +2492,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             }
             return 0;
         }
+        if (!was_down || !unchanged) return 0;
         const int index = self->HitTestCandidate(
             static_cast<short>(LOWORD(lparam)),
             static_cast<short>(HIWORD(lparam)));
-        if (index >= 0) {
+        if (index >= 0 && index == pressed && self->HitTestDelete(
+                static_cast<short>(LOWORD(lparam)),
+                static_cast<short>(HIWORD(lparam))) < 0) {
             self->selected_ = static_cast<size_t>(index);
             self->SetSelectedIndex(self->selected_);
             if (self->on_select_) {

@@ -316,12 +316,12 @@ DatabaseQueryStatus QueryClipboardDatabase(
         candidate.covered_input_len = 1 + query.size();
         candidate.learnable = false;
         candidate.source = CandidateSource::Dynamic;
+        candidate.action_data = Utf8ToWide(id);
         if ((type == 1 ||
              content_length > static_cast<sqlite3_int64>(
                  kDirectTextCommitLimit)) &&
             !id.empty()) {
             candidate.action = CandidateAction::PasteClipboardRecord;
-            candidate.action_data = Utf8ToWide(id);
         }
         candidates->push_back(std::move(candidate));
     }
@@ -709,6 +709,12 @@ bool ShouldPasteTextExternally(std::size_t text_length) noexcept {
     return text_length > kDirectTextCommitLimit;
 }
 
+bool ShouldPasteTextExternally(const std::wstring& text) noexcept {
+    if (text.size() > kDirectTextCommitLimit) return true;
+    return text.find(L'\n') != std::wstring::npos ||
+           text.find(L'\r') != std::wstring::npos;
+}
+
 bool CreateTextPasteRequest(
     const std::wstring& text,
     std::wstring* request_token) {
@@ -778,10 +784,10 @@ std::vector<Candidate> GetClipboardCandidates(
         cand.covered_input_len = 1 + query.size();
         cand.learnable = false;
         cand.source = CandidateSource::Dynamic;
+        cand.action_data = item.id;
         if ((item.type == 1 || ShouldPasteTextExternally(item.content.size())) &&
             !item.id.empty()) {
             cand.action = CandidateAction::PasteClipboardRecord;
-            cand.action_data = item.id;
         } else {
             cand.full_content = item.content;
         }
@@ -814,7 +820,9 @@ bool DeleteClipboardCandidate(
 
     auto it = std::find_if(g_cached_items.begin(), g_cached_items.end(),
         [&](const SimpleClipboardItem& item) {
-            return item.content == full_content || item.display_title == full_content;
+            return record_id.empty()
+                ? item.content == full_content || item.display_title == full_content
+                : item.id == record_id;
         });
 
     if (it != g_cached_items.end()) {

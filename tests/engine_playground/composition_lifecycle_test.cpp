@@ -1,5 +1,6 @@
 #include "common/guid_def.h"
 #include "common/typing_stats.h"
+#include "engine/clipboard_helper.h"
 #include "ime/globals.h"
 #include "ime/edit_sessions.h"
 #include "ime/display_attribute.h"
@@ -155,14 +156,18 @@ std::wstring ReadText(ITfContext* context, TfClientId client) {
         ComPtr<ITfRange> range;
         HRESULT hr = context->GetStart(cookie, &range);
         if (FAILED(hr)) return hr;
-        LONG shifted = 0;
-        hr = range->ShiftEnd(cookie, 256, &shifted, nullptr);
+        ComPtr<ITfRange> end;
+        hr = context->GetEnd(cookie, &end);
+        if (FAILED(hr)) return hr;
+        hr = range->ShiftEndToRange(cookie, end.Get(), TF_ANCHOR_END);
         if (FAILED(hr)) return hr;
         wchar_t buffer[256]{};
-        ULONG count = 0;
-        hr = range->GetText(cookie, 0, buffer, 256, &count);
-        if (SUCCEEDED(hr)) text.assign(buffer, count);
-        return hr;
+        for (;;) {
+            ULONG count = 0;
+            hr = range->GetText(cookie, TF_TF_MOVESTART, buffer, ARRAYSIZE(buffer), &count);
+            if (FAILED(hr) || count == 0) return hr;
+            text.append(buffer, count);
+        }
     }, TF_ES_SYNC | TF_ES_READ);
     return text;
 }
@@ -507,6 +512,79 @@ void CheckCopyUnexpectedTerminationRecovery(
 
     std::printf("copy-recovery lifecycle: unexpected termination recovery, space-backspace and ESC passed\n");
 }
+void CheckDirectMultilineText(ITfContext* context, TfClientId client) {
+    const auto before = ReadText(context, client);
+    std::wstring expected;
+    for (int line = 0; line < 300; ++line)
+        expected += L"第" + std::to_wstring(line) + L"行中文记录\r\n";
+    expected += L"末尾字符完整🙂";
+
+    struct ClipboardLock {
+        bool acquired = OpenClipboard(nullptr) != FALSE;
+        ~ClipboardLock() { if (acquired) CloseClipboard(); }
+    } clipboard;
+    const DWORD sequence = GetClipboardSequenceNumber();
+    ComPtr<ITfEditSession> insertion;
+    insertion.Attach(new shuru::InsertTextEditSession(context, client, nullptr, expected));
+    RunSession(context, client, [&](TfEditCookie cookie) {
+        return insertion->DoEditSession(cookie);
+    });
+    Require(ReadText(context, client) == before + expected, "直接上屏改变了长文本或多行换行");
+    Require(!clipboard.acquired || GetClipboardSequenceNumber() == sequence,
+            "文本直接上屏改变了被占用的剪贴板");
+}
+
+void CheckClipboardUtilityInteractions(
+    ITfContext* context, TfClientId client, shuru::TextService* service,
+    const fs::path& directory) {
+    fs::create_directories(directory);
+    Require(SetEnvironmentVariableW(L"CAISHEN_CLIPBOARD_DATA_DIR", directory.c_str()) != FALSE,
+            "设置复制记录测试目录失败");
+    const auto write_records = [&] {
+        std::ofstream history(directory / L"history.json", std::ios::binary | std::ios::trunc);
+        history << R"json([
+            {"id":"first","type":0,"content":"记录甲","display_title":"记录甲"},
+            {"id":"second","type":0,"content":"记录乙","display_title":"记录乙"},
+            {"id":"third","type":0,"content":"记录丙","display_title":"记录丙"}
+        ])json";
+        Require(static_cast<bool>(history), "写入复制记录测试数据失败");
+    };
+    const auto before = ReadText(context, client);
+    write_records();
+    Press(service, context, 'V');
+    Press(service, context, VK_DOWN);
+    Press(service, context, VK_DELETE);
+    const auto remaining = shuru::GetClipboardCandidates("", 10);
+    Require(remaining.size() == 2 && remaining[0].action_data == L"first" &&
+            remaining[1].action_data == L"third", "Delete 未删除当前选中记录");
+    Require(ReadText(context, client) == before + L"v", "删除记录时意外上屏");
+    Press(service, context, VK_RETURN);
+    Require(ReadText(context, client) == before + L"记录丙", "删除后未选中下一条记录");
+
+    write_records();
+    Press(service, context, 'V');
+    Press(service, context, VK_DOWN);
+    Press(service, context, VK_DOWN);
+    Press(service, context, VK_DELETE);
+    Press(service, context, VK_RETURN);
+    Require(ReadText(context, client) == before + L"记录丙记录乙", "删除末条后未选中上一条");
+
+    write_records();
+    Press(service, context, 'V');
+    Press(service, context, VK_DOWN);
+    Press(service, context, VK_UP);
+    Press(service, context, VK_DELETE);
+    Press(service, context, VK_DELETE);
+    Press(service, context, VK_DELETE);
+    Press(service, context, VK_DELETE);
+    Press(service, context, VK_UP);
+    Press(service, context, VK_DOWN);
+    Require(shuru::GetClipboardCandidates("", 10).empty(), "连续 Delete 未清空记录");
+    Require(ReadText(context, client) == before + L"记录丙记录乙v", "空列表意外关闭组合或改写正文");
+    Press(service, context, VK_ESCAPE);
+    Require(ReadText(context, client) == before + L"记录丙记录乙", "退出空列表后残留组合串");
+    SetEnvironmentVariableW(L"CAISHEN_CLIPBOARD_DATA_DIR", nullptr);
+}
 }  // namespace
 
 int RunCompositionLifecycleTest() {
@@ -806,6 +884,8 @@ int RunCompositionLifecycleTest() {
         CheckAdoptionReentry(context.Get(), context_compositions.Get(), client, service.Get(), HandoffCase::RangeTooWide);
         CheckAdoptionReentry(context.Get(), context_compositions.Get(), client, service.Get(), HandoffCase::StaleRequest);
         CheckCopyUnexpectedTerminationRecovery(context.Get(), context_compositions.Get(), client, service.Get());
+        CheckClipboardUtilityInteractions(context.Get(), client, service.Get(), root / L"clipboard");
+        CheckDirectMultilineText(context.Get(), client);
         std::printf("composition lifecycle: stale callback, focus, external text and deferred commit passed\n");
         result = 0;
     } catch (const std::exception& error) {
@@ -828,6 +908,7 @@ int RunCompositionLifecycleTest() {
     shuru::SharedEngine::Shutdown();
     shuru::TryShutdownAsyncTypingStats();
     SetEnvironmentVariableW(L"LOCALAPPDATA", *previous_local ? previous_local : nullptr);
+    SetEnvironmentVariableW(L"CAISHEN_CLIPBOARD_DATA_DIR", nullptr);
     CoUninitialize();
     std::error_code error;
     fs::remove_all(root, error);

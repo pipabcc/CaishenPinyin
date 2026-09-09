@@ -5,7 +5,8 @@
         WindowStartupLocation="Manual" WindowStyle="None" AllowsTransparency="True"
         Background="Transparent" Topmost="True" ShowInTaskbar="False"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
-        Loaded="Window_Loaded" Deactivated="Window_Deactivated">
+        Loaded="Window_Loaded" Deactivated="Window_Deactivated"
+        PreviewKeyDown="Window_PreviewKeyDown">
 
   <Window.Resources>
     <!-- 浅色质感颜色与笔刷，与设置页面右侧完全一致 -->
@@ -36,6 +37,9 @@
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource HoverBgBrush}"/>
               </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="ItemBorder" Property="Background" Value="#E6EFFD"/>
+              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>
@@ -46,8 +50,7 @@
   <Grid Margin="12">
     <!-- 主卡片容器：浅色圆角阴影 -->
     <Border CornerRadius="10" Background="{StaticResource QuickBgBrush}"
-            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
-            MouseLeftButtonDown="TitleBar_MouseDown">
+            BorderBrush="{StaticResource BorderBrush}" BorderThickness="1">
       <Border.Effect>
         <DropShadowEffect Color="#0F172A" BlurRadius="20" Opacity="0.18" ShadowDepth="4" Direction="270"/>
       </Border.Effect>
@@ -63,7 +66,8 @@
         </Grid.RowDefinitions>
 
         <!-- 标题栏 (可拖动) -->
-        <Grid Grid.Row="0" Margin="14,4,8,0">
+        <Grid Grid.Row="0" Margin="14,4,8,0" Background="Transparent"
+              MouseLeftButtonDown="TitleBar_MouseDown">
           <TextBlock x:Name="TitleBlock" Text="复制记录"
                      Foreground="{StaticResource TextPrimaryBrush}"
                      FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center"/>
@@ -88,7 +92,7 @@
               <TextBox x:Name="SearchBox" Background="Transparent" BorderThickness="0"
                        Foreground="{StaticResource TextPrimaryBrush}" FontSize="12"
                        Padding="8,4" VerticalAlignment="Center"
-                       TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown"/>
+                       TextChanged="SearchBox_TextChanged" PreviewKeyDown="SearchBox_KeyDown"/>
               <TextBlock x:Name="SearchPlaceholder" Text="搜索记录内容..."
                          Foreground="{StaticResource TextMutedBrush}" FontSize="12"
                          Margin="10,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"/>
@@ -105,53 +109,66 @@
                    PreviewKeyDown="RecordListBox_PreviewKeyDown">
             <ListBox.ItemTemplate>
               <DataTemplate>
-                <Grid x:Name="ItemGrid" Background="Transparent"
-                      MouseLeftButtonUp="Item_Click" Cursor="Hand">
+                <Grid x:Name="ItemGrid" Background="Transparent">
                   <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="26"/>
+                    <ColumnDefinition Width="28"/>
                   </Grid.ColumnDefinitions>
 
-                  <!-- 圆点图标 • -->
-                  <TextBlock Grid.Column="0" Text="•" Foreground="#64748B"
-                             FontSize="14" FontWeight="Bold" Margin="0,0,6,0" VerticalAlignment="Center"/>
-
-                  <!-- 文本标题 (固定宽度，绝不动来动去) -->
-                  <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}"
-                             Foreground="{StaticResource TextPrimaryBrush}"
-                             FontSize="12.5" TextTrimming="CharacterEllipsis"
-                             VerticalAlignment="Center" ToolTip="{Binding Content}"/>
-
-                  <!-- 简约美观的矢量垃圾桶删除按钮（鼠标悬停透明度变为1） -->
-                  <Button x:Name="DeleteBtn" Grid.Column="2" Width="22" Height="22"
-                          Background="Transparent" BorderThickness="0"
-                          Foreground="#94A3B8"
-                          HorizontalAlignment="Right" VerticalAlignment="Center" Cursor="Hand"
-                          Opacity="0"
-                          Click="DeleteItem_Click" ToolTip="删除记录">
-                    <Button.Style>
-                      <Style TargetType="Button">
-                        <Setter Property="Template">
-                          <Setter.Value>
-                            <ControlTemplate TargetType="Button">
-                              <Border Background="Transparent">
-                                <Path Data="M3,5 H13 M5,5 V13 C5,13.5 5.5,14 6,14 H10 C10.5,14 11,13.5 11,13 V5 M7,5 V3.5 C7,3.2 7.2,3 7.5,3 H8.5 C8.8,3 9,3.2 9,3.5 V5 M6.5,7.5 V11.5 M9.5,7.5 V11.5"
-                                      Stroke="{TemplateBinding Foreground}"
-                                      StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                              </Border>
-                              <ControlTemplate.Triggers>
-                                <Trigger Property="IsMouseOver" Value="True">
-                                  <Setter Property="Foreground" Value="#EF4444"/>
-                                </Trigger>
-                              </ControlTemplate.Triggers>
-                            </ControlTemplate>
-                          </Setter.Value>
-                        </Setter>
-                      </Style>
-                    </Button.Style>
+                  <!-- 左侧内容容器（圆点 + 文本）：仅在此区域点击触发上屏 -->
+                  <Button x:Name="CommitBtn" Grid.Column="0" Background="Transparent" BorderThickness="0"
+                          HorizontalContentAlignment="Stretch" Focusable="False"
+                          Click="Item_Click" Cursor="Hand">
+                    <Button.Template>
+                      <ControlTemplate TargetType="Button">
+                        <Border Background="Transparent"><ContentPresenter/></Border>
+                      </ControlTemplate>
+                    </Button.Template>
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                      </Grid.ColumnDefinitions>
+                      <TextBlock Grid.Column="0" Text="•" Foreground="#64748B"
+                                 FontSize="14" FontWeight="Bold" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                      <TextBlock Grid.Column="1" Text="{Binding DisplayTitle}"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 FontSize="12.5" TextTrimming="CharacterEllipsis"
+                                 VerticalAlignment="Center" ToolTip="{Binding Content}"/>
+                    </Grid>
                   </Button>
+
+                  <!-- 右侧操作容器：仅包含删除按钮，绝不冒泡给内容点击 -->
+                  <Border Grid.Column="1" Background="Transparent" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Button x:Name="DeleteBtn" Width="22" Height="22"
+                            Background="Transparent" BorderThickness="0"
+                            Foreground="#94A3B8"
+                            HorizontalAlignment="Center" VerticalAlignment="Center" Cursor="Hand"
+                            Opacity="0"
+                            Click="DeleteItem_Click" ToolTip="删除记录（Delete）" Focusable="False">
+                      <Button.Style>
+                        <Style TargetType="Button">
+                          <Setter Property="Template">
+                            <Setter.Value>
+                              <ControlTemplate TargetType="Button">
+                                <Border Background="Transparent">
+                                  <Path Data="M3,5 H13 M5,5 V13 C5,13.5 5.5,14 6,14 H10 C10.5,14 11,13.5 11,13 V5 M7,5 V3.5 C7,3.2 7.2,3 7.5,3 H8.5 C8.8,3 9,3.2 9,3.5 V5 M6.5,7.5 V11.5 M9.5,7.5 V11.5"
+                                        Stroke="{TemplateBinding Foreground}"
+                                        StrokeThickness="1.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                        HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                  <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter Property="Foreground" Value="#EF4444"/>
+                                  </Trigger>
+                                </ControlTemplate.Triggers>
+                              </ControlTemplate>
+                            </Setter.Value>
+                          </Setter>
+                        </Style>
+                      </Button.Style>
+                    </Button>
+                  </Border>
                 </Grid>
                 <DataTemplate.Triggers>
                   <Trigger Property="IsMouseOver" Value="True">

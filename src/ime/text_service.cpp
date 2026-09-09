@@ -515,17 +515,7 @@ void TextService::EnsureUiWindows() {
             }
         });
         candidate_window_.SetDeleteHandler([this](size_t index) {
-            if (index < current_result_.candidates.size()) {
-                const auto& cand = current_result_.candidates[index];
-                if (composing_pinyin_.rfind("vv", 0) == 0) {
-                    DeleteCustomPhraseCandidate(cand.full_content.empty() ? cand.text : cand.full_content);
-                } else if (composing_pinyin_.rfind("v", 0) == 0) {
-                    DeleteClipboardCandidate(
-                        cand.full_content.empty() ? cand.text : cand.full_content,
-                        cand.action_data);
-                }
-                RefreshCandidates();
-            }
+            OnUtilityCandidateDeleted(index);
         });
     }
     if (!status_ui_acquired_) {
@@ -1056,7 +1046,7 @@ bool TextService::CommitCandidate(ITfContext* context, Candidate candidate) {
 
     if (!candidate.full_content.empty()) {
         const std::wstring& committed = CandidateCommitText(candidate);
-        if (ShouldPasteTextExternally(committed.size())) {
+        if (ShouldPasteTextExternally(committed)) {
             std::wstring request_token;
             if (!CreateTextPasteRequest(committed, &request_token)) {
                 SHURU_LOG_WARN("large text paste request creation failed");
@@ -1297,6 +1287,28 @@ void TextService::OnCandidateSelected(size_t index) {
     if (edit_context_ == nullptr || index >= current_result_.candidates.size()) return;
     if (!CommitCandidate(edit_context_, current_result_.candidates[index]))
         SHURU_LOG_WARN("mouse candidate commit failed or zero coverage");
+}
+
+void TextService::OnUtilityCandidateDeleted(size_t index) {
+    if (!IsVerticalUtilityMode(composing_pinyin_) ||
+        edit_context_ == nullptr || IsPasswordContext(edit_context_) ||
+        index >= current_result_.candidates.size()) return;
+
+    const Candidate candidate = current_result_.candidates[index];
+    const bool phrases = composing_pinyin_.size() >= 2 &&
+        (composing_pinyin_[1] == 'v' || composing_pinyin_[1] == 'V');
+    const std::wstring& content = CandidateCommitText(candidate);
+    const bool deleted = phrases
+        ? DeleteCustomPhraseCandidate(content)
+        : DeleteClipboardCandidate(content, candidate.action_data);
+    if (!deleted) {
+        SHURU_LOG_WARN("utility record deletion failed");
+        return;
+    }
+
+    // 刷新时一次性恢复原位置；末条删除后 Clamp 选中上一条，空列表保留工具窗。
+    RefreshCandidates(index);
+    UpdateCandidateWindow(edit_context_);
 }
 
 bool TextService::ShortcutModifierForKey(
@@ -2039,6 +2051,9 @@ bool TextService::IsKeyEaten(
         if (wparam == VK_TAB && !IsVerticalUtilityMode(composing_pinyin_)) {
             return true;
         }
+        if (wparam == VK_DELETE && IsVerticalUtilityMode(composing_pinyin_)) {
+            return true;
+        }
         if (IsVirtualKeyAlpha(wparam) ||
             wparam == VK_BACK || wparam == VK_SPACE || wparam == VK_ESCAPE ||
             wparam == VK_RETURN ||
@@ -2396,6 +2411,12 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
         InitEngine();
     }
 
+    if (wparam == VK_DELETE && IsVerticalUtilityMode(composing_pinyin_)) {
+        OnUtilityCandidateDeleted(candidate_state_.selected);
+        *eaten = true;
+        return true;
+    }
+
     // Apostrophe is a hard pinyin boundary while composing (xi'an != xian).
     const bool shift_down = IsShiftDownForKeyMessage();
     if (IsCalculatorInput(composing_pinyin_)) {
@@ -2706,6 +2727,7 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     // 普通候选使用左右键逐项选择；v/vv 竖向工具列表继续允许四向键
     // 按前后项线性选择。普通候选的上下键已在展开导航分支处理。
     if (!composing_pinyin_.empty() && (wparam == VK_LEFT || wparam == VK_RIGHT || wparam == VK_UP || wparam == VK_DOWN)) {
+        if (IsVerticalUtilityMode(composing_pinyin_)) *eaten = true;
         if (!current_result_.candidates.empty()) {
             const bool vertical_utility = IsVerticalUtilityMode(composing_pinyin_);
             if (vertical_utility || wparam == VK_LEFT || wparam == VK_RIGHT) {
@@ -2784,13 +2806,13 @@ bool TextService::HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lpara
     return true;
 }
 
-void TextService::RefreshCandidates() {
+void TextService::RefreshCandidates(size_t preferred_selection) {
     EnsureUiWindows();
     candidate_readiness_.Invalidate();
     candidate_window_.StopReadyPolling();
 
     current_result_ = {};
-    candidate_state_.selected = 0;
+    candidate_state_.selected = preferred_selection;
     candidate_state_.page = 0;
     candidate_query_input_.clear();
     candidate_query_limit_ = 0;

@@ -44,13 +44,13 @@ internal static class ClipboardPasteService
             }
             LogStage("PasteRecord.Clipboard",
                 $"record={recordId}; type=image; stage=write");
-            ClipboardImageService.SetClipboardImage(record.ImagePath);
+            await ClipboardImageService.SetClipboardImageAsync(record.ImagePath);
         }
         else
         {
             LogStage("PasteRecord.Clipboard",
                 $"record={recordId}; type=text; stage=write");
-            ClipboardImageService.SetClipboardText(record.Content);
+            await ClipboardImageService.SetClipboardTextAsync(record.Content, cancellationToken);
         }
         LogStage("PasteRecord.Clipboard",
             $"record={recordId}; result=written");
@@ -66,7 +66,7 @@ internal static class ClipboardPasteService
     {
         if (!IsValidTargetWindow(targetWindow, "PasteTextRequest")) return false;
         var text = TextPasteRequestStore.ReadAndDelete(requestToken);
-        ClipboardImageService.SetClipboardText(text);
+        await ClipboardImageService.SetClipboardTextAsync(text, cancellationToken);
         return await PasteCurrentClipboardCoreAsync(
             targetWindow, "PasteTextRequest", cancellationToken).ConfigureAwait(true);
     }
@@ -98,11 +98,14 @@ internal static class ClipboardPasteService
         string operation,
         CancellationToken cancellationToken)
     {
+        var clipboardSequence = GetClipboardSequenceNumber();
         var activateTarget = await PrepareTargetAsync(
             targetWindow, operation, cancellationToken).ConfigureAwait(true);
         if (activateTarget == IntPtr.Zero) return false;
+        cancellationToken.ThrowIfCancellationRequested();
         return FocusTargetAndSendPaste(
-            targetWindow, activateTarget, operation, sendPaste: true);
+            targetWindow, activateTarget, operation, sendPaste: true,
+            clipboardSequence);
     }
 
     private static async Task<IntPtr> PrepareTargetAsync(
@@ -110,7 +113,7 @@ internal static class ClipboardPasteService
         string operation,
         CancellationToken cancellationToken)
     {
-        await Task.Delay(80, cancellationToken).ConfigureAwait(true);
+        await Task.Delay(60, cancellationToken).ConfigureAwait(true);
         if (!IsValidTargetWindow(targetWindow, operation)) return IntPtr.Zero;
 
         var rootWindow = GetAncestor(targetWindow, AncestorRoot);
@@ -123,16 +126,13 @@ internal static class ClipboardPasteService
             ShowWindow(activateTarget, ShowRestore);
             LogStage(operation + ".Foreground", "stage=restore");
         }
-        if (!IsForegroundRoot(activateTarget))
+
+        for (var attempt = 0; attempt < 3 && !IsForegroundRoot(activateTarget); ++attempt)
         {
             RequestForegroundWindow(activateTarget, operation);
-            await Task.Delay(60, cancellationToken).ConfigureAwait(true);
+            await Task.Delay(50, cancellationToken).ConfigureAwait(true);
         }
-        if (!IsForegroundRoot(activateTarget))
-        {
-            RequestForegroundWindow(activateTarget, operation);
-            await Task.Delay(60, cancellationToken).ConfigureAwait(true);
-        }
+
         if (!IsForegroundRoot(activateTarget))
         {
             LogStage(operation + ".Foreground", "result=failed");
@@ -140,12 +140,6 @@ internal static class ClipboardPasteService
         }
         LogStage(operation + ".Foreground", "result=active");
 
-        await Task.Delay(40, cancellationToken).ConfigureAwait(true);
-        if (!IsForegroundRoot(activateTarget))
-        {
-            LogStage(operation + ".Foreground", "result=lost-before-input");
-            return IntPtr.Zero;
-        }
         return activateTarget;
     }
 
@@ -196,7 +190,8 @@ internal static class ClipboardPasteService
         IntPtr targetWindow,
         IntPtr rootWindow,
         string operation,
-        bool sendPaste)
+        bool sendPaste,
+        uint clipboardSequence = 0)
     {
         var targetThread = GetWindowThreadProcessId(targetWindow, out _);
         if (targetThread == 0)
@@ -269,6 +264,13 @@ internal static class ClipboardPasteService
             {
                 LogStage(operation + ".Focus", "result=active-only");
                 return true;
+            }
+
+            // 激活目标期间若发生新的复制，不能把更新后的另一条内容误粘贴进去。
+            if (GetClipboardSequenceNumber() != clipboardSequence)
+            {
+                LogStage(operation + ".Clipboard", "result=changed-before-paste");
+                return false;
             }
 
             if (SupportsDirectPasteMessage(actualFocus))
@@ -536,6 +538,9 @@ internal static class ClipboardPasteService
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

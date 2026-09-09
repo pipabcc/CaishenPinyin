@@ -11,6 +11,7 @@ namespace shuru {
 inline constexpr std::size_t kDirectTextCommitLimit = 4096;
 
 bool ShouldPasteTextExternally(std::size_t text_length) noexcept;
+bool ShouldPasteTextExternally(const std::wstring& text) noexcept;
 
 // 为超长文本创建一次性跨进程请求。返回的 token 不包含目录或扩展名，
 // 设置辅助进程读取后会立即删除请求文件。

@@ -1081,6 +1081,75 @@ int wmain(int argc, wchar_t** argv) {
         return 17;
     }
 
+    std::vector<shuru::Candidate> utility_records(
+        candidates.begin(), candidates.begin() + 3);
+    int delete_clicks = 0;
+    window.SetDeleteHandler([&](size_t index) {
+        ++delete_clicks;
+        utility_records.erase(utility_records.begin() + index);
+        window.SetContent(L"v", utility_records,
+            utility_records.empty() ? 0 : (std::min)(index, utility_records.size() - 1),
+            0, 9, true, true);
+        window.Show(POINT {40, 40});
+    });
+    window.SetContent(L"v", utility_records, 0, 0, 9, true, true);
+    window.Show(POINT {40, 40});
+    clicked_index = static_cast<size_t>(-1);
+    const int second_row_y = first_row_y + MulDiv(32, static_cast<int>(dpi), 96);
+    const LPARAM second_row = MAKELPARAM(first_row_x, second_row_y);
+    const LPARAM second_delete = MAKELPARAM(
+        shadow_margin + window.WindowSize().cx - MulDiv(26, static_cast<int>(dpi), 96),
+        second_row_y);
+    SendMessageW(handle, WM_MOUSEMOVE, 0, second_delete);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, second_delete);
+    SendMessageW(handle, WM_LBUTTONUP, 0, second_delete);
+    if (delete_clicks != 1 || utility_records.size() != 2 ||
+        clicked_index != static_cast<size_t>(-1) || !window.IsVisible()) {
+        std::fwprintf(stderr, L"删除记录的同一次点击触发了上屏或关闭窗口\n");
+        return 72;
+    }
+
+    // 删除后不需要移动鼠标重新触发悬停，仍能连续删除同一位置的末条。
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, second_delete);
+    SendMessageW(handle, WM_LBUTTONUP, 0, second_delete);
+    SendMessageW(handle, WM_LBUTTONUP, 0, first_row);
+    if (delete_clicks != 2 || utility_records.size() != 1 ||
+        clicked_index != static_cast<size_t>(-1)) {
+        std::fwprintf(stderr, L"连续删除末条或无对应按下的抬起事件误触发上屏\n");
+        return 73;
+    }
+
+    utility_records.assign(candidates.begin(), candidates.begin() + 3);
+    window.SetContent(L"v", utility_records, 0, 0, 9, true, true);
+    window.Show(POINT {40, 40});
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, second_row);
+    std::swap(utility_records[0], utility_records[1]);
+    window.SetContent(L"v", utility_records, 0, 0, 9, true, true);
+    SendMessageW(handle, WM_LBUTTONUP, 0, second_row);
+    if (clicked_index != static_cast<size_t>(-1)) {
+        std::fwprintf(stderr, L"列表变化后误提交了原位置的新记录\n");
+        return 74;
+    }
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, second_row);
+    SendMessageW(handle, WM_LBUTTONUP, 0, second_row);
+    if (clicked_index != 1) {
+        std::fwprintf(stderr, L"正常点击第二条记录未能选中\n");
+        return 75;
+    }
+
+    clicked_index = static_cast<size_t>(-1);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, second_delete);
+    SendMessageW(handle, WM_LBUTTONUP, 0, second_row);
+    SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, second_row);
+    SendMessageW(handle, WM_CAPTURECHANGED, 0, 0);
+    SendMessageW(handle, WM_LBUTTONUP, 0, second_row);
+    if (delete_clicks != 2 || clicked_index != static_cast<size_t>(-1)) {
+        std::fwprintf(stderr, L"移出删除按钮或丢失鼠标捕获后仍触发了操作\n");
+        return 76;
+    }
+    if (GetCapture() == handle) ReleaseCapture();
+    window.SetDeleteHandler({});
+
     int search_clicks = 0;
     int clear_clicks = 0;
     window.SetSearchHandler([&search_clicks]() { ++search_clicks; });

@@ -203,7 +203,7 @@ private:
     HRESULT UnadviseKeyEventSink();
 
     bool HandleKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam, bool* eaten);
-    void RefreshCandidates();
+    void RefreshCandidates(size_t preferred_selection = 0);
     void StartEngineReadyPolling();
     void EnsureCandidateCapacity(size_t minimum);
     void LearnCandidate(ITfContext* context, const Candidate& candidate,
@@ -270,6 +270,7 @@ private:
     void ToggleSoftKeyboard();
     void OnSoftKey(wchar_t ch, bool is_special);
     void OnCandidateSelected(size_t index);
+    void OnUtilityCandidateDeleted(size_t index);
     void OnCandidatePinToggled(size_t index);
     // COM 编辑可能重入并清空候选容器，提交期间需要持有自己的候选副本。
     bool CommitCandidate(ITfContext* context, Candidate candidate);
